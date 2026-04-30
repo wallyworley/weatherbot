@@ -1,0 +1,21 @@
+# Secrets and local config
+.env
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.cache/
+
+# Runtime artifacts
+logs/
+data/*.csv
+data/*.parquet
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

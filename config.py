@@ -1,0 +1,111 @@
+"""
+Global configuration. Keep this small and boring.
+"""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_CACHE = PROJECT_ROOT / ".cache"
+DATA_CACHE.mkdir(exist_ok=True)
+
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://weather:weather@localhost:5432/weather_bot")
+
+# ---------------------------------------------------------------------------
+# Stations
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Station:
+    code: str           # ICAO / Kalshi station id
+    name: str
+    lat: float
+    lon: float          # negative west
+    tz: str
+
+# Kalshi daily temp contracts reference these NWS stations.
+STATIONS: dict[str, Station] = {
+    "KNYC": Station("KNYC", "New York Central Park", 40.7794, -73.9692, "America/New_York"),
+    "KLGA": Station("KLGA", "New York LaGuardia",    40.7772, -73.8726, "America/New_York"),
+    "KORD": Station("KORD", "Chicago O'Hare",        41.9786, -87.9048, "America/Chicago"),
+    "KLAX": Station("KLAX", "Los Angeles Intl",      33.9381, -118.3889, "America/Los_Angeles"),
+    "KMIA": Station("KMIA", "Miami Intl",            25.7933, -80.2906, "America/New_York"),
+    "KDEN": Station("KDEN", "Denver Intl",           39.8466, -104.6564, "America/Denver"),
+    "KATL": Station("KATL", "Atlanta Hartsfield",    33.6367, -84.4281, "America/New_York"),
+    "KAUS": Station("KAUS", "Austin-Bergstrom",      30.1950, -97.6700, "America/Chicago"),
+    "KPHL": Station("KPHL", "Philadelphia Intl",     39.8744, -75.2424, "America/New_York"),
+}
+
+# MVP scope.
+ACTIVE_STATIONS: list[str] = ["KNYC"]
+
+# ---------------------------------------------------------------------------
+# NOAA data sources (NOAA Big Data Program — free, fast, public S3)
+# ---------------------------------------------------------------------------
+NBM_BUCKET = "noaa-nbm-grib2-pds"
+HRRR_BUCKET = "noaa-hrrr-bdp-pds"
+
+# NBM probabilistic percentiles: blend.tCCz.qmd.fNNN.co.grib2
+# NBM deterministic core:        blend.tCCz.core.fNNN.co.grib2
+NBM_PREFIX = "blend.{yyyymmdd}/{cc:02d}/{product}"
+
+HRRR_PREFIX = "hrrr.{yyyymmdd}/conus"
+
+# GRIB2 variable selectors (used to grep .idx files).
+# See https://www.nco.ncep.noaa.gov/pmb/products/blend/ for full inventory.
+NBM_PROB_SELECTORS = [
+    # Percentiles we care about for temperature.
+    ":TMP:2 m above ground:",      # deterministic mean inside QMD file (fallback)
+]
+NBM_PERCENTILES = [1, 5, 10, 25, 50, 75, 90, 95, 99]
+
+HRRR_SELECTORS = [":TMP:2 m above ground:"]
+
+# ---------------------------------------------------------------------------
+# Observations
+# ---------------------------------------------------------------------------
+AVIATION_WEATHER_METAR_URL = (
+    "https://aviationweather.gov/api/data/metar?ids={station}&format=json&hours={hours}"
+)
+# For historical pulls: anchor the lookback window at a specific UTC timestamp.
+AVIATION_WEATHER_METAR_URL_DATED = (
+    "https://aviationweather.gov/api/data/metar?ids={station}&format=json&hours={hours}&date={date}"
+)
+# API reliably returns ~72h per call. We chunk historical pulls in this window.
+METAR_BACKFILL_CHUNK_HOURS = 72
+
+# Iowa Environmental Mesonet (IEM) ASOS archive — canonical historical METAR
+# source. aviationweather.gov's dated endpoint is unreliable beyond ~48h, so we
+# use IEM for backfill and aviationweather.gov for live pulls.
+IEM_ASOS_URL = (
+    "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?"
+    "station={station}&data=tmpf,dwpf,sknt,metar"
+    "&year1={y1}&month1={m1}&day1={d1}&hour1=0&minute1=0"
+    "&year2={y2}&month2={m2}&day2={d2}&hour2=0&minute2=0"
+    "&tz=Etc%2FUTC&format=onlycomma&latlon=no&missing=null&trace=null"
+    "&direct=yes&report_type=3&report_type=4"
+)
+
+# ---------------------------------------------------------------------------
+# Kalshi
+# ---------------------------------------------------------------------------
+KALSHI_BASE_URL = os.getenv("KALSHI_BASE_URL", "https://api.elections.kalshi.com/trade-api/v2")
+KALSHI_API_KEY_ID = os.getenv("KALSHI_API_KEY_ID", "")
+KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH", "")
+PAPER_MODE = os.getenv("PAPER_MODE", "true").lower() == "true"
+
+# Kalshi fee model (as of 2026-04). Formula: round_up(0.07 * C * P * (1 - P))
+KALSHI_FEE_COEFF = 0.07
+
+# ---------------------------------------------------------------------------
+# Risk / sizing
+# ---------------------------------------------------------------------------
+BANKROLL_USD = float(os.getenv("BANKROLL_USD", "1000"))
+MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.02"))
+KELLY_FRACTION = float(os.getenv("KELLY_FRACTION", "0.25"))
+MIN_EDGE_BPS = int(os.getenv("MIN_EDGE_BPS", "200"))   # 200 bps = 2 cents per $1
