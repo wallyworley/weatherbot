@@ -192,7 +192,7 @@ def get_station_bias(station: str, model: str, var: str, month: int, lead_day: i
             ORDER BY ABS(lead_day - %s) ASC, lead_day ASC
             LIMIT 1
         """
-        cur.execute(sql_nearest, (station, model, var, month, lead_day, lead_day))
+        cur.execute(sql_nearest, (station, model, var, month, lead_day))
         return cur.fetchone()
 
 
