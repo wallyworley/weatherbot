@@ -41,8 +41,14 @@ STATIONS: dict[str, Station] = {
     "KPHL": Station("KPHL", "Philadelphia Intl",     39.8744, -75.2424, "America/New_York"),
 }
 
-# MVP scope.
-ACTIVE_STATIONS: list[str] = ["KNYC"]
+# Two-list split: fetchers ingest data + bias is computed for FETCH stations,
+# but only TRADE stations actually have markets scored and paper-filled.
+# A station graduates from fetch-only to trade-eligible once its bias table
+# has sample_size >= 10 for the current month at lead_day in {0,1,2}.
+ACTIVE_FETCH_STATIONS: list[str] = ["KNYC", "KORD", "KMIA"]
+ACTIVE_TRADE_STATIONS: list[str] = ["KNYC"]
+# Backwards-compat alias — all existing fetcher / retrain code uses this name.
+ACTIVE_STATIONS: list[str] = ACTIVE_FETCH_STATIONS
 
 # ---------------------------------------------------------------------------
 # NOAA data sources (NOAA Big Data Program — free, fast, public S3)

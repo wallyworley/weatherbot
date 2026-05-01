@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from weather_bot.config import ACTIVE_STATIONS, BANKROLL_USD, PAPER_MODE
+from weather_bot.config import ACTIVE_TRADE_STATIONS, BANKROLL_USD, PAPER_MODE
 from weather_bot.data import persistence
 from weather_bot.data.persistence import connect
 from weather_bot.models.distribution import build_station_distribution
@@ -35,7 +35,7 @@ def _load_open_markets() -> list[dict]:
        AND valid_date >= CURRENT_DATE
     """
     with connect() as conn, conn.cursor() as cur:
-        cur.execute(sql, (ACTIVE_STATIONS,))
+        cur.execute(sql, (ACTIVE_TRADE_STATIONS,))
         return cur.fetchall()
 
 
