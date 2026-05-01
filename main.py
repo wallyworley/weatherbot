@@ -19,9 +19,31 @@ from datetime import datetime, timezone
 from weather_bot.config import ACTIVE_TRADE_STATIONS, BANKROLL_USD, PAPER_MODE
 from weather_bot.data import persistence
 from weather_bot.data.persistence import connect
+from weather_bot.models.bias_correction import is_station_calibrated
 from weather_bot.models.distribution import build_station_distribution
 from weather_bot.strategy import ev
 from weather_bot.strategy.kalshi_client import KalshiClient
+
+
+def _tripwire_red_stations() -> set[str]:
+    """Stations currently flagged RED by the health-check tripwire.
+
+    main.py refuses to open new positions on these stations until a human
+    acknowledges the alert (sets acknowledged_at on the latest row).
+    """
+    sql = """
+    SELECT DISTINCT station FROM health_check_latest
+     WHERE status = 'RED' AND acknowledged_at IS NULL AND station != 'GLOBAL'
+    """
+    try:
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute(sql)
+            return {r["station"] for r in cur.fetchall()}
+    except Exception as exc:
+        # Health table may not exist yet on first deploy. Fail open: never
+        # let a missing tripwire table BLOCK trading. Logged so it's visible.
+        log.warning("tripwire query failed (failing open): %s", exc)
+        return set()
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +112,9 @@ def run():
     persistence.bootstrap_stations()
     client = KalshiClient()
     markets = _load_open_markets()
+    red_stations = _tripwire_red_stations()
+    if red_stations:
+        log.warning("TRIPWIRE: stations flagged RED — refusing new positions: %s", sorted(red_stations))
     log.info("Evaluating %d open markets (paper_mode=%s)", len(markets), PAPER_MODE)
 
     cache: dict[tuple[str, str, str], object] = {}
@@ -109,6 +134,22 @@ def run():
         yes_ask, yes_bid = _load_orderbook_top(client, m["ticker"])
 
         sig = ev.evaluate(m["ticker"], fair_prob, yes_ask, yes_bid, bankroll=BANKROLL_USD)
+
+        # Pre-trade safety gates: tripwire (calibration drift) + bias staleness.
+        # These short-circuit OPEN→SKIP without touching the model. The original
+        # signal still gets logged so the dashboard can surface "would have
+        # opened but for X" for diagnostic purposes.
+        if sig.action == "OPEN" and m["station"] in red_stations:
+            sig.action = "SKIP"
+            sig.skip_reason = "TRIPWIRE_RED"
+            sig.notes = f"TRIPWIRE_RED|station={m['station']} {sig.notes}"
+        if sig.action == "OPEN":
+            lead_day = (m["valid_date"] - now_utc.date()).days
+            eligible, reason = is_station_calibrated(m["station"], m["var"], m["valid_date"], lead_day)
+            if not eligible:
+                sig.action = "SKIP"
+                sig.skip_reason = "BIAS_GATE"
+                sig.notes = f"BIAS_GATE|{reason} {sig.notes}"
 
         # Divergence bypass: when bias-corrected fair disagrees sharply with the
         # market, ask whether the bias table is the source of disagreement by

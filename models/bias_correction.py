@@ -152,6 +152,45 @@ def recompute(end_date: date | None = None) -> None:
         log.info("Updated %d bias rows", len(rows))
 
 
+_MIN_SAMPLE_SIZE_FOR_TRADING = 10
+_MAX_BIAS_AGE_HOURS = 48
+
+
+def is_station_calibrated(
+    station: str,
+    var: str,
+    target_date: date,
+    lead_day: int,
+    min_n: int = _MIN_SAMPLE_SIZE_FOR_TRADING,
+    max_age_hours: float = _MAX_BIAS_AGE_HOURS,
+) -> tuple[bool, str | None]:
+    """Pre-trade safety gate: is this (station, var, month, lead_day) cell
+    fresh and well-sampled enough to trade?
+
+    Returns (eligible, skip_reason). When skip_reason is set, main.py should
+    force the signal to SKIP regardless of computed edge. This is the
+    safety rail that lets us add new fetch-only stations without those
+    stations accidentally trading uncalibrated.
+    """
+    row = persistence.get_station_bias(station, "NBM_QMD", var, target_date.month, max(lead_day, 0))
+    if row is None:
+        return False, f"BIAS_MISSING|station={station}|month={target_date.month}|lead={lead_day}"
+
+    n = int(row.get("sample_size") or 0)
+    if n < min_n:
+        return False, f"BIAS_THIN|n={n}<{min_n}"
+
+    updated_at = row.get("updated_at")
+    if updated_at is not None:
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        age_h = (datetime.now(tz=timezone.utc) - updated_at).total_seconds() / 3600.0
+        if age_h > max_age_hours:
+            return False, f"BIAS_STALE|age={age_h:.1f}h>{max_age_hours}h"
+
+    return True, None
+
+
 def apply_bias(
     raw_value: float,
     station: str,

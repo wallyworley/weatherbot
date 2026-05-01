@@ -227,7 +227,69 @@ For each job above, create a `~/Library/LaunchAgents/com.weatherbot.<job>.plist`
 | `jobs.retrain_bias` | Recompute rolling 30-day station bias | Once daily, after settlement |
 | `jobs.paper_report` | P&L summary + expected-vs-realized edge | Once daily, after retrain |
 | `jobs.nightly_verify` | Brier / CRPS / reliability metrics | Once daily (slow) |
+| `jobs.health_check` | Hourly tripwire (DATA/MODEL/MARKETS/RISK/PNL → GREEN/AMBER/RED) | Every 30 min |
+| `jobs.bias_drift` | Snapshot bias + flag >2σ overnight moves | Once daily, after retrain |
 | `jobs.backfill_history` | One-off historical backfill | Once at setup, then ad hoc |
+
+## Stations
+
+The bot operates on two station lists:
+
+- **`ACTIVE_FETCH_STATIONS`** — fetchers ingest data and bias_correction trains
+  per-station tables for everything in this list. Default: `["KNYC", "KORD", "KMIA"]`.
+- **`ACTIVE_TRADE_STATIONS`** — only stations in this list have markets scored
+  and paper-filled. Default: `["KNYC"]`.
+
+A station graduates from fetch-only to trade-eligible once its bias table has
+`sample_size >= 10` for the current month at lead_day in `{0,1,2}`. Promote by
+adding the code to `ACTIVE_TRADE_STATIONS` in `config.py`. The pre-trade bias
+gate in `main.py` will short-circuit any signal whose bias cell is missing,
+thin (n<10), or stale (>48h) — so a misconfigured promotion fails safely
+rather than trading uncalibrated.
+
+## Command center (Streamlit dashboard)
+
+A live read of bot health, calibration, trading state, and deep-dive tools
+runs at `http://127.0.0.1:8501` once the dashboard launchd agent is loaded.
+
+```bash
+# Start manually (foreground, for development)
+.venv/bin/streamlit run dashboard/app.py --server.address 127.0.0.1 --server.port 8501
+
+# Or run as a launchd agent (auto-start at login, restart on crash)
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.walter.weatherbot-dashboard.plist
+```
+
+Four tabs:
+
+- **Status** — five-second health check. Six tiles (DATA, MODEL, MARKETS, RISK,
+  P&L, ALERTS) green/amber/red. Click "Ack" to clear a RED alert and unblock
+  the trade loop.
+- **Calibration** — daily expected-vs-realized edge with threshold band,
+  reliability diagram, and bias drift events. **This is the tab that would
+  have caught the 2026-04-30 calibration collapse on 04-29.**
+- **Trading** — open positions with mark-to-market, today's signals (filterable
+  by action), and live distribution preview with Kalshi buckets shaded.
+- **Deep Dive** — counterfactual replay engine (re-score historical fills
+  under hypothetical parameters), NBM cycle inspector, per-fill ledger.
+
+Every tab has an "ℹ️ How to read this tab" expander; every metric has a
+tooltip. Toggle help panels off in the sidebar once you've internalised them.
+
+### Autonomy guardrails
+
+The bot will refuse to open new positions on a station when **any** of these
+fire — without a human in the loop:
+
+1. **Bias-staleness gate** — `(station, var, month, lead_day)` cell missing,
+   has `sample_size < 10`, or `updated_at > 48h` ago. Skip reason: `BIAS_GATE`.
+2. **Tripwire RED** — health_check has the station flagged RED on
+   MODEL/RISK/PNL, and no human has acked. Skip reason: `TRIPWIRE_RED`.
+3. **Divergence guardrail** — `|fair − market_mid| > 0.50`. Skip reason:
+   `DIVERGENCE`.
+
+The system will *never* graduate a station to trading or relax a safety rail
+on its own — those are explicit `config.py` commits.
 
 ## Paper-trade graduation checklist
 

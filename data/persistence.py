@@ -178,21 +178,49 @@ def get_station_bias(station: str, model: str, var: str, month: int, lead_day: i
     """
     sql_exact = """SELECT * FROM station_bias
                    WHERE station=%s AND model=%s AND var=%s AND month=%s AND lead_day=%s"""
+    sql_nearest_lead = """
+        SELECT * FROM station_bias
+         WHERE station=%s AND model=%s AND var=%s AND month=%s AND lead_day >= 1
+         ORDER BY ABS(lead_day - %s) ASC, lead_day ASC
+         LIMIT 1
+    """
+    # Month-fallback: when the exact month has no rows (typical on the 1st
+    # day of the month before that month's first nightly retrain), fall back
+    # to the nearest month in the calendar by absolute distance, using a
+    # cyclic 12-month metric. The lead-0 boundary still applies.
+    sql_nearest_month_exact_lead = """
+        SELECT *,
+               LEAST(ABS(month - %s), 12 - ABS(month - %s)) AS month_dist
+          FROM station_bias
+         WHERE station=%s AND model=%s AND var=%s AND lead_day=%s
+         ORDER BY month_dist ASC, sample_size DESC
+         LIMIT 1
+    """
+    sql_nearest_month_any_lead = """
+        SELECT *,
+               LEAST(ABS(month - %s), 12 - ABS(month - %s)) AS month_dist
+          FROM station_bias
+         WHERE station=%s AND model=%s AND var=%s AND lead_day >= 1
+         ORDER BY month_dist ASC, ABS(lead_day - %s) ASC, lead_day ASC
+         LIMIT 1
+    """
     with connect() as conn, conn.cursor() as cur:
         cur.execute(sql_exact, (station, model, var, month, lead_day))
         row = cur.fetchone()
         if row:
             return row
-        # Lead-0 is its own regime — refuse to cross the boundary.
+        # Same-month, nearest-lead fallback (preserves lead-0 boundary).
+        if lead_day != 0:
+            cur.execute(sql_nearest_lead, (station, model, var, month, lead_day))
+            row = cur.fetchone()
+            if row:
+                return row
+        # Cross-month fallback. lead-0 is preserved at lead-0; lead>=1 may
+        # match nearest available lead in the chosen month.
         if lead_day == 0:
-            return None
-        sql_nearest = """
-            SELECT * FROM station_bias
-            WHERE station=%s AND model=%s AND var=%s AND month=%s AND lead_day >= 1
-            ORDER BY ABS(lead_day - %s) ASC, lead_day ASC
-            LIMIT 1
-        """
-        cur.execute(sql_nearest, (station, model, var, month, lead_day))
+            cur.execute(sql_nearest_month_exact_lead, (month, month, station, model, var, lead_day))
+            return cur.fetchone()
+        cur.execute(sql_nearest_month_any_lead, (month, month, station, model, var, lead_day))
         return cur.fetchone()
 
 

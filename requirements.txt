@@ -12,3 +12,7 @@ python-dotenv>=1.0
 pydantic>=2.6
 tenacity>=8.2
 pytz>=2024.1
+# Dashboard
+streamlit>=1.30
+streamlit-autorefresh>=1.0
+plotly>=5.18

@@ -153,3 +153,69 @@ CREATE INDEX IF NOT EXISTS idx_metar_time      ON metar_obs (station, obs_time D
 CREATE INDEX IF NOT EXISTS idx_market_date     ON kalshi_market (station, valid_date);
 CREATE INDEX IF NOT EXISTS idx_signal_ticker   ON signal (ticker, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_snapshot_ts     ON market_snapshot (ts);
+
+-- ---------------------------------------------------------------------------
+-- Health & autonomy tables
+-- ---------------------------------------------------------------------------
+
+-- Hourly health-check snapshots. The dashboard reads from here; the trade
+-- loop reads from here to short-circuit when status is RED.
+CREATE TABLE IF NOT EXISTS health_check (
+    ts                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    station             TEXT NOT NULL,                 -- 'GLOBAL' for system-wide
+    component           TEXT NOT NULL,                 -- 'DATA' | 'MODEL' | 'MARKETS' | 'RISK' | 'PNL'
+    status              TEXT NOT NULL,                 -- 'GREEN' | 'AMBER' | 'RED'
+    metric_value        DOUBLE PRECISION,              -- the metric that drove status (Brier, edge_diff, lag_min, etc.)
+    threshold_amber     DOUBLE PRECISION,
+    threshold_red       DOUBLE PRECISION,
+    detail              JSONB,                         -- structured detail for the dashboard
+    acknowledged_at     TIMESTAMPTZ,
+    acknowledged_by     TEXT,
+    PRIMARY KEY (ts, station, component)
+);
+
+CREATE INDEX IF NOT EXISTS idx_health_recent ON health_check (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_health_status ON health_check (status, ts DESC) WHERE status IN ('AMBER', 'RED');
+
+-- Latest-status view. The trade loop reads this to decide whether to skip.
+CREATE OR REPLACE VIEW health_check_latest AS
+SELECT DISTINCT ON (station, component)
+       station, component, ts, status, metric_value, detail, acknowledged_at
+  FROM health_check
+ ORDER BY station, component, ts DESC;
+
+-- Snapshot of station_bias for drift detection. One row per (snapshot_date,
+-- station, model, var, month, lead_day). The drift detector compares
+-- yesterday's snapshot to today's bias and flags >2σ moves.
+CREATE TABLE IF NOT EXISTS station_bias_history (
+    snapshot_date  DATE NOT NULL,
+    station        TEXT NOT NULL,
+    model          TEXT NOT NULL,
+    var            TEXT NOT NULL,
+    month          INT NOT NULL,
+    lead_day       INT NOT NULL,
+    mean_bias_f    DOUBLE PRECISION NOT NULL,
+    stddev_f       DOUBLE PRECISION NOT NULL,
+    sample_size    INT NOT NULL,
+    PRIMARY KEY (snapshot_date, station, model, var, month, lead_day)
+);
+
+-- Bias drift events — one row per detected anomaly. Dashboard reads these
+-- to surface "did our fetcher break again?" type incidents.
+CREATE TABLE IF NOT EXISTS bias_drift_event (
+    id              BIGSERIAL PRIMARY KEY,
+    detected_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    station         TEXT NOT NULL,
+    model           TEXT NOT NULL,
+    var             TEXT NOT NULL,
+    month           INT NOT NULL,
+    lead_day        INT NOT NULL,
+    prev_mean       DOUBLE PRECISION NOT NULL,
+    new_mean        DOUBLE PRECISION NOT NULL,
+    delta_sigma     DOUBLE PRECISION NOT NULL,         -- how many σ the move was
+    sample_size     INT NOT NULL,
+    severity        TEXT NOT NULL,                     -- 'WATCH' | 'ALERT'
+    acknowledged_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_drift_recent ON bias_drift_event (detected_at DESC);
