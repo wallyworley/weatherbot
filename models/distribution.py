@@ -253,11 +253,14 @@ def build_station_distribution(
         )
         # Inflate interior knots to match empirical residual std, but CAP the
         # widening factor. The bias table's stddev_f comes from small samples
-        # (n~18) and can overshoot the true forecast width. Unbounded rescaling
-        # produced bimodal-looking distributions with 76% mass in the tails;
-        # capping at 1.5x keeps the shape plausible while still correcting
-        # under-dispersion.
-        _MAX_WIDEN_FACTOR = 1.5
+        # and can overshoot the true forecast width. Unbounded rescaling
+        # produced bimodal-looking distributions with 76% mass in the tails.
+        # 1.5x was the original cap; backtest on 58 settled fills (May 1 2026)
+        # showed shoulder buckets 3-5°F from median were still over-inflated,
+        # producing a cluster of YES-side fills at fair=30-45% / market=5-20%
+        # that lost 7-of-8. Tightening to 1.10x improved Brier 0.139→0.133 and
+        # replay P&L by ~$20 while preserving high-divergence (>=0.40) home runs.
+        _MAX_WIDEN_FACTOR = 1.10
         if target_std > 0 and len(cdf.values) >= 2:
             cur_p90 = float(np.interp(0.90, cdf.probs, cdf.values))
             cur_p10 = float(np.interp(0.10, cdf.probs, cdf.values))
