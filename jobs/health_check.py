@@ -49,10 +49,15 @@ DEFAULT_THRESHOLDS = {
 }
 
 FEED_CADENCE_MIN = {
-    "NBM": 360,    # 6h between cycles
+    "NBM": 360,    # 6h between cycles (00/06/12/18Z)
     "HRRR": 60,    # hourly
-    "METAR": 30,   # every 30 min
-    "KALSHI": 15,  # every 15 min
+    # METAR observations are produced hourly at major airport stations (with
+    # occasional SPECI bulletins on rapid weather change). The launchd
+    # fetcher cron also runs hourly. Right after the top of the hour the
+    # newest obs is ~0min old; right before it's ~60min old. We don't want
+    # AMBER to fire just because we're approaching the next observation.
+    "METAR": 60,
+    "KALSHI": 15,
 }
 
 
