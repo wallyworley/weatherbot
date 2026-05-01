@@ -276,6 +276,31 @@ Four tabs:
 Every tab has an "ℹ️ How to read this tab" expander; every metric has a
 tooltip. Toggle help panels off in the sidebar once you've internalised them.
 
+### Text alerts
+
+When the health-check job sees something flip RED, it fires a **native macOS
+Notification Center** alert and (optionally) an **iMessage** to a phone
+number. Each RED event alerts exactly once — won't fire again until it
+resolves and goes red again later.
+
+```dotenv
+# .env additions
+ALERTS_ENABLED=true              # default true; set false to mute everything
+ALERT_PHONE=+15551234567         # optional; iMessage target. Omit for notifications only.
+```
+
+For iMessage to actually send, **Messages.app must be configured with iMessage
+on this Mac** and the target phone must be reachable via iMessage. On the
+first send, macOS will prompt to authorize Messages.app to be controlled
+programmatically — accept the dialog and subsequent sends will go through
+silently.
+
+To test: inject a synthetic RED row and run alerts manually:
+
+```bash
+.venv/bin/python -m weather_bot.jobs.alerts
+```
+
 ### Autonomy guardrails
 
 The bot will refuse to open new positions on a station when **any** of these

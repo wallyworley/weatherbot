@@ -267,7 +267,7 @@ def _upsert_health(rows: Iterable[dict]) -> None:
         conn.commit()
 
 
-def run(thresholds: dict | None = None) -> list[dict]:
+def run(thresholds: dict | None = None, fire_alerts: bool = True) -> list[dict]:
     th = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
     rows: list[dict] = []
     rows += _data_freshness(th)
@@ -281,6 +281,14 @@ def run(thresholds: dict | None = None) -> list[dict]:
              sum(1 for r in rows if r["status"] == "RED"),
              sum(1 for r in rows if r["status"] == "AMBER"),
              sum(1 for r in rows if r["status"] == "GREEN"))
+    if fire_alerts:
+        # Imported lazily to keep health_check importable in environments
+        # without alert dependencies (no Messages.app, no osascript).
+        from weather_bot.jobs import alerts
+        try:
+            alerts.fire()
+        except Exception as exc:
+            log.warning("alerts.fire() raised — continuing: %s", exc)
     return rows
 
 

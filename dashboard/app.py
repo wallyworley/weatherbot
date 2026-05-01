@@ -35,9 +35,12 @@ with st.sidebar:
     show_help = st.toggle("Show help panels", value=True,
                           help="Expand legend / explanation text on each tab.")
     st.divider()
-    st.caption("**Trade-eligible:** " + ", ".join(queries.trade_eligible_stations()))
-    st.caption("**Fetch-only:** " + ", ".join(s for s in queries.fetch_stations()
+    st.caption("**Trading:** " + ", ".join(queries.trade_eligible_stations()))
+    st.caption("**Gathering data only:** " + ", ".join(s for s in queries.fetch_stations()
                                               if s not in queries.trade_eligible_stations()))
+    st.divider()
+    with st.expander("📖 Glossary — what these terms mean"):
+        st.markdown(help_text.GLOSSARY)
 
 
 # ---------------------------------------------------------------------------

@@ -171,6 +171,7 @@ CREATE TABLE IF NOT EXISTS health_check (
     detail              JSONB,                         -- structured detail for the dashboard
     acknowledged_at     TIMESTAMPTZ,
     acknowledged_by     TEXT,
+    alerted_at          TIMESTAMPTZ,                   -- set once macOS notification (and optional iMessage) was sent
     PRIMARY KEY (ts, station, component)
 );
 
