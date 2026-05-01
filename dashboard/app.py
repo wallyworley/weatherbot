@@ -21,11 +21,11 @@ from streamlit_autorefresh import st_autorefresh
 from weather_bot.dashboard import help_text, queries, replay as replay_engine
 from weather_bot.data import persistence
 
-st.set_page_config(page_title="weather_bot · command center", layout="wide", page_icon="🌡️")
+st.set_page_config(page_title="weather_bot · Command Center", layout="wide", page_icon="🌡️")
 
 # Auto-refresh every 15s, but allow user to pause from sidebar.
 with st.sidebar:
-    st.title("⚙️ controls")
+    st.title("⚙️ Controls")
     auto_refresh = st.toggle("Auto-refresh (15s)", value=True,
                               help="Disable when investigating to keep your scroll position.")
     if auto_refresh:
@@ -39,7 +39,7 @@ with st.sidebar:
     st.caption("**Gathering data only:** " + ", ".join(s for s in queries.fetch_stations()
                                               if s not in queries.trade_eligible_stations()))
     st.divider()
-    with st.expander("📖 Glossary — what these terms mean"):
+    with st.expander("📖 Glossary — What These Terms Mean"):
         st.markdown(help_text.GLOSSARY)
 
 
@@ -84,7 +84,7 @@ def overall_status(rows: pd.DataFrame, components: list[str], stations_filter: s
 # ---------------------------------------------------------------------------
 def tab_status():
     if show_help:
-        with st.expander("ℹ️ How to read this tab", expanded=False):
+        with st.expander("ℹ️ How to Read This Tab", expanded=False):
             st.markdown(help_text.STATUS_TAB)
 
     health = queries.latest_health()
@@ -139,7 +139,7 @@ def tab_status():
     st.divider()
 
     # Detailed health table with ack buttons
-    st.subheader("Detail rows", anchor=False,
+    st.subheader("Detail Rows", anchor=False,
                  help="One row per (station, component). Acknowledging clears the trade-loop block.")
     display = health.copy()
     display["status"] = display["status"].map(lambda s: f"{EMOJI.get(s,'')} {s}")
@@ -180,7 +180,7 @@ def _ack_alert(station: str, component: str):
 
 def tab_calibration():
     if show_help:
-        with st.expander("ℹ️ How to read this tab", expanded=False):
+        with st.expander("ℹ️ How to Read This Tab", expanded=False):
             st.markdown(help_text.CALIBRATION_TAB)
 
     daily = queries.daily_calibration(days_back=14)
@@ -192,7 +192,7 @@ def tab_calibration():
     daily["edge_diff_per_fill"] = daily["edge_diff"] / daily["n"]
 
     # Edge-gap line chart with threshold band
-    st.subheader("Daily expected vs realized edge",
+    st.subheader("Daily Expected vs Realized Edge",
                  help=help_text.METRIC_TOOLTIPS["edge_gap"])
     fig = go.Figure()
     for station in daily["station"].unique():
@@ -211,7 +211,7 @@ def tab_calibration():
     st.plotly_chart(fig, use_container_width=True)
 
     # Reliability diagram
-    st.subheader("Reliability diagram (last 30 days)",
+    st.subheader("Reliability Diagram (Last 30 Days)",
                  help="Forecast probability deciles vs realized win frequency. "
                       "On a calibrated model, points sit on the diagonal.")
     rel = queries.reliability_bins(days_back=30)
@@ -234,7 +234,7 @@ def tab_calibration():
         st.plotly_chart(fig2, use_container_width=True)
 
     # Bias drift events
-    st.subheader("Bias drift events (last 7 days)",
+    st.subheader("Bias Drift Events (Last 7 Days)",
                  help=help_text.METRIC_TOOLTIPS["delta_sigma"])
     drift = queries.bias_drift_recent(hours=24*7)
     if drift.empty:
@@ -245,11 +245,11 @@ def tab_calibration():
 
 def tab_trading():
     if show_help:
-        with st.expander("ℹ️ How to read this tab", expanded=False):
+        with st.expander("ℹ️ How to Read This Tab", expanded=False):
             st.markdown(help_text.TRADING_TAB)
 
     # Open positions
-    st.subheader("Open positions", help=help_text.METRIC_TOOLTIPS["open_n"])
+    st.subheader("Open Positions", help=help_text.METRIC_TOOLTIPS["open_n"])
     pos = queries.open_positions()
     if pos.empty:
         st.info("No open positions.")
@@ -267,7 +267,7 @@ def tab_trading():
                       use_container_width=True, hide_index=True)
 
     # Today's signals
-    st.subheader("Signals today (every tick)",
+    st.subheader("Signals Today (Every Tick)",
                  help="Every market scored by the trade loop today. "
                       "Filter by action to see what was opened vs skipped.")
     sigs = queries.signals_today()
@@ -286,7 +286,7 @@ def tab_trading():
                       use_container_width=True, hide_index=True)
 
     # Distribution preview
-    st.subheader("Distribution preview (today)",
+    st.subheader("Distribution Preview (Today)",
                  help="Current NBM CDF after bias correction + HRRR blend, "
                       "with Kalshi market buckets shaded. Eyeball check: are we agreeing with the market?")
     today = date.today()
@@ -323,10 +323,10 @@ def _render_distribution(station, target_date, var, inputs, buckets):
 
 def tab_deep_dive():
     if show_help:
-        with st.expander("ℹ️ How to read this tab", expanded=False):
+        with st.expander("ℹ️ How to Read This Tab", expanded=False):
             st.markdown(help_text.DEEP_DIVE_TAB)
 
-    st.subheader("Counterfactual replay",
+    st.subheader("Counterfactual Replay",
                  help="Re-score historical settled fills under hypothetical model parameters.")
 
     cols = st.columns(4)
@@ -367,7 +367,7 @@ def tab_deep_dive():
 
     st.divider()
     # NBM cycle inspector
-    st.subheader("NBM cycle inspector",
+    st.subheader("NBM Cycle Inspector",
                  help="Adjacent cycles disagreeing by >3°F is the visible signature of a data ingestion bug.")
     cols = st.columns(3)
     with cols[0]:
@@ -398,7 +398,7 @@ def tab_deep_dive():
 
     st.divider()
     # Per-fill ledger
-    st.subheader("Per-fill ledger",
+    st.subheader("Per-Fill Ledger",
                  help="Every settled fill with: divergence at fill time, fair vs market, won/lost, net P&L. "
                       "Sortable. Surfaced from per_fill_ledger() query.")
     ledger = queries.per_fill_ledger(days_back=14)
@@ -409,9 +409,9 @@ def tab_deep_dive():
 # ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
-st.title("🌡️ weather_bot · command center")
+st.title("🌡️ weather_bot · Command Center")
 if show_help:
-    with st.expander("ℹ️ How to use this dashboard", expanded=False):
+    with st.expander("ℹ️ How to Use This Dashboard", expanded=False):
         st.markdown(help_text.OVERVIEW)
 
 tabs = st.tabs(["📊 Status", "📐 Calibration", "💱 Trading", "🔬 Deep Dive"])
