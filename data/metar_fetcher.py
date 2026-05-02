@@ -26,6 +26,8 @@ from weather_bot.config import (
     AVIATION_WEATHER_METAR_URL,
     AVIATION_WEATHER_METAR_URL_DATED,
     METAR_BACKFILL_CHUNK_HOURS,
+    METAR_GUARD_MAX_DELTA_F,
+    METAR_GUARD_WINDOW_MIN,
     STATIONS,
     Station,
 )
@@ -111,6 +113,82 @@ def fetch_range(station: str, hours_back: int, end_utc: datetime | None = None) 
     return list(out.values())
 
 
+def filter_implausible_swings(rows: list[dict],
+                                max_delta_f: float = METAR_GUARD_MAX_DELTA_F,
+                                window_min: int = METAR_GUARD_WINDOW_MIN) -> list[dict]:
+    """Drop METAR rows that show physically implausible temperature swings vs
+    the most recent prior reading (in-batch or in DB).
+
+    Catches stale-data bugs (e.g., NWS station API occasionally returning
+    afternoon-warm readings mixed into overnight sequences — confirmed real
+    issue in dailydewpoint.com's April 5 release notes) BEFORE they pollute
+    daily TMAX, bias correction, or settlement reconciliation.
+
+    Conservative defaults: 10°F in 30 min. Real weather can swing 6-8°F in
+    that window during convective passage; we only catch the impossible
+    ones. Tune via METAR_GUARD_MAX_DELTA_F / METAR_GUARD_WINDOW_MIN env vars.
+    """
+    by_station: dict[str, list[dict]] = {}
+    for r in rows:
+        by_station.setdefault(r["station"], []).append(r)
+
+    kept_total: list[dict] = []
+    dropped_total = 0
+    for station, station_rows in by_station.items():
+        station_rows.sort(key=lambda r: r["obs_time"])
+        # Boundary check: most recent prior obs already in DB
+        db_prev = None
+        try:
+            with persistence.connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT temp_f, obs_time FROM metar_obs WHERE station=%s "
+                    "ORDER BY obs_time DESC LIMIT 1",
+                    (station,),
+                )
+                r = cur.fetchone()
+                if r and r["temp_f"] is not None:
+                    db_prev = (float(r["temp_f"]), r["obs_time"])
+        except Exception as exc:
+            log.warning("metar guard: DB lookup for %s failed (%s); skipping boundary check", station, exc)
+
+        kept: list[dict] = []
+        for new in station_rows:
+            new_temp = new.get("temp_f")
+            new_time = new["obs_time"]
+            if new_temp is None:
+                kept.append(new)
+                continue
+
+            # Find most recent prior reading: last kept row, or DB row, whichever is newer.
+            prior = None
+            if kept:
+                last_kept = next((k for k in reversed(kept) if k.get("temp_f") is not None), None)
+                if last_kept is not None:
+                    prior = (float(last_kept["temp_f"]), last_kept["obs_time"])
+            if (prior is None or (db_prev is not None and db_prev[1] > prior[1])) and db_prev is not None:
+                if db_prev[1] < new_time:
+                    prior = db_prev
+
+            if prior is not None:
+                dt_min = (new_time - prior[1]).total_seconds() / 60.0
+                if 0 < dt_min < window_min:
+                    delta = abs(new_temp - prior[0])
+                    if delta > max_delta_f:
+                        log.warning(
+                            "metar guard: dropped %s @ %s (temp=%.1f°F, prior=%.1f°F at %s, "
+                            "Δ=%.1f°F in %.0f min — implausible)",
+                            station, new_time, new_temp, prior[0], prior[1], delta, dt_min,
+                        )
+                        dropped_total += 1
+                        continue
+            kept.append(new)
+        kept_total.extend(kept)
+
+    if dropped_total:
+        log.info("metar guard: dropped %d/%d rows as implausible", dropped_total, len(rows))
+    return kept_total
+
+
 def compute_daily(station: Station, metars: Iterable[dict], day: date) -> dict | None:
     """Compute Tmax/Tmin for `day` in the station's local timezone.
 
@@ -147,8 +225,12 @@ def run(hours: int = 36, days_back: int = 2) -> None:
     for code in ACTIVE_STATIONS:
         station = STATIONS[code]
         metars = fetch(code, hours)
+        # Guard against implausible swings BEFORE compute_daily runs so
+        # corrupt readings don't pollute daily TMAX (and downstream bias
+        # correction). Filter is per-station to give clean prior-comparison.
+        metars = filter_implausible_swings(metars)
         all_metars.extend(metars)
-        log.info("METAR: %s fetched=%d", code, len(metars))
+        log.info("METAR: %s fetched=%d (post-guard)", code, len(metars))
 
         today_local = datetime.now(tz=pytz.timezone(station.tz)).date()
         for offset in range(days_back + 1):

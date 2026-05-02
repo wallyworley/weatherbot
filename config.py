@@ -126,6 +126,14 @@ AVIATION_WEATHER_METAR_URL_DATED = (
 # API reliably returns ~72h per call. We chunk historical pulls in this window.
 METAR_BACKFILL_CHUNK_HOURS = 72
 
+# METAR sanity filter — drops physically implausible temperature swings
+# (e.g., NWS station API occasionally returns stale afternoon-warm readings
+# mixed into overnight sequences, which would corrupt daily TMAX and pollute
+# bias correction). Conservative defaults — real weather can swing 6-8°F in
+# 30 min during convective passage, so we only catch the extremes.
+METAR_GUARD_MAX_DELTA_F = float(os.getenv("METAR_GUARD_MAX_DELTA_F", "10.0"))
+METAR_GUARD_WINDOW_MIN  = int(os.getenv("METAR_GUARD_WINDOW_MIN", "30"))
+
 # Iowa Environmental Mesonet (IEM) ASOS archive — canonical historical METAR
 # source. aviationweather.gov's dated endpoint is unreliable beyond ~48h, so we
 # use IEM for backfill and aviationweather.gov for live pulls.

@@ -310,6 +310,87 @@ def vote_distribution_today() -> pd.DataFrame:
     """)
 
 
+def forecast_audit_log(station: str, valid_date) -> pd.DataFrame:
+    """Chronological audit trail of every forecast issued for a (station, valid_date).
+
+    Combines NBM p50, HRRR daily-MAX, and GFS daily-MAX into one timeline so
+    the user can see how predictions evolved leading up to the day. Inspired
+    by dailydewpoint's "Detailed Forecast Log" panel — answers "did the model
+    keep flipping its mind?" and shows when each source last agreed/disagreed.
+    """
+    sql = """
+    WITH nbm AS (
+        SELECT 'NBM p50' AS source, run_time, value AS forecast_f
+          FROM prob_forecast
+         WHERE station=%s AND valid_date=%s AND var='TMAX_DAILY' AND percentile=50
+    ),
+    hrrr AS (
+        SELECT 'HRRR' AS source, run_time, MAX(value) AS forecast_f
+          FROM det_forecast
+         WHERE station=%s AND model='HRRR' AND var='TMP_2M'
+           AND valid_time::date = %s
+         GROUP BY run_time
+    ),
+    gfs AS (
+        SELECT 'GFS' AS source, run_time, MAX(value) AS forecast_f
+          FROM det_forecast
+         WHERE station=%s AND model='GFS' AND var='TMP_2M'
+           AND valid_time::date = %s
+         GROUP BY run_time
+    )
+    SELECT * FROM nbm UNION ALL SELECT * FROM hrrr UNION ALL SELECT * FROM gfs
+     ORDER BY run_time, source
+    """
+    return _df(sql, (station, valid_date, station, valid_date, station, valid_date))
+
+
+def nws_overnight_jump(station: str, valid_date) -> dict | None:
+    """How much did NBM revise the TMAX forecast for valid_date overnight?
+
+    Compares the latest NBM p50 issued before valid_date 00:00 UTC to the
+    earliest one issued at/after. Positive jump = NWS revised UP (typically
+    means actual will overshoot the new forecast); negative = revised DOWN.
+
+    Used as a reversal-risk signal — sharp overnight jumps are a "forecasters
+    just learned something" warning that the bot's distribution may be lagging.
+    """
+    sql = """
+    WITH nbm AS (
+        SELECT run_time, value
+          FROM prob_forecast
+         WHERE station=%s AND valid_date=%s AND var='TMAX_DAILY' AND percentile=50
+    ),
+    yest AS (
+        SELECT value AS v, run_time AS t FROM nbm
+         WHERE run_time::date < %s
+         ORDER BY run_time DESC LIMIT 1
+    ),
+    today AS (
+        SELECT value AS v, run_time AS t FROM nbm
+         WHERE run_time::date >= %s
+         ORDER BY run_time ASC LIMIT 1
+    )
+    SELECT (SELECT v FROM yest) AS yesterday_last_f,
+           (SELECT t FROM yest) AS yesterday_last_run,
+           (SELECT v FROM today) AS today_first_f,
+           (SELECT t FROM today) AS today_first_run
+    """
+    with persistence.connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, (station, valid_date, valid_date, valid_date))
+        r = cur.fetchone()
+    if not r or r["yesterday_last_f"] is None or r["today_first_f"] is None:
+        return None
+    return {
+        "station": station,
+        "valid_date": valid_date.isoformat() if hasattr(valid_date, "isoformat") else str(valid_date),
+        "yesterday_last_f": float(r["yesterday_last_f"]),
+        "yesterday_last_run": r["yesterday_last_run"].isoformat(),
+        "today_first_f": float(r["today_first_f"]),
+        "today_first_run": r["today_first_run"].isoformat(),
+        "jump_f": float(r["today_first_f"]) - float(r["yesterday_last_f"]),
+    }
+
+
 def temp_rate_of_change(station: str, lookback_hours: int = 2) -> dict | None:
     """Rate of temperature change (°F/hour) at a station over the recent past.
 

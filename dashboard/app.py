@@ -449,6 +449,7 @@ def tab_trading():
             rate = queries.temp_rate_of_change(st_code)
             field = queries.regional_temp_field(st_code)
             atmos = queries.atmos_daily_features(st_code, today)
+            overnight = queries.nws_overnight_jump(st_code, today)
 
             primary_temp = field["primary_temp"] if field else (rate["last_temp_f"] if rate else None)
             rate_str = ""
@@ -488,6 +489,31 @@ def tab_trading():
                 )
             else:
                 st.caption("No atmos data yet (pull_atmos hasn't run).")
+
+            # NWS overnight jump — yesterday's last vs today's first NBM forecast
+            if overnight is not None:
+                jump = overnight["jump_f"]
+                if abs(jump) >= 1.0:
+                    arrow = "🔺" if jump > 0 else "🔻"
+                    st.markdown(
+                        f"**NWS overnight jump**: {arrow} **{jump:+.1f}°F** "
+                        f"({overnight['yesterday_last_f']:.1f} → {overnight['today_first_f']:.1f})"
+                    )
+                else:
+                    st.caption(
+                        f"NWS overnight jump: {jump:+.1f}°F "
+                        f"({overnight['yesterday_last_f']:.1f} → {overnight['today_first_f']:.1f}, stable)"
+                    )
+
+            # Forecast audit trail — drill down to see how predictions evolved
+            with st.expander(f"📋 Forecast audit log ({st_code} today)", expanded=False):
+                audit = queries.forecast_audit_log(st_code, today)
+                if audit.empty:
+                    st.caption("No forecasts logged for today yet.")
+                else:
+                    st.caption(f"{len(audit)} forecast issuances chronologically (NBM p50, HRRR daily-MAX, GFS daily-MAX)")
+                    audit["forecast_f"] = audit["forecast_f"].round(1)
+                    st.dataframe(audit, use_container_width=True, hide_index=True, height=240)
     st.divider()
 
     # Open positions
