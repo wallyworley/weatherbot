@@ -1,6 +1,9 @@
 # Secrets and local config
 .env
 
+# Local Claude Code / agent state (per-machine; never commit)
+.claude/
+
 # Python
 .venv/
 __pycache__/
