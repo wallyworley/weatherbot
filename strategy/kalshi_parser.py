@@ -28,7 +28,10 @@ log = logging.getLogger(__name__)
 
 STATION_BY_CODE = {
     "NY":  "KNYC",
-    "CHI": "KORD",
+    # CHI = Chicago Midway (KMDW), NOT O'Hare. Verified 2026-05-02 from Kalshi
+    # rule text: "highest temperature recorded at Chicago Midway, IL...".
+    # Previously incorrectly mapped to KORD.
+    "CHI": "KMDW",
     "LA":  "KLAX",
     "MIA": "KMIA",
     "DEN": "KDEN",

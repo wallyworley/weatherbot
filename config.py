@@ -32,6 +32,10 @@ class Station:
 STATIONS: dict[str, Station] = {
     "KNYC": Station("KNYC", "New York Central Park", 40.7794, -73.9692, "America/New_York"),
     "KLGA": Station("KLGA", "New York LaGuardia",    40.7772, -73.8726, "America/New_York"),
+    # Kalshi NHIGH for Chicago resolves on **Midway (KMDW)** per the rule sheet,
+    # not O'Hare (KORD). Verified 2026-05-02 by inspecting market payloads
+    # ("highest temperature recorded at Chicago Midway, IL...").
+    "KMDW": Station("KMDW", "Chicago Midway",        41.7868, -87.7522, "America/Chicago"),
     "KORD": Station("KORD", "Chicago O'Hare",        41.9786, -87.9048, "America/Chicago"),
     "KLAX": Station("KLAX", "Los Angeles Intl",      33.9381, -118.3889, "America/Los_Angeles"),
     "KMIA": Station("KMIA", "Miami Intl",            25.7933, -80.2906, "America/New_York"),
@@ -41,12 +45,49 @@ STATIONS: dict[str, Station] = {
     "KPHL": Station("KPHL", "Philadelphia Intl",     39.8744, -75.2424, "America/New_York"),
 }
 
+# Neighbor stations for spatial-gradient triangulation around each primary
+# station. METAR is pulled for these alongside the primaries; daily TMAX is
+# NOT computed (they don't drive settlement) — they're purely diagnostic
+# inputs for "which way is the regional temperature field moving?".
+# Neighbors picked to span coastal/inland and N/S/E/W of the primary so the
+# spread is informative. Inspired by dailydewpoint.com's NYC panel.
+NEIGHBOR_STATIONS: dict[str, list[Station]] = {
+    "KNYC": [
+        Station("KJFK", "JFK Intl",       40.6398, -73.7789, "America/New_York"),
+        Station("KLGA", "LaGuardia",      40.7772, -73.8726, "America/New_York"),
+        Station("KEWR", "Newark Intl",    40.6925, -74.1687, "America/New_York"),
+        Station("KTEB", "Teterboro",      40.8501, -74.0608, "America/New_York"),
+        Station("KCDW", "Caldwell NJ",    40.8753, -74.2814, "America/New_York"),
+        Station("KSMQ", "Somerset NJ",    40.6260, -74.6700, "America/New_York"),
+    ],
+    "KMDW": [
+        Station("KORD", "Chicago O'Hare", 41.9786, -87.9048, "America/Chicago"),
+        Station("KDPA", "DuPage",         41.9078, -88.2486, "America/Chicago"),
+        Station("KPWK", "Palwaukee",      42.1142, -87.9015, "America/Chicago"),
+        Station("KGYY", "Gary IN",        41.6163, -87.4128, "America/Chicago"),
+    ],
+    "KMIA": [
+        Station("KFLL", "Ft Lauderdale",  26.0742, -80.1506, "America/New_York"),
+        Station("KOPF", "Opa-Locka",      25.9072, -80.2782, "America/New_York"),
+        Station("KHWO", "Hollywood",      26.0014, -80.2407, "America/New_York"),
+        Station("KTMB", "Kendall-Tamiami",25.6479, -80.4327, "America/New_York"),
+    ],
+}
+
+
 # Two-list split: fetchers ingest data + bias is computed for FETCH stations,
 # but only TRADE stations actually have markets scored and paper-filled.
 # A station graduates from fetch-only to trade-eligible once its bias table
 # has sample_size >= 10 for the current month at lead_day in {0,1,2}.
-ACTIVE_FETCH_STATIONS: list[str] = ["KNYC", "KORD", "KMIA"]
-ACTIVE_TRADE_STATIONS: list[str] = ["KNYC"]
+ACTIVE_FETCH_STATIONS: list[str] = ["KNYC", "KMDW", "KMIA"]
+# 2026-05-02: graduated KMDW + KMIA to active trading. All stations pass
+# bias gate at lead 0/1/2 per is_station_calibrated check. The pre-trade
+# BIAS_GATE remains the safety net.
+# 2026-05-02 LATER: discovered Kalshi's CHI markets resolve on KMDW (Midway),
+# not KORD (O'Hare). Switched Chicago station from KORD to KMDW. Bias tables
+# for KMDW will be empty initially → BIAS_GATE will block KMDW trades for
+# ~2-4 weeks until enough samples accumulate. Expected behavior.
+ACTIVE_TRADE_STATIONS: list[str] = ["KNYC", "KMDW", "KMIA"]
 # Backwards-compat alias — all existing fetcher / retrain code uses this name.
 ACTIVE_STATIONS: list[str] = ACTIVE_FETCH_STATIONS
 
@@ -107,6 +148,17 @@ PAPER_MODE = os.getenv("PAPER_MODE", "true").lower() == "true"
 
 # Kalshi fee model (as of 2026-04). Formula: round_up(0.07 * C * P * (1 - P))
 KALSHI_FEE_COEFF = 0.07
+
+# ---------------------------------------------------------------------------
+# Multi-model directional agreement gate
+# ---------------------------------------------------------------------------
+# Each candidate signal computes a directional vote per model (NBM p50, HRRR
+# daily TMAX, GFS daily TMAX). Vote = "is the model's point estimate in the
+# bucket?" If REQUIRE_AGREEMENT_N > 0 and fewer than N models agree with the
+# bot's chosen side, the signal is rejected with skip_reason='AGREEMENT'.
+# Default is 0 (disabled — votes are recorded for diagnostics only). When
+# turning on, recommended starting value is 2 (of 3 models).
+REQUIRE_AGREEMENT_N = int(os.getenv("REQUIRE_AGREEMENT_N", "0"))
 
 # ---------------------------------------------------------------------------
 # Risk / sizing
