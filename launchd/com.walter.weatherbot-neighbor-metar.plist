@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.walter.weatherbot-neighbor-metar</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/walterworley/Library/Scripts/weatherbot-neighbor-metar.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/walterworley/dev/weather_bot</string>
+    <!-- Every 30 min at :13 and :43 — pairs with the primary METAR pull -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Minute</key>
+            <integer>13</integer>
+        </dict>
+        <dict>
+            <key>Minute</key>
+            <integer>43</integer>
+        </dict>
+    </array>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/walterworley/dev/weather_bot/logs/neighbor-metar.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/walterworley/dev/weather_bot/logs/neighbor-metar.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>

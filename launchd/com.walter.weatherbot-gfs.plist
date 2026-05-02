@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.walter.weatherbot-gfs</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/walterworley/Library/Scripts/weatherbot-gfs.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/walterworley/dev/weather_bot</string>
+    <!-- Hourly at :17 — Open-Meteo serves the latest run; offset avoids :00/:30 fleet pile-up -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Minute</key>
+        <integer>17</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/walterworley/dev/weather_bot/logs/gfs.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/walterworley/dev/weather_bot/logs/gfs.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>

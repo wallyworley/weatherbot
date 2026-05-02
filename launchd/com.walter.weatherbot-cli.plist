@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.walter.weatherbot-cli</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/walterworley/Library/Scripts/weatherbot-cli.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/walterworley/dev/weather_bot</string>
+    <!-- Daily 9:23 AM ET (13:23 UTC during DST). Morning CLI is issued ~6-8 AM ET; -->
+    <!-- this gives all WFOs a window to publish before we pull. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>23</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/walterworley/dev/weather_bot/logs/cli.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/walterworley/dev/weather_bot/logs/cli.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>
