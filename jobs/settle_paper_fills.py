@@ -2,8 +2,17 @@
 Settle paper fills against the observed daily Tmax/Tmin.
 
 Kalshi weather range markets resolve YES if observed value falls in
-[lower_f, upper_f). We look up daily_obs for each fill's (station, valid_date, var),
-determine which side won, and mark the fill settled with payout $1 (win) or $0 (loss).
+[lower_f, upper_f). For each fill's (station, valid_date, var) we look up
+the official observation and mark the fill settled with payout $1 (win) or $0 (loss).
+
+Source priority:
+  1. NWS CLI (cli_obs table) — Kalshi NHIGH settlement authority
+  2. METAR-derived daily_obs — fallback when CLI not yet captured
+
+30-day comparison showed METAR-reconstructed TMAX understates CLI by 0.5-1°F
+on 12-22 of 30 days at our fetch stations. Preferring CLI matches what Kalshi
+actually settles on. The source used per fill is logged so the dashboard can
+spot when METAR fallback flipped an outcome.
 
 Usage:
     python -m weather_bot.jobs.settle_paper_fills
@@ -14,6 +23,7 @@ from __future__ import annotations
 import argparse
 import logging
 
+from weather_bot.data import nws_text_products as nws
 from weather_bot.data import persistence
 
 log = logging.getLogger(__name__)
@@ -28,12 +38,22 @@ def _yes_wins(lower_f: float | None, upper_f: float | None, obs: float) -> bool:
     return True
 
 
-def _get_daily_obs_value(station: str, valid_date, var: str) -> float | None:
+def _get_obs_value(station: str, valid_date, var: str) -> tuple[float | None, str]:
+    """Return (observed_value, source). Tries CLI first; falls back to METAR-derived."""
+    if var == "TMAX_DAILY":
+        cli = nws.get_cli_tmax(station, valid_date)
+        if cli is not None:
+            return cli, "CLI"
+    elif var == "TMIN_DAILY":
+        cli = nws.get_cli_tmin(station, valid_date)
+        if cli is not None:
+            return cli, "CLI"
     rows = persistence.get_daily_obs(station, valid_date, valid_date)
     if not rows:
-        return None
+        return None, "none"
     r = rows[0]
-    return r["tmax_f"] if var == "TMAX_DAILY" else r["tmin_f"]
+    val = r["tmax_f"] if var == "TMAX_DAILY" else r["tmin_f"]
+    return val, "METAR"
 
 
 def run(dry_run: bool = False) -> None:
@@ -43,9 +63,10 @@ def run(dry_run: bool = False) -> None:
     settled = 0
     pending = 0
     wins = 0
+    by_source: dict[str, int] = {}
 
     for f in fills:
-        obs = _get_daily_obs_value(f["station"], f["valid_date"], f["var"])
+        obs, source = _get_obs_value(f["station"], f["valid_date"], f["var"])
         if obs is None:
             pending += 1
             continue  # day hasn't resolved yet
@@ -54,24 +75,25 @@ def run(dry_run: bool = False) -> None:
         side_won = (f["side"] == "YES" and yes_won) or (f["side"] == "NO" and not yes_won)
         payout = 1.0 if side_won else 0.0
 
-        notional = f["price"] * f["contracts"]
         gross_pnl = (payout - f["price"]) * f["contracts"]
         net_pnl = gross_pnl - f["fees"]
 
         log.info(
-            "%s %s @%.3f x%d  obs=%.1f  range=[%s,%s)  won=%s  pnl=$%+.2f net=$%+.2f",
-            f["ticker"], f["side"], f["price"], f["contracts"], obs,
+            "%s %s @%.3f x%d  obs=%.1f (%s)  range=[%s,%s)  won=%s  pnl=$%+.2f net=$%+.2f",
+            f["ticker"], f["side"], f["price"], f["contracts"], obs, source,
             f["lower_f"], f["upper_f"], side_won, gross_pnl, net_pnl,
         )
 
         if not dry_run:
             persistence.settle_paper_fill(f["id"], payout=payout)
         settled += 1
+        by_source[source] = by_source.get(source, 0) + 1
         if side_won:
             wins += 1
 
-    log.info("Settled %d fills (%d wins, %d losses), %d still pending (no obs yet)",
-             settled, wins, settled - wins, pending)
+    log.info("Settled %d fills (%d wins, %d losses), %d still pending. Sources: %s",
+             settled, wins, settled - wins, pending,
+             ", ".join(f"{k}={v}" for k, v in sorted(by_source.items())))
 
 
 if __name__ == "__main__":

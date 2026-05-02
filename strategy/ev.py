@@ -45,7 +45,9 @@ class Signal:
     size_usd: float
     action: str               # 'OPEN' | 'SKIP'
     notes: str = ""
-    skip_reason: str | None = None  # 'DIVERGENCE' | 'NO_EDGE' | 'FEE_LOAD' | 'NO_BOOK' | None
+    skip_reason: str | None = None  # 'DIVERGENCE' | 'NO_EDGE' | 'FEE_LOAD' | 'NO_BOOK' |
+                                     # 'TRIPWIRE_RED' | 'BIAS_GATE' | 'AGREEMENT' | None
+    model_votes: dict | None = None  # {"NBM":"YES","HRRR":"YES","GFS":"NO","n_yes":2,"n_no":1,...}
 
 
 def fee_per_contract(price: float) -> float:

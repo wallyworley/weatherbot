@@ -16,13 +16,46 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from weather_bot.config import ACTIVE_TRADE_STATIONS, BANKROLL_USD, PAPER_MODE
+from weather_bot.config import (
+    ACTIVE_TRADE_STATIONS, BANKROLL_USD, PAPER_MODE, REQUIRE_AGREEMENT_N,
+)
 from weather_bot.data import persistence
 from weather_bot.data.persistence import connect
 from weather_bot.models.bias_correction import is_station_calibrated
 from weather_bot.models.distribution import build_station_distribution
 from weather_bot.strategy import ev
 from weather_bot.strategy.kalshi_client import KalshiClient
+
+
+def _vote_for_bucket(point_est: float | None, lower_f: float | None, upper_f: float | None) -> str:
+    """Map a point-estimate temp to a directional vote on a Kalshi range bucket."""
+    if point_est is None:
+        return "NA"
+    lo = lower_f if lower_f is not None else float("-inf")
+    hi = upper_f if upper_f is not None else float("inf")
+    return "YES" if lo <= point_est < hi else "NO"
+
+
+def _compute_model_votes(station: str, valid_date, var: str,
+                          lower_f: float | None, upper_f: float | None) -> dict:
+    """Per-model directional vote (NBM p50, HRRR daily MAX, GFS daily MAX) on
+    the given Kalshi bucket. TMAX_DAILY only — HRRR/GFS aren't naturally daily
+    minima, so TMIN markets just see NBM in the votes."""
+    points: dict[str, float] = {}
+    nbm_rows = persistence.latest_nbm_percentiles(station, valid_date, var)
+    for r in nbm_rows:
+        if r["percentile"] == 50:
+            points["NBM"] = float(r["value"])
+            break
+    if var == "TMAX_DAILY":
+        if (v := persistence.latest_hrrr_tmax(station, valid_date)) is not None:
+            points["HRRR"] = float(v)
+        if (v := persistence.latest_gfs_tmax(station, valid_date)) is not None:
+            points["GFS"] = float(v)
+    votes = {m: _vote_for_bucket(p, lower_f, upper_f) for m, p in points.items()}
+    n_yes = sum(1 for v in votes.values() if v == "YES")
+    n_no = sum(1 for v in votes.values() if v == "NO")
+    return {**votes, "n_yes": n_yes, "n_no": n_no, "n_total": n_yes + n_no}
 
 
 def _tripwire_red_stations() -> set[str]:
@@ -135,6 +168,26 @@ def run():
 
         sig = ev.evaluate(m["ticker"], fair_prob, yes_ask, yes_bid, bankroll=BANKROLL_USD)
 
+        # Multi-model directional vote — recorded on every signal regardless of
+        # action, so the dashboard can show "what did each model think?" even
+        # for SKIPs. The agreement gate below uses these to optionally block
+        # OPEN signals when models disagree.
+        sig.model_votes = _compute_model_votes(
+            m["station"], m["valid_date"], m["var"], m["lower_f"], m["upper_f"]
+        )
+
+        # Agreement gate (config flag REQUIRE_AGREEMENT_N, default 0 = disabled).
+        # When enabled and the bot wants to OPEN, require N models to vote with
+        # the bot's chosen side (YES or NO).
+        if (sig.action == "OPEN" and REQUIRE_AGREEMENT_N > 0
+                and sig.model_votes["n_total"] >= 2):
+            same_side = sig.model_votes["n_yes"] if sig.side == "YES" else sig.model_votes["n_no"]
+            if same_side < REQUIRE_AGREEMENT_N:
+                sig.action = "SKIP"
+                sig.skip_reason = "AGREEMENT"
+                sig.notes = (f"AGREEMENT|need={REQUIRE_AGREEMENT_N}|same_side={same_side}|"
+                              f"votes={sig.model_votes} {sig.notes}")
+
         # Pre-trade safety gates: tripwire (calibration drift) + bias staleness.
         # These short-circuit OPEN→SKIP without touching the model. The original
         # signal still gets logged so the dashboard can surface "would have
@@ -199,6 +252,8 @@ def run():
             size_usd=sig.size_usd,
             action=sig.action,
             notes=sig.notes,
+            skip_reason=sig.skip_reason,
+            model_votes=sig.model_votes,
         ))
 
         # Paper-fill writer — only when action=OPEN and no existing open fill.

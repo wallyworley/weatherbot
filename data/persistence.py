@@ -24,9 +24,17 @@ def connect():
 
 
 def bootstrap_stations():
-    """Seed the stations table from config."""
+    """Seed the stations table from config (primaries + neighbors)."""
+    from weather_bot.config import NEIGHBOR_STATIONS
+    all_stations = list(STATIONS.values())
+    seen_codes = {s.code for s in all_stations}
+    for neighbors in NEIGHBOR_STATIONS.values():
+        for s in neighbors:
+            if s.code not in seen_codes:
+                all_stations.append(s)
+                seen_codes.add(s.code)
     with connect() as conn, conn.cursor() as cur:
-        for s in STATIONS.values():
+        for s in all_stations:
             cur.execute(
                 """
                 INSERT INTO stations(code, name, lat, lon, tz)
@@ -84,20 +92,29 @@ def latest_nbm_percentiles(station: str, valid_date: date, var: str = "TMAX_DAIL
 
 
 def latest_hrrr_tmax(station: str, valid_date: date) -> float | None:
-    """Get latest HRRR max TMP_2M for the local calendar day (approximated UTC range)."""
+    return latest_det_tmax(station, valid_date, model="HRRR")
+
+
+def latest_gfs_tmax(station: str, valid_date: date) -> float | None:
+    return latest_det_tmax(station, valid_date, model="GFS")
+
+
+def latest_det_tmax(station: str, valid_date: date, model: str) -> float | None:
+    """Latest daily TMAX from a deterministic model in det_forecast (HRRR/GFS).
+    Returns max of hourly TMP_2M from the latest run for the given local day."""
     sql = """
     SELECT MAX(value) AS tmax
       FROM det_forecast
-     WHERE station = %s AND model = 'HRRR' AND var = 'TMP_2M'
+     WHERE station = %s AND model = %s AND var = 'TMP_2M'
        AND valid_time::date = %s
        AND run_time = (
            SELECT MAX(run_time) FROM det_forecast
-            WHERE station = %s AND model = 'HRRR' AND var = 'TMP_2M'
+            WHERE station = %s AND model = %s AND var = 'TMP_2M'
               AND valid_time::date = %s
        )
     """
     with connect() as conn, conn.cursor() as cur:
-        cur.execute(sql, (station, valid_date, station, valid_date))
+        cur.execute(sql, (station, model, valid_date, station, model, valid_date))
         row = cur.fetchone()
         return row["tmax"] if row else None
 
@@ -249,13 +266,22 @@ def upsert_kalshi_market(rows: Iterable[dict]):
 
 
 def insert_signal(row: dict) -> int:
+    import json
     sql = """
     INSERT INTO signal(ticker, side, fair_prob, market_ask, market_bid,
-                       edge, ev_per_dollar, kelly_fraction, size_usd, action, notes)
+                       edge, ev_per_dollar, kelly_fraction, size_usd, action, notes,
+                       skip_reason, model_votes)
     VALUES (%(ticker)s, %(side)s, %(fair_prob)s, %(market_ask)s, %(market_bid)s,
-            %(edge)s, %(ev_per_dollar)s, %(kelly_fraction)s, %(size_usd)s, %(action)s, %(notes)s)
+            %(edge)s, %(ev_per_dollar)s, %(kelly_fraction)s, %(size_usd)s, %(action)s, %(notes)s,
+            %(skip_reason)s, %(model_votes)s::jsonb)
     RETURNING id
     """
+    mv = row.get("model_votes")
+    row = {
+        **row,
+        "skip_reason": row.get("skip_reason"),
+        "model_votes": json.dumps(mv) if mv is not None else None,
+    }
     with connect() as conn, conn.cursor() as cur:
         cur.execute(sql, row)
         new_id = cur.fetchone()["id"]

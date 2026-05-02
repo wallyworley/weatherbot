@@ -58,6 +58,47 @@ CREATE TABLE IF NOT EXISTS daily_obs (
     PRIMARY KEY (station, local_date)
 );
 
+-- Upper-air + boundary-layer + radiation signals from Open-Meteo's GFS feed.
+-- Used as features for fair-prob bias correction and reversal-risk scoring:
+--   bl_height_m: deeper mixing layer = stronger surface heating → TMAX overshoot
+--   tmp_850_f / tmp_925_f: warm/cold air advection aloft, classic forecaster signal
+--   cloud_cover_pct: high cloud suppresses afternoon heating
+--   solar_w_m2: realized incoming radiation
+-- Pulled hourly via jobs/pull_atmos.py, ~48h ahead per station.
+CREATE TABLE IF NOT EXISTS atmosphere_signals (
+    station         TEXT NOT NULL REFERENCES stations(code),
+    valid_time      TIMESTAMPTZ NOT NULL,    -- forecast valid time (UTC)
+    run_time        TIMESTAMPTZ NOT NULL,    -- when we pulled it (proxy for cycle)
+    bl_height_m     DOUBLE PRECISION,
+    tmp_850_f       DOUBLE PRECISION,
+    tmp_925_f       DOUBLE PRECISION,
+    cloud_cover_pct DOUBLE PRECISION,
+    solar_w_m2      DOUBLE PRECISION,
+    ingested_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (station, run_time, valid_time)
+);
+CREATE INDEX IF NOT EXISTS idx_atmos_valid ON atmosphere_signals (station, valid_time DESC);
+
+-- NWS Daily Climate Report (CLI) — Kalshi NHIGH settlement authority.
+-- Forecaster-reviewed, more authoritative than METAR-derived daily extremes.
+-- 30-day comparison vs METAR showed METAR undercounts CLI TMAX by 0.5-1°F
+-- (12-22 of 30 days had >0.5°F gap). settle_paper_fills prefers cli_obs over
+-- daily_obs when both exist for the same (station, local_date).
+CREATE TABLE IF NOT EXISTS cli_obs (
+    station        TEXT NOT NULL REFERENCES stations(code),
+    local_date     DATE NOT NULL,                  -- date the report covers
+    tmax_f         DOUBLE PRECISION,
+    tmax_time_lst  TEXT,                           -- e.g. "400 PM" or "12:15 AM"
+    tmin_f         DOUBLE PRECISION,
+    tmin_time_lst  TEXT,
+    section        TEXT,                           -- 'YESTERDAY' (final) | 'TODAY' (intraday)
+    issued_at      TIMESTAMPTZ NOT NULL,           -- product issuance time
+    raw_text       TEXT,                           -- full CLI text for audit / reparse
+    fetched_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (station, local_date)
+);
+CREATE INDEX IF NOT EXISTS idx_cli_local_date ON cli_obs (local_date DESC);
+
 -- Rolling bias per station / month / lead-hour.
 CREATE TABLE IF NOT EXISTS station_bias (
     station        TEXT NOT NULL REFERENCES stations(code),
@@ -100,8 +141,16 @@ CREATE TABLE IF NOT EXISTS signal (
     kelly_fraction DOUBLE PRECISION NOT NULL,
     size_usd       DOUBLE PRECISION NOT NULL,
     action         TEXT NOT NULL,      -- 'OPEN' | 'HOLD' | 'REDUCE' | 'SKIP'
-    notes          TEXT
+    notes          TEXT,
+    skip_reason    TEXT                -- canonical reason when action='SKIP':
+                                       -- DIVERGENCE | FEE_LOAD | NO_EDGE | NO_BOOK |
+                                       -- TRIPWIRE_RED | BIAS_GATE
 );
+-- Backfill for existing DBs created before skip_reason was added:
+ALTER TABLE signal ADD COLUMN IF NOT EXISTS skip_reason TEXT;
+CREATE INDEX IF NOT EXISTS idx_signal_skip_reason ON signal (skip_reason) WHERE skip_reason IS NOT NULL;
+-- Multi-model directional votes per signal: {"NBM":"YES","HRRR":"YES","GFS":"NO","n_yes":2,"n_no":1}
+ALTER TABLE signal ADD COLUMN IF NOT EXISTS model_votes JSONB;
 
 -- Paper-trade fills (so we can attribute PnL).
 CREATE TABLE IF NOT EXISTS paper_fill (
