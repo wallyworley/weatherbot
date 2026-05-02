@@ -93,7 +93,7 @@ def tab_status():
         return
 
     # Top tile row — system-wide
-    cols = st.columns(6)
+    cols = st.columns(7)
     trade_stations = set(queries.trade_eligible_stations())
     with cols[0]:
         s = overall_status(health, ["DATA"])
@@ -131,6 +131,13 @@ def tab_status():
         status_pill("P&L 7D", s, value=f"${net:+,.2f}",
                     tooltip="Net P&L on settled fills, last 7 days.")
     with cols[5]:
+        today = queries.pnl_today()
+        t_net = today["net"]
+        t_s = "GREEN" if t_net > 0 else ("RED" if t_net < -5 else "GREY")
+        status_pill("TODAY", t_s, value=f"${t_net:+,.2f}",
+                    sub=f"${today['realized']:+.2f} settled · ${today['unrealized']:+.2f} MtM",
+                    tooltip="Settled P&L + mark-to-market on still-open positions for today's valid_date.")
+    with cols[6]:
         red_alerts = health[(health.status == "RED") & (health.acknowledged_at.isna())]
         s = "RED" if len(red_alerts) > 0 else "GREEN"
         status_pill("ALERTS", s, value=str(len(red_alerts)),
@@ -233,6 +240,145 @@ def tab_calibration():
                             height=380, margin=dict(l=10, r=10, t=10, b=10))
         st.plotly_chart(fig2, use_container_width=True)
 
+    # Per-bucket calibration table — diagnose WHICH probability ranges are off
+    st.subheader("Per-Bucket Calibration (Last 30 Days)",
+                 help="Each row = one 10% probability bucket. ⚠ marks rows where "
+                      "predicted probability lands outside the 95% CI of observed wins — "
+                      "the model is systematically miscalibrated at that range.")
+    bcal = queries.bucket_calibration(days_back=30, n_bins=10)
+    if bcal.empty:
+        st.caption("Not enough settled fills yet.")
+    else:
+        # Wilson 95% CI on observed_freq for each bin.
+        import math
+        z = 1.96
+        def wilson(k, n):
+            if n == 0: return None, None
+            phat = k / n
+            denom = 1 + z*z/n
+            center = (phat + z*z/(2*n)) / denom
+            half = z * math.sqrt(phat*(1-phat)/n + z*z/(4*n*n)) / denom
+            return max(0.0, center - half), min(1.0, center + half)
+
+        bcal = bcal.copy()
+        bcal["bin_range"] = bcal["bin"].apply(lambda b: f"{(int(b)-1)*10:>2d}–{int(b)*10:>3d}%")
+        ci = bcal.apply(lambda r: wilson(int(r["n_won"] or 0), int(r["n"] or 0)), axis=1)
+        bcal["ci_lo"] = [c[0] for c in ci]
+        bcal["ci_hi"] = [c[1] for c in ci]
+        bcal["gap"] = bcal["mean_pred"] - bcal["observed_freq"]
+        bcal["miscalibrated"] = bcal.apply(
+            lambda r: "⚠" if (r["ci_lo"] is not None and
+                                (r["mean_pred"] < r["ci_lo"] or r["mean_pred"] > r["ci_hi"]))
+                       else "", axis=1
+        )
+        display = bcal[["bin_range", "n", "mean_pred", "observed_freq",
+                          "ci_lo", "ci_hi", "gap", "brier_bin", "miscalibrated"]]
+        display.columns = ["bucket", "n", "predicted", "observed", "obs_CI_lo",
+                            "obs_CI_hi", "gap (pred−obs)", "brier", ""]
+        st.dataframe(display, use_container_width=True, hide_index=True,
+                      column_config={
+                          "predicted": st.column_config.NumberColumn(format="%.3f"),
+                          "observed":  st.column_config.NumberColumn(format="%.3f"),
+                          "obs_CI_lo": st.column_config.NumberColumn(format="%.3f"),
+                          "obs_CI_hi": st.column_config.NumberColumn(format="%.3f"),
+                          "gap (pred−obs)": st.column_config.NumberColumn(format="%+.3f"),
+                          "brier":     st.column_config.NumberColumn(format="%.4f"),
+                      })
+
+    # ---- New-model performance ---------------------------------------------
+    # Per-model forecast accuracy vs CLI ground truth. Surfaces the GFS-vs-NBM
+    # gap that the 30-day research comparison measured. GFS rows will be sparse
+    # until we have a week+ of pull_gfs data.
+    st.subheader("Per-Model Forecast Accuracy (vs CLI Truth)",
+                 help="Daily |predicted_TMAX − CLI_TMAX| per model. NBM uses p50 of the "
+                      "latest run for each valid_date. HRRR/GFS use max(hourly TMP_2M) "
+                      "from the latest run. CLI is the Kalshi NHIGH settlement source.")
+    macc = queries.model_accuracy(days_back=14)
+    if macc.empty:
+        st.caption("No CLI truth + forecast overlap yet. (CLI capture started 2026-05-01.)")
+    else:
+        # Aggregate bar chart: mean MAE per (station, model)
+        agg = macc.groupby(["station", "model"]).agg(
+            n=("abs_err", "size"), mae=("abs_err", "mean")
+        ).reset_index()
+        fig = px.bar(agg, x="station", y="mae", color="model", barmode="group",
+                      text=agg["mae"].round(2),
+                      labels={"mae": "MAE (°F)", "station": "Station", "model": "Model"},
+                      color_discrete_map={"NBM": "#2563eb", "HRRR": "#f59e0b", "GFS": "#16a34a"})
+        fig.update_traces(textposition="outside")
+        fig.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10),
+                           legend=dict(orientation="h", y=1.1))
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption(f"Sample sizes (days of overlap): " +
+                    " · ".join(f"{r['station']}/{r['model']}={int(r['n'])}" for _, r in agg.iterrows()))
+
+        # Per-day line chart so trends + outliers are visible
+        if len(macc["valid_date"].unique()) >= 3:
+            macc["station_model"] = macc["station"] + " " + macc["model"]
+            fig2 = px.line(macc, x="valid_date", y="abs_err", color="station_model",
+                            markers=True,
+                            labels={"abs_err": "|err| (°F)", "valid_date": "Date",
+                                    "station_model": "Station / Model"})
+            fig2.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10),
+                                legend=dict(orientation="h", y=1.15))
+            st.plotly_chart(fig2, use_container_width=True)
+
+    # Today's model-agreement distribution — what the agreement gate would see.
+    st.subheader("Today's Model Agreement",
+                 help="Each signal carries a directional vote per model (NBM, HRRR, GFS) "
+                      "on the bucket. This shows today's signals grouped by agreement "
+                      "tally and bot's chosen side. With REQUIRE_AGREEMENT_N=2, signals "
+                      "where fewer than 2 models agree with the bot's side would be "
+                      "blocked with skip_reason='AGREEMENT'.")
+    vd = queries.vote_distribution_today()
+    if vd.empty:
+        st.caption("No signals with model votes yet today.")
+    else:
+        # Build a label like "0Y/3N" and a "with us / against us" tag.
+        vd = vd.copy()
+        vd["votes"] = vd["n_yes"].astype(str) + "Y/" + vd["n_no"].astype(str) + "N"
+        def _agreement_tag(r):
+            same = r["n_yes"] if r["side"] == "YES" else r["n_no"]
+            if same >= 2: return "models agree (≥2 with bot)"
+            if (3 - same) >= 2: return "models against (≥2 vs bot)"
+            return "split"
+        vd["agreement"] = vd.apply(_agreement_tag, axis=1)
+        # Stacked bar: x = OPEN/SKIP, color = agreement, height = signals
+        agg = vd.groupby(["action", "agreement"])["n"].sum().reset_index()
+        fig3 = px.bar(agg, x="action", y="n", color="agreement", barmode="stack",
+                       text="n",
+                       color_discrete_map={
+                           "models agree (≥2 with bot)": "#16a34a",
+                           "split": "#737373",
+                           "models against (≥2 vs bot)": "#dc2626",
+                       },
+                       labels={"n": "# signals", "action": "Action"})
+        fig3.update_traces(textposition="inside")
+        fig3.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10),
+                            legend=dict(orientation="h", y=1.15))
+        st.plotly_chart(fig3, use_container_width=True)
+
+        # Quick summary numbers above the chart
+        opens = vd[vd["action"] == "OPEN"]
+        n_open = int(opens["n"].sum())
+        n_against = int(opens[opens["agreement"] == "models against (≥2 vs bot)"]["n"].sum())
+        n_with = int(opens[opens["agreement"] == "models agree (≥2 with bot)"]["n"].sum())
+        if n_open > 0:
+            pct_against = 100 * n_against / n_open
+            st.caption(
+                f"**Today's OPENs**: {n_open} total · "
+                f"**{n_with} with ≥2 models agreeing** · "
+                f"**{n_against} against ≥2 models** "
+                f"({pct_against:.0f}% of OPENs would be blocked if `REQUIRE_AGREEMENT_N=2`)"
+            )
+            st.info(
+                "📊 **Backtest finding (2026-05-02)**: Enabling the agreement gate would have "
+                "**cost ~$240 over the past 30 days**. The bot's against-consensus trades are "
+                "concentrated in long-shot prices where the model votes don't capture the "
+                "asymmetric payoff. Win rate ≠ profit. See "
+                "`research/reports/backtest_agreement_gate_*.md`. Gate stays **off**."
+            )
+
     # Bias drift events
     st.subheader("Bias Drift Events (Last 7 Days)",
                  help=help_text.METRIC_TOOLTIPS["delta_sigma"])
@@ -243,46 +389,201 @@ def tab_calibration():
         st.dataframe(drift, use_container_width=True, hide_index=True)
 
 
+def _leaning(row) -> tuple[str, str]:
+    """(label, hex-color) for a single open position row."""
+    var = row.get("var", "")
+    obs_val = row.get("obs_tmax") if "TMAX" in var else row.get("obs_tmin")
+    p50 = row.get("p50")
+    lower_f = row.get("lower_f")
+    upper_f = row.get("upper_f")
+    side = row.get("side", "YES")
+
+    lo = lower_f if lower_f is not None else float("-inf")
+    hi = upper_f if upper_f is not None else float("inf")
+
+    certain, yes_wins = False, None
+    if obs_val is not None:
+        if "TMAX" in var and obs_val >= hi:
+            yes_wins, certain = False, True   # already climbed past bucket ceiling
+        elif "TMIN" in var and obs_val < lo:
+            yes_wins, certain = False, True   # already dropped below bucket floor
+
+    if not certain and p50 is not None:
+        yes_wins = lo <= p50 < hi
+        if (lower_f is not None and abs(p50 - lo) < 1.5) or (upper_f is not None and abs(p50 - hi) < 1.5):
+            return "COIN-FLIP", "#f59e0b"
+
+    if yes_wins is None:
+        return "?", "#737373"
+
+    outcome_win = yes_wins if side == "YES" else not yes_wins
+    color = "#16a34a" if outcome_win else "#dc2626"
+    if certain:
+        return ("WIN ✓" if outcome_win else "LOSS ✗"), color
+    return ("leaning WIN" if outcome_win else "leaning LOSS"), color
+
+
 def tab_trading():
     if show_help:
         with st.expander("ℹ️ How to Read This Tab", expanded=False):
             st.markdown(help_text.TRADING_TAB)
 
+    # ---- Regional Snapshot (Sprint 1: triangulation + atmos + rate-of-change) -
+    # For each trade-eligible station, show:
+    #   - current temp + rate-of-change (warming/cooling now)
+    #   - regional spread + primary-vs-mean (is primary running warm/cool vs
+    #     surrounding airports? sometimes signals incoming temperature shift)
+    #   - atmospheric features (BL height, cloud, 925mb, peak solar) — the
+    #     signals that drive whether TMAX overshoots or undershoots forecast
+    st.subheader("Regional Snapshot",
+                 help="Per trade-station live read: current temp + rate-of-change, "
+                      "regional spread vs neighbor airports, plus atmospheric "
+                      "drivers (boundary layer height, cloud cover, 925mb temp, "
+                      "peak solar). Inspired by dailydewpoint.com's NYC observation "
+                      "panel — surfaces 'is the temperature field moving' info that "
+                      "single-station METAR misses.")
+    today = date.today()
+    snapshot_cols = st.columns(len(queries.trade_eligible_stations()))
+    for col, st_code in zip(snapshot_cols, queries.trade_eligible_stations()):
+        with col:
+            rate = queries.temp_rate_of_change(st_code)
+            field = queries.regional_temp_field(st_code)
+            atmos = queries.atmos_daily_features(st_code, today)
+
+            primary_temp = field["primary_temp"] if field else (rate["last_temp_f"] if rate else None)
+            rate_str = ""
+            if rate is not None:
+                arrow = "↑" if rate["rate_f_per_hr"] > 0.1 else ("↓" if rate["rate_f_per_hr"] < -0.1 else "→")
+                rate_str = f" {arrow}{abs(rate['rate_f_per_hr']):.1f}°/hr"
+
+            header = f"### {st_code}"
+            if primary_temp is not None:
+                header += f" — {primary_temp:.1f}°F{rate_str}"
+            st.markdown(header)
+
+            if field is not None and field["n_stations"] > 1:
+                vs_mean_arrow = "warmer" if field["vs_mean"] > 0 else "cooler"
+                st.markdown(
+                    f"**Regional** ({field['n_stations']} stns): "
+                    f"mean {field['mean']:.1f}°F · spread {field['spread']:.1f}°F · "
+                    f"primary **{abs(field['vs_mean']):.1f}°F {vs_mean_arrow}** vs mean"
+                )
+                # Per-neighbor offsets (compact)
+                if field["neighbors"]:
+                    parts = [f"{n['code'][1:]}:{n['vs_primary']:+.1f}" for n in field["neighbors"][:6]]
+                    st.caption("vs primary: " + " · ".join(parts))
+            else:
+                st.caption("No regional neighbors with recent data.")
+
+            if atmos is not None:
+                bl = atmos["bl_peak_m"]
+                bl_label = "deep" if bl and bl > 2000 else ("shallow" if bl and bl < 800 else "moderate")
+                cloud = atmos["cloud_mean_pct"]
+                cloud_label = "clear" if cloud and cloud < 30 else ("mostly cloudy" if cloud and cloud > 70 else "mixed")
+                st.markdown(
+                    f"**Atmos**: BL **{bl:.0f}m** ({bl_label}) · "
+                    f"cloud **{cloud:.0f}%** ({cloud_label}) · "
+                    f"925mb **{atmos['tmp_925_mean_f']:.1f}°F** · "
+                    f"solar peak **{atmos['solar_peak_w_m2']:.0f} W/m²**"
+                )
+            else:
+                st.caption("No atmos data yet (pull_atmos hasn't run).")
+    st.divider()
+
     # Open positions
     st.subheader("Open Positions", help=help_text.METRIC_TOOLTIPS["open_n"])
-    pos = queries.open_positions()
+    pos = queries.open_positions_with_obs()
     if pos.empty:
         st.info("No open positions.")
     else:
-        # Compute mark-to-market: payout-if-correct = 1, current value = market price
         def _mtm(r):
             if pd.isna(r.yes_ask) or pd.isna(r.yes_bid):
                 return None
-            entry = float(r.price)
             cur_price = float(r.yes_ask) if r.side == "YES" else (1.0 - float(r.yes_bid))
-            return float((cur_price - entry) * r.contracts)
+            return float((cur_price - float(r.price)) * r.contracts)
+
         pos["mtm"] = pos.apply(_mtm, axis=1)
-        st.dataframe(pos[["ticker", "side", "price", "contracts", "valid_date",
-                           "days_to_settle", "yes_ask", "yes_bid", "mtm"]],
-                      use_container_width=True, hide_index=True)
+        pos[["leaning", "_lean_color"]] = pos.apply(
+            lambda r: pd.Series(_leaning(r)), axis=1
+        )
+
+        # Render as HTML table so we can colorize the leaning column
+        rows_html = []
+        for _, r in pos.iterrows():
+            obs_val = r.get("obs_tmax") if "TMAX" in str(r.get("var", "")) else r.get("obs_tmin")
+            obs_str = f"{obs_val:.1f}°F" if pd.notna(obs_val) else "—"
+            p50_str = f"{r['p50']:.1f}°F" if pd.notna(r.get("p50")) else "—"
+            mtm_str = f"${r['mtm']:+.2f}" if r["mtm"] is not None else "—"
+            lean_label, lean_color = r["leaning"], r["_lean_color"]
+            rows_html.append(
+                f"<tr>"
+                f"<td>{r['ticker']}</td><td>{r['side']}</td>"
+                f"<td>{r['price']:.2f}</td><td>{r['contracts']}</td>"
+                f"<td>{r['valid_date']}</td><td>{r['days_to_settle']}d</td>"
+                f"<td>{obs_str}</td><td>{p50_str}</td><td>{mtm_str}</td>"
+                f"<td style='color:{lean_color};font-weight:600'>{lean_label}</td>"
+                f"</tr>"
+            )
+        header = ("<table style='width:100%;font-size:0.85em;border-collapse:collapse'>"
+                  "<thead><tr style='border-bottom:1px solid #444'>"
+                  "<th>ticker</th><th>side</th><th>price</th><th>contracts</th>"
+                  "<th>valid_date</th><th>days</th>"
+                  "<th>obs so far</th><th>p50</th><th>MtM</th><th>leaning</th>"
+                  "</tr></thead><tbody>")
+        st.markdown(header + "".join(rows_html) + "</tbody></table>", unsafe_allow_html=True)
+        st.caption("obs so far = running TMAX/TMIN from METAR today · p50 = model's expected final temp · "
+                   "leaning = outcome guess based on p50 vs bucket; WIN ✓ / LOSS ✗ = already determined by obs")
+
+    # 7-day SKIP breakdown — surfaces why most signals don't become trades
+    st.subheader("SKIP Breakdown (Last 7 Days)",
+                 help="Why most signals don't become trades. FEE_LOAD = fee/price > 20%; "
+                      "NO_EDGE = edge below threshold; DIVERGENCE = |fair − market| > 0.50; "
+                      "BIAS_GATE = bias table missing/thin/stale; TRIPWIRE_RED = health-check block.")
+    breakdown = queries.skip_breakdown(days_back=7)
+    if breakdown.empty:
+        st.caption("No SKIP signals in the last 7 days.")
+    else:
+        bd_cols = st.columns(len(breakdown))
+        for col, (_, row) in zip(bd_cols, breakdown.iterrows()):
+            col.metric(row["skip_reason"], int(row["n"]),
+                        help=f"{int(row['n_tickers'])} distinct tickers")
 
     # Today's signals
     st.subheader("Signals Today (Every Tick)",
                  help="Every market scored by the trade loop today. "
-                      "Filter by action to see what was opened vs skipped.")
+                      "Filter by action and skip_reason to see what was opened vs skipped.")
     sigs = queries.signals_today()
     if sigs.empty:
         st.info("No signals scored yet today.")
     else:
-        action_filter = st.multiselect("Action", options=sorted(sigs["action"].unique()),
-                                        default=sorted(sigs["action"].unique()),
-                                        help="OPEN = paper-filled. SKIP/* = various refusal reasons.")
+        sf_cols = st.columns(2)
+        with sf_cols[0]:
+            action_filter = st.multiselect("Action", options=sorted(sigs["action"].unique()),
+                                            default=sorted(sigs["action"].unique()),
+                                            help="OPEN = paper-filled. SKIP = refused.")
+        with sf_cols[1]:
+            skip_options = sorted([str(r) for r in sigs["skip_reason"].dropna().unique()])
+            skip_filter = st.multiselect("Skip reason", options=skip_options,
+                                          default=skip_options,
+                                          help="Only applies when 'SKIP' is in Action filter.")
         sigs_f = sigs[sigs["action"].isin(action_filter)]
+        if "SKIP" in action_filter and skip_options:
+            sigs_f = sigs_f[(sigs_f["action"] != "SKIP") | (sigs_f["skip_reason"].isin(skip_filter))]
         sigs_f["divergence"] = (sigs_f["fair_prob"] -
                                  (sigs_f["market_ask"].fillna(0) + sigs_f["market_bid"].fillna(0))/2).abs()
+
+        def _fmt_votes(v):
+            if not v or not isinstance(v, dict):
+                return ""
+            short = {"YES": "Y", "NO": "N", "NA": "—"}
+            parts = [f"{m}:{short.get(v.get(m), '?')}" for m in ("NBM", "HRRR", "GFS") if m in v]
+            tail = f" ({v.get('n_yes',0)}Y/{v.get('n_no',0)}N)"
+            return " ".join(parts) + tail
+        sigs_f["votes"] = sigs_f["model_votes"].apply(_fmt_votes)
+
         st.dataframe(sigs_f[["ts", "ticker", "station", "var", "side", "fair_prob",
                               "market_ask", "market_bid", "divergence", "edge", "size_usd",
-                              "action", "notes"]],
+                              "action", "skip_reason", "votes", "notes"]],
                       use_container_width=True, hide_index=True)
 
     # Distribution preview
