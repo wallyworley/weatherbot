@@ -1,46 +1,58 @@
-# Weather Bot — Backlog
+# Weather Bot Backlog
 
-## Calibration: bias-table refinements (queued after task #2)
+## Next Highest-Leverage Work
 
-The single-dimension `(month, lead_day=1)` bias table is climatological-mean only. It will systematically misfire when a specific cycle's error diverges from the seasonal mean — exactly what happened on Apr 20, 2026 (table said NBM April runs +4.34°F warm; that day's stale 00z was running ~5°F cold; correction pushed forecasts further wrong-direction).
+### Point-in-time replay and verification
 
-Three structural fixes, in priority order:
+The dashboard has a useful counterfactual replay tool, but the nightly
+`verification` table is still a simplified calibration smoke test. Before live
+trading, build a replay harness that evaluates every historical signal using
+only data available at the signal timestamp:
 
-1. **Cycle-hour stratification.** Add `cycle_hour` (0/6/12/18 UTC) to `station_bias` PK. Different cycles have different error profiles — overnight cycles lack same-day data assimilation; afternoon cycles partially incorporate observed peak temps. Combining them into one mean blurs both signals.
+- NBM percentiles with `run_time <= signal.ts`
+- HRRR/GFS deterministic forecasts with `run_time <= signal.ts`
+- bias rows or archived bias snapshots available at that timestamp
+- market snapshot top-of-book available at that timestamp
+- CLI truth when settled
 
-2. **Staleness-aware deweight.** When the freshest available cycle is >8h old, attenuate bias correction proportionally. Stale cycles' systematic error is dominated by initialization drift, not the climatological pattern the bias table captures.
+This should produce the graduation metrics: Brier, log loss, realized vs
+expected PnL, reliability bins, and station/model slices.
 
-3. **Bypass bias on guardrail trip.** When the divergence guardrail fires (`|fair - mkt_mid| > 0.50`), the bias-corrected fair value is the part being doubted. Recomputing fair without bias correction (and re-checking divergence) tells us whether the bias table itself is the source of the disagreement vs. genuine model-vs-market signal.
+### Cycle-hour bias stratification
 
-## Ingestion: preserve cycle history (blocks meaningful lead_day≥2 backtests)
+Current `station_bias` keys by `(station, model, var, month, lead_day)`.
+Add `cycle_hour` for NBM cycles `(0, 6, 12, 18 UTC)`. Different cycles can have
+different error profiles because same-day data assimilation changes through
+the day. This is the remaining bias-table refinement after staleness deweight
+and divergence bypass shipped.
 
-`prob_forecast` currently upserts on `(station, model, var, valid_date, percentile)`, keeping only the latest cycle per target date. This collapses the lead_day dimension — we can only ever populate `lead_day=1` rows from the prior-day morning cycle that survived overwrite. No way to compute lead-0 (same-day) or lead-2+ (multi-day-ahead) bias rows from current data.
+### Parameter sweep
 
-Fix: change PK to `(station, model, run_time, valid_date, var, percentile)` and stop overwriting. Then re-run retrain with full lead_day granularity. New cycle history starts accumulating from change date — give it 30 days before re-evaluating.
+Automate sweeps over:
 
-## Replay harness (continuation-prompt task #3)
+- HRRR weight curve
+- staleness deweight thresholds
+- widening cap
+- tail scale
+- shrinkage prior_n
+- divergence threshold
 
-Point-in-time backtest framework. Depends on cycle-history retention above.
+Run sweeps through the point-in-time replay harness, not through latest-data
+verification.
 
-## Parameter sweep (continuation-prompt task #4)
+### Snapshot completeness audit
 
-HRRR weight curve, staleness deweight, widening cap, tail scale, shrinkage prior_n.
-Depends on replay harness.
+NO-side snapshot fields and market status are now captured. Add a health check
+that reports how often `market_snapshot` rows have missing YES or NO quotes, by
+series and station. This tells us whether backtests are using complete books or
+only partial top-of-book data.
 
-## market_snapshot: extend to NO-side capture
+## Completed Cleanup
 
-Current table captures only YES-side top-of-book (yes_ask, yes_bid, yes_ask_size, yes_bid_size). For backtest fidelity we also need NO-side, since the bot routinely trades NO when YES liquidity is thin.
-
-Add columns:
-```sql
-ALTER TABLE market_snapshot
-    ADD COLUMN no_ask NUMERIC,
-    ADD COLUMN no_bid NUMERIC,
-    ADD COLUMN no_ask_size INT,
-    ADD COLUMN no_bid_size INT,
-    ADD COLUMN status TEXT;
-```
-
-Extend `_snapshot_row` in `pull_kalshi_markets.py` to extract from `payload.orderbook_fp.no_dollars` using the same `_best_price` helper pattern from `main.py`. Also capture `payload.status` so backtests can distinguish active from settling/closed quotes.
-
-Not blocking — current YES-only snapshots still yield a partial but useful dataset.
+- `prob_forecast` preserves cycle history with primary key
+  `(station, model, run_time, valid_date, var, percentile)`.
+- `market_snapshot` captures NO-side top-of-book fields.
+- `market_snapshot.status` is captured for active vs stale-book filtering.
+- `nightly_verify` is verification-only. Bias writes are owned by
+  `jobs.retrain_bias`.
+- Chicago markets are mapped to KMDW (Midway), not KORD (O'Hare).

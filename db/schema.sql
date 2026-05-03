@@ -202,11 +202,13 @@ CREATE TABLE IF NOT EXISTS market_snapshot (
     no_bid        NUMERIC,
     no_ask_size   INT,
     no_bid_size   INT,
+    status        TEXT,
     last_price    NUMERIC,
     volume_24h    NUMERIC,
     open_interest NUMERIC,
     PRIMARY KEY (ticker, ts)
 );
+ALTER TABLE market_snapshot ADD COLUMN IF NOT EXISTS status TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_det_valid       ON det_forecast (station, valid_time);
 CREATE INDEX IF NOT EXISTS idx_prob_valid      ON prob_forecast (station, valid_date);
@@ -247,7 +249,7 @@ CREATE INDEX IF NOT EXISTS idx_health_status ON health_check (status, ts DESC) W
 -- Latest-status view. The trade loop reads this to decide whether to skip.
 CREATE OR REPLACE VIEW health_check_latest AS
 SELECT DISTINCT ON (station, component)
-       station, component, ts, status, metric_value, detail, acknowledged_at
+       station, component, ts, status, metric_value, detail, acknowledged_at, alerted_at
   FROM health_check
  ORDER BY station, component, ts DESC;
 

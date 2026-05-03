@@ -23,13 +23,24 @@ from weather_bot.data import persistence
 
 st.set_page_config(page_title="weather_bot · Command Center", layout="wide", page_icon="🌡️")
 
-# Auto-refresh every 15s, but allow user to pause from sidebar.
+# Tab dispatch lives in the sidebar (st.radio) instead of st.tabs because
+# tabs eagerly evaluate every panel on every refresh — visible cost on a
+# 15s auto-refresh. Radio renders only the selected tab.
+TAB_ORDER = ["📊 Status", "📐 Calibration", "💱 Trading", "🔬 Deep Dive"]
+
 with st.sidebar:
     st.title("⚙️ Controls")
+    selected_tab = st.radio("View", TAB_ORDER, key="selected_tab",
+                              label_visibility="collapsed")
+    st.divider()
     auto_refresh = st.toggle("Auto-refresh (15s)", value=True,
                               help="Disable when investigating to keep your scroll position.")
     if auto_refresh:
         st_autorefresh(interval=15_000, key="auto_refresh")
+    if st.button("🔄 Refresh now", use_container_width=True,
+                 help="Clear the dashboard's 12s query cache and re-pull immediately."):
+        queries.clear_cache()
+        st.rerun()
     st.caption("Last loaded: " + datetime.now().strftime("%H:%M:%S"))
     st.divider()
     show_help = st.toggle("Show help panels", value=True,
@@ -183,6 +194,7 @@ def _ack_alert(station: str, component: str):
     with persistence.connect() as conn, conn.cursor() as cur:
         cur.execute(sql, (station, component, station, component))
         conn.commit()
+    queries.clear_cache()
 
 
 def tab_calibration():
@@ -390,37 +402,78 @@ def tab_calibration():
 
 
 def _leaning(row) -> tuple[str, str]:
-    """(label, hex-color) for a single open position row."""
+    """(label, hex-color) for an open position — kept as compatibility shim
+    for any callers expecting the old leaning string. Prefer _settlement_state()."""
+    state, color, _ = _settlement_state(row)
+    return state, color
+
+
+def _settlement_state(row) -> tuple[str, str, str]:
+    """Five-state settlement-confidence classifier for a single position row.
+
+    Returns (badge_label, hex_color, explanation). States ordered by certainty:
+
+      LOCKED ✓ / LOCKED ✗ — outcome already determined by observed TMAX/TMIN
+                            crossing the bucket boundary in a one-way direction.
+                            Outcome cannot reverse before settlement.
+      LEANING WIN / LOSS  — p50 forecast points to a side and isn't on the
+                            bucket boundary (within ±1.5°F). Likely but not
+                            locked.
+      COIN-FLIP           — p50 within ±1.5°F of a bucket edge — outcome
+                            sensitive to small forecast revisions.
+      WAITING             — past valid_date but no obs/CLI captured yet (rare;
+                            data pipeline issue).
+      —                   — no obs and no p50 yet (future date, early ingest).
+    """
     var = row.get("var", "")
     obs_val = row.get("obs_tmax") if "TMAX" in var else row.get("obs_tmin")
     p50 = row.get("p50")
+    cli_tmax = row.get("cli_tmax") if "TMAX" in var else row.get("cli_tmin")
     lower_f = row.get("lower_f")
     upper_f = row.get("upper_f")
     side = row.get("side", "YES")
+    days_to_settle = row.get("days_to_settle", 0)
 
     lo = lower_f if lower_f is not None else float("-inf")
     hi = upper_f if upper_f is not None else float("inf")
 
-    certain, yes_wins = False, None
+    def _outcome_label(yes_wins: bool, prefix: str, color: str) -> tuple[str, str]:
+        outcome_win = yes_wins if side == "YES" else not yes_wins
+        return f"{prefix} {'✓' if outcome_win else '✗'}", color
+
+    # 1. LOCKED — observed extreme already determines outcome
     if obs_val is not None:
         if "TMAX" in var and obs_val >= hi:
-            yes_wins, certain = False, True   # already climbed past bucket ceiling
-        elif "TMIN" in var and obs_val < lo:
-            yes_wins, certain = False, True   # already dropped below bucket floor
+            badge, color = _outcome_label(False, "LOCKED", "#16a34a" if side == "NO" else "#dc2626")
+            return badge, color, f"obs TMAX {obs_val:.1f}°F already exceeded bucket ceiling {hi:.1f}°F"
+        if "TMIN" in var and obs_val < lo:
+            badge, color = _outcome_label(False, "LOCKED", "#16a34a" if side == "NO" else "#dc2626")
+            return badge, color, f"obs TMIN {obs_val:.1f}°F already dropped below bucket floor {lo:.1f}°F"
 
-    if not certain and p50 is not None:
+    # 2. CLI captured but bot is still showing as open — settlement job hasn't
+    #    swept yet. Display the CLI-implied outcome.
+    if cli_tmax is not None:
+        cli_in = lo <= cli_tmax < hi
+        badge, color = _outcome_label(cli_in, "CLI", "#16a34a" if (cli_in == (side == "YES")) else "#dc2626")
+        return badge, color, f"CLI TMAX {cli_tmax:.1f}°F (settlement job pending)"
+
+    # 3. Past valid_date but no CLI yet — waiting on settlement data
+    if days_to_settle < 0:
+        return "WAITING", "#737373", "valid_date passed; awaiting CLI / METAR"
+
+    # 4. p50 LEANING / COIN-FLIP
+    if p50 is not None:
+        on_boundary = ((lower_f is not None and abs(p50 - lo) < 1.5)
+                        or (upper_f is not None and abs(p50 - hi) < 1.5))
+        if on_boundary:
+            return "COIN-FLIP", "#f59e0b", f"p50 {p50:.1f}°F within 1.5°F of bucket edge"
         yes_wins = lo <= p50 < hi
-        if (lower_f is not None and abs(p50 - lo) < 1.5) or (upper_f is not None and abs(p50 - hi) < 1.5):
-            return "COIN-FLIP", "#f59e0b"
+        outcome_win = yes_wins if side == "YES" else not yes_wins
+        color = "#16a34a" if outcome_win else "#dc2626"
+        return ("LEANING WIN" if outcome_win else "LEANING LOSS"), color, f"p50 {p50:.1f}°F"
 
-    if yes_wins is None:
-        return "?", "#737373"
-
-    outcome_win = yes_wins if side == "YES" else not yes_wins
-    color = "#16a34a" if outcome_win else "#dc2626"
-    if certain:
-        return ("WIN ✓" if outcome_win else "LOSS ✗"), color
-    return ("leaning WIN" if outcome_win else "leaning LOSS"), color
+    # 5. No information yet
+    return "—", "#737373", "no obs or forecast yet"
 
 
 def tab_trading():
@@ -529,36 +582,42 @@ def tab_trading():
             return float((cur_price - float(r.price)) * r.contracts)
 
         pos["mtm"] = pos.apply(_mtm, axis=1)
-        pos[["leaning", "_lean_color"]] = pos.apply(
-            lambda r: pd.Series(_leaning(r)), axis=1
-        )
+        # Five-state settlement-confidence classification per position.
+        states = pos.apply(lambda r: pd.Series(_settlement_state(r),
+                                                  index=["state", "_state_color", "_state_explain"]),
+                           axis=1)
+        pos = pd.concat([pos, states], axis=1)
 
-        # Render as HTML table so we can colorize the leaning column
+        # Render as HTML table so we can colorize the state column.
         rows_html = []
         for _, r in pos.iterrows():
             obs_val = r.get("obs_tmax") if "TMAX" in str(r.get("var", "")) else r.get("obs_tmin")
             obs_str = f"{obs_val:.1f}°F" if pd.notna(obs_val) else "—"
             p50_str = f"{r['p50']:.1f}°F" if pd.notna(r.get("p50")) else "—"
             mtm_str = f"${r['mtm']:+.2f}" if r["mtm"] is not None else "—"
-            lean_label, lean_color = r["leaning"], r["_lean_color"]
+            state_label, state_color, state_explain = r["state"], r["_state_color"], r["_state_explain"]
             rows_html.append(
                 f"<tr>"
                 f"<td>{r['ticker']}</td><td>{r['side']}</td>"
                 f"<td>{r['price']:.2f}</td><td>{r['contracts']}</td>"
                 f"<td>{r['valid_date']}</td><td>{r['days_to_settle']}d</td>"
                 f"<td>{obs_str}</td><td>{p50_str}</td><td>{mtm_str}</td>"
-                f"<td style='color:{lean_color};font-weight:600'>{lean_label}</td>"
+                f"<td title='{state_explain}' style='color:{state_color};font-weight:600'>{state_label}</td>"
                 f"</tr>"
             )
         header = ("<table style='width:100%;font-size:0.85em;border-collapse:collapse'>"
                   "<thead><tr style='border-bottom:1px solid #444'>"
                   "<th>ticker</th><th>side</th><th>price</th><th>contracts</th>"
                   "<th>valid_date</th><th>days</th>"
-                  "<th>obs so far</th><th>p50</th><th>MtM</th><th>leaning</th>"
+                  "<th>obs so far</th><th>p50</th><th>MtM</th><th>settlement</th>"
                   "</tr></thead><tbody>")
         st.markdown(header + "".join(rows_html) + "</tbody></table>", unsafe_allow_html=True)
-        st.caption("obs so far = running TMAX/TMIN from METAR today · p50 = model's expected final temp · "
-                   "leaning = outcome guess based on p50 vs bucket; WIN ✓ / LOSS ✗ = already determined by obs")
+        st.caption("settlement state: **LOCKED** (obs already decides outcome) · "
+                   "**CLI** (settlement source captured, settle job pending) · "
+                   "**LEANING** (p50 indicates direction) · "
+                   "**COIN-FLIP** (p50 within 1.5°F of bucket edge) · "
+                   "**WAITING** (past valid_date, no obs/CLI yet) · "
+                   "hover for explanation.")
 
     # 7-day SKIP breakdown — surfaces why most signals don't become trades
     st.subheader("SKIP Breakdown (Last 7 Days)",
@@ -750,8 +809,11 @@ if show_help:
     with st.expander("ℹ️ How to Use This Dashboard", expanded=False):
         st.markdown(help_text.OVERVIEW)
 
-tabs = st.tabs(["📊 Status", "📐 Calibration", "💱 Trading", "🔬 Deep Dive"])
-with tabs[0]: tab_status()
-with tabs[1]: tab_calibration()
-with tabs[2]: tab_trading()
-with tabs[3]: tab_deep_dive()
+# Single-tab render based on sidebar radio selection (no st.tabs eager eval).
+TAB_DISPATCH = {
+    "📊 Status":      tab_status,
+    "📐 Calibration": tab_calibration,
+    "💱 Trading":     tab_trading,
+    "🔬 Deep Dive":   tab_deep_dive,
+}
+TAB_DISPATCH[selected_tab]()

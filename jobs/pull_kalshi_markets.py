@@ -45,6 +45,7 @@ def _snapshot_row(payload: dict) -> dict:
         no_bid=_dollars("no_bid_dollars"),
         no_ask_size=payload.get("no_ask_size"),
         no_bid_size=payload.get("no_bid_size"),
+        status=payload.get("status"),
         last_price=_dollars("last_price_dollars"),
         volume_24h=_dollars("volume_24h"),
         open_interest=_dollars("open_interest"),

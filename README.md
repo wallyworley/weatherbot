@@ -1,19 +1,20 @@
 # weatherbot
 
-Probabilistic trading bot for Kalshi daily-temperature contracts. Builds a calibrated forecast distribution from NOAA NBM (probabilistic) and HRRR (deterministic) models, applies station-level bias correction, and computes per-bucket fair probabilities for Kalshi range markets. Sizes positions with a fractional Kelly under fee-aware EV.
+Probabilistic trading bot for Kalshi daily-temperature contracts. Builds a calibrated forecast distribution from NOAA NBM (probabilistic), HRRR, and GFS inputs, applies station-level bias correction, and computes per-bucket fair probabilities for Kalshi range markets. Sizes positions with a fractional Kelly under fee-aware EV.
 
-Runs in paper mode by default. NYC (KNYC) only in current scope.
+Runs in paper mode by default. Current trade scope is KNYC, KMDW, and KMIA, with the pre-trade bias gate blocking any station whose calibration is missing, thin, or stale.
 
 ## How it works
 
 ```
-NOAA S3 (NBM QMD + HRRR)         METAR (aviationweather.gov / IEM)
+NOAA/Open-Meteo (NBM + HRRR + GFS)      METAR + NWS CLI
         │                                    │
         ▼                                    ▼
   data/nbm_fetcher.py              data/metar_fetcher.py
   data/hrrr_fetcher.py                       │
-        │                                    ▼
-        ▼                              daily_obs (Postgres)
+  data/gfs_fetcher.py                       ▼
+        │                         daily_obs / cli_obs (Postgres)
+        ▼
   prob_forecast (Postgres)                   │
         │                                    │
         └──────────┬─────────────────────────┘
@@ -21,7 +22,7 @@ NOAA S3 (NBM QMD + HRRR)         METAR (aviationweather.gov / IEM)
         models/bias_correction.py   (rolling 30-day per-station bias)
                    │
                    ▼
-        models/distribution.py      (piecewise CDF + HRRR blend + intraday floor/ceiling)
+        models/distribution.py      (piecewise CDF + deterministic blend + intraday floor/ceiling)
                    │
                    ▼
             P(lo ≤ T < hi)   for each Kalshi range bucket
@@ -33,7 +34,7 @@ NOAA S3 (NBM QMD + HRRR)         METAR (aviationweather.gov / IEM)
                 main.py             (signal orchestrator → paper_fill)
 ```
 
-Settled fills get reconciled against METAR observations each morning via `jobs/settle_paper_fills.py`.
+Settled fills get reconciled each morning via `jobs/settle_paper_fills.py`, preferring NWS CLI settlement observations and falling back to METAR-derived daily observations when CLI is not captured yet.
 
 ## Repository layout
 
@@ -95,6 +96,7 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
+pip install -e ".[dev]"
 ```
 
 If `pip install` fails on `cfgrib`, the `eccodes` system library is missing — install it first.
@@ -160,7 +162,7 @@ Takes ~30–90 minutes depending on bandwidth (35 days × 4 NBM cycles × 8 forw
 ### 6. Smoke test
 
 ```bash
-pytest tests/ -q
+.venv/bin/python -m pytest tests/ -q
 python -m weather_bot.jobs.pull_kalshi_markets    # should print a market count
 python -m weather_bot.main                          # one signal-evaluation pass
 ```

@@ -1,6 +1,6 @@
 # Weather Bot — Setup & Run
 
-MVP for Kalshi daily-temperature contracts. Scope: KNYC daily high, paper trading only.
+MVP for Kalshi daily-temperature contracts. Scope: KNYC, KMDW, and KMIA daily temperature markets, paper trading only.
 
 ## 1. Environment
 
@@ -8,6 +8,7 @@ MVP for Kalshi daily-temperature contracts. Scope: KNYC daily high, paper tradin
 cd weather_bot
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+pip install -e ".[dev]"
 
 # eccodes (cfgrib dependency) requires the system library on some OSes
 # macOS:   brew install eccodes
@@ -89,7 +90,7 @@ Only flip `PAPER_MODE=false` in `.env` after all five boxes are checked.
 ## 7. Smoke tests
 
 ```bash
-pytest weather_bot/tests -q
+.venv/bin/python -m pytest tests -q
 ```
 
 ## Architecture

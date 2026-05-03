@@ -117,7 +117,7 @@ minutes. Filter by what the bot decided:
   points; bot refused to trade because that big a disagreement usually
   means the bot is broken, not the market.
 - `SKIP/BIAS_GATE` — the bot doesn't have enough learned data for this
-  station/month/timeframe yet. **Stations like KORD and KMIA will show this
+  station/month/timeframe yet. **Stations like KMDW and KMIA will show this
   reason for the first 1–2 weeks until their data accumulates.**
 - `SKIP/TRIPWIRE_RED` — Status tab has this station flagged red. Trades
   stop until you click Ack.

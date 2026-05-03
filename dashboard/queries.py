@@ -3,17 +3,49 @@ sprout one-off queries scattered through it."""
 from __future__ import annotations
 
 from datetime import date, timedelta
+import time
 
 import pandas as pd
 
 from weather_bot.data import persistence
 
+_CACHE_TTL_SECONDS = 12
+_DF_CACHE: dict[tuple[str, object], tuple[float, pd.DataFrame]] = {}
 
-def _df(sql: str, params=()) -> pd.DataFrame:
+
+def _freeze(value):
+    """Make DB params hashable for the dashboard's short-lived query cache."""
+    if isinstance(value, list):
+        return ("__list__", tuple(_freeze(v) for v in value))
+    if isinstance(value, tuple):
+        return tuple(_freeze(v) for v in value)
+    if isinstance(value, dict):
+        return ("__dict__", tuple(sorted((k, _freeze(v)) for k, v in value.items())))
+    return value
+
+
+def _run_df(sql: str, params=()) -> pd.DataFrame:
     with persistence.connect() as conn, conn.cursor() as cur:
         cur.execute(sql, params)
         rows = cur.fetchall()
     return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def _df(sql: str, params=()) -> pd.DataFrame:
+    key = (sql, _freeze(tuple(params)))
+    now = time.monotonic()
+    cached = _DF_CACHE.get(key)
+    if cached is not None:
+        ts, df = cached
+        if now - ts <= _CACHE_TTL_SECONDS:
+            return df.copy()
+    df = _run_df(sql, params)
+    _DF_CACHE[key] = (now, df.copy())
+    return df
+
+
+def clear_cache() -> None:
+    _DF_CACHE.clear()
 
 
 def latest_health() -> pd.DataFrame:
@@ -501,9 +533,11 @@ def open_positions_with_obs() -> pd.DataFrame:
                (km.valid_date - CURRENT_DATE)::int AS days_to_settle,
                ms.yes_ask, ms.yes_bid,
                obs.obs_tmax, obs.obs_tmin,
-               fc.p50
+               fc.p50,
+               cli.tmax_f AS cli_tmax, cli.tmin_f AS cli_tmin
           FROM paper_fill pf
           JOIN kalshi_market km ON km.ticker = pf.ticker
+          JOIN stations st ON st.code = km.station
           LEFT JOIN LATERAL (
               SELECT yes_ask, yes_bid FROM market_snapshot
                WHERE ticker = pf.ticker ORDER BY ts DESC LIMIT 1
@@ -512,7 +546,7 @@ def open_positions_with_obs() -> pd.DataFrame:
               SELECT MAX(temp_f) AS obs_tmax, MIN(temp_f) AS obs_tmin
                 FROM metar_obs
                WHERE station = km.station
-                 AND obs_time::date = km.valid_date
+                 AND (obs_time AT TIME ZONE st.tz)::date = km.valid_date
           ) obs ON true
           LEFT JOIN LATERAL (
               SELECT value AS p50
@@ -523,6 +557,8 @@ def open_positions_with_obs() -> pd.DataFrame:
                                   WHERE station = km.station AND valid_date = km.valid_date
                                     AND var = km.var)
           ) fc ON true
+          LEFT JOIN cli_obs cli
+                 ON cli.station = km.station AND cli.local_date = km.valid_date
          WHERE pf.settled = FALSE
          ORDER BY km.valid_date, pf.ts
     """)

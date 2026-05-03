@@ -364,16 +364,17 @@ def insert_market_snapshots(rows: Iterable[dict]) -> None:
     sql = """
     INSERT INTO market_snapshot
         (ticker, yes_ask, yes_bid, yes_ask_size, yes_bid_size,
-         no_ask, no_bid, no_ask_size, no_bid_size,
+         no_ask, no_bid, no_ask_size, no_bid_size, status,
          last_price, volume_24h, open_interest)
     VALUES
         (%(ticker)s, %(yes_ask)s, %(yes_bid)s, %(yes_ask_size)s, %(yes_bid_size)s,
-         %(no_ask)s, %(no_bid)s, %(no_ask_size)s, %(no_bid_size)s,
+         %(no_ask)s, %(no_bid)s, %(no_ask_size)s, %(no_bid_size)s, %(status)s,
          %(last_price)s, %(volume_24h)s, %(open_interest)s)
     ON CONFLICT (ticker, ts) DO NOTHING
     """
     rows_norm = [{**{"no_ask": None, "no_bid": None,
-                      "no_ask_size": None, "no_bid_size": None}, **r}
+                      "no_ask_size": None, "no_bid_size": None,
+                      "status": None}, **r}
                  for r in rows]
     with connect() as conn, conn.cursor() as cur:
         cur.executemany(sql, rows_norm)

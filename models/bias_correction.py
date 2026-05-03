@@ -119,43 +119,21 @@ def _collect_det_pairs(
 
 
 def recompute(end_date: date | None = None) -> None:
-    """Recompute and upsert bias rows for all active stations."""
-    end_date = end_date or datetime.now(tz=timezone.utc).date()
-    rows: list[dict] = []
+    """Compatibility wrapper for the supported bias retraining job.
 
-    for code in ACTIVE_STATIONS:
-        for model, collector in (
-            ("NBM_QMD", _collect_pairs),
-            ("HRRR", _collect_det_pairs),
-        ):
-            for var in ("TMAX_DAILY", "TMIN_DAILY"):
-                pairs = collector(code, model, var, end_date)
-                if not pairs:
-                    continue
-                # Bucket by (month, lead_day)
-                buckets: dict[tuple[int, int], list[float]] = {}
-                for month, lead, fc, obs in pairs:
-                    buckets.setdefault((month, lead), []).append(fc - obs)
-                for (month, lead), errs in buckets.items():
-                    if len(errs) < 3:
-                        continue
-                    arr = np.asarray(errs, dtype=float)
-                    rows.append(
-                        dict(
-                            station=code,
-                            model=model,
-                            var=var,
-                            month=int(month),
-                            lead_day=int(lead),
-                            mean_bias_f=float(arr.mean()),
-                            stddev_f=float(arr.std(ddof=1)),
-                            sample_size=int(arr.size),
-                        )
-                    )
+    Historical callers used this module-level entrypoint, but its old SQL used
+    UTC-date lead arithmetic and could overwrite the point-in-time-safe rows
+    from `jobs.retrain_bias`. Keep the function so old cron/manual commands
+    do not crash, but delegate all writes to the canonical retrainer.
+    """
+    if end_date is not None:
+        log.warning(
+            "bias_correction.recompute(end_date=...) is deprecated; "
+            "end_date is ignored by jobs.retrain_bias"
+        )
+    from weather_bot.jobs.retrain_bias import retrain
 
-    if rows:
-        persistence.upsert_station_bias(rows)
-        log.info("Updated %d bias rows", len(rows))
+    retrain()
 
 
 _MIN_SAMPLE_SIZE_FOR_TRADING = 10
