@@ -23,7 +23,7 @@ from weather_bot.data import persistence
 from weather_bot.data.persistence import connect
 from weather_bot.models.bias_correction import is_station_calibrated
 from weather_bot.models.distribution import build_station_distribution
-from weather_bot.strategy import ev
+from weather_bot.strategy import ev, reversal_risk
 from weather_bot.strategy.kalshi_client import KalshiClient
 
 
@@ -176,6 +176,24 @@ def run():
             m["station"], m["valid_date"], m["var"], m["lower_f"], m["upper_f"]
         )
 
+        # Composite reversal-risk score (Sprint 3) — diagnostic-only on every
+        # signal. Combines model spread, fair-vs-market gap, boundary mass,
+        # time remaining, NWS overnight jump, regional gradient, and recent
+        # rate-of-change. Intentionally not used to gate or size yet — needs
+        # a backtest like we did for the agreement gate before relying on it.
+        try:
+            yes_mid = ((yes_ask + yes_bid) / 2.0) if (yes_ask is not None and yes_bid is not None) else None
+            mkt_mid = yes_mid if sig.side == "YES" else (1.0 - yes_mid if yes_mid is not None else None)
+            rr = reversal_risk.compute(
+                station=m["station"], valid_date=m["valid_date"],
+                lower_f=m["lower_f"], upper_f=m["upper_f"],
+                fair_prob=fair_prob, market_mid=mkt_mid, cdf=cdf,
+            )
+            sig.reversal_risk = rr.to_jsonb()
+        except Exception as exc:
+            log.warning("reversal_risk compute failed for %s: %s", m["ticker"], exc)
+            sig.reversal_risk = None
+
         # Agreement gate (config flag REQUIRE_AGREEMENT_N, default 0 = disabled).
         # When enabled and the bot wants to OPEN, require N models to vote with
         # the bot's chosen side (YES or NO).
@@ -254,6 +272,7 @@ def run():
             notes=sig.notes,
             skip_reason=sig.skip_reason,
             model_votes=sig.model_votes,
+            reversal_risk=sig.reversal_risk,
         ))
 
         # Paper-fill writer — only when action=OPEN and no existing open fill.

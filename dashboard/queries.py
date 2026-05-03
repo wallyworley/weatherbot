@@ -48,7 +48,8 @@ def open_positions() -> pd.DataFrame:
 def signals_today() -> pd.DataFrame:
     return _df("""
         SELECT s.ts, s.ticker, s.side, s.fair_prob, s.market_ask, s.market_bid,
-               s.edge, s.size_usd, s.action, s.skip_reason, s.model_votes, s.notes,
+               s.edge, s.size_usd, s.action, s.skip_reason, s.model_votes,
+               s.reversal_risk, s.notes,
                km.station, km.var, km.valid_date, km.lower_f, km.upper_f
           FROM signal s
           JOIN kalshi_market km ON km.ticker = s.ticker

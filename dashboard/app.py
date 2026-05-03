@@ -607,9 +607,18 @@ def tab_trading():
             return " ".join(parts) + tail
         sigs_f["votes"] = sigs_f["model_votes"].apply(_fmt_votes)
 
+        def _fmt_risk(rr):
+            if not rr or not isinstance(rr, dict):
+                return ""
+            label = rr.get("label", "?")
+            score = rr.get("score", 0)
+            emoji = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}.get(label, "")
+            return f"{emoji} {label} ({score:.2f})"
+        sigs_f["risk"] = sigs_f["reversal_risk"].apply(_fmt_risk)
+
         st.dataframe(sigs_f[["ts", "ticker", "station", "var", "side", "fair_prob",
                               "market_ask", "market_bid", "divergence", "edge", "size_usd",
-                              "action", "skip_reason", "votes", "notes"]],
+                              "action", "skip_reason", "votes", "risk", "notes"]],
                       use_container_width=True, hide_index=True)
 
     # Distribution preview

@@ -151,6 +151,10 @@ ALTER TABLE signal ADD COLUMN IF NOT EXISTS skip_reason TEXT;
 CREATE INDEX IF NOT EXISTS idx_signal_skip_reason ON signal (skip_reason) WHERE skip_reason IS NOT NULL;
 -- Multi-model directional votes per signal: {"NBM":"YES","HRRR":"YES","GFS":"NO","n_yes":2,"n_no":1}
 ALTER TABLE signal ADD COLUMN IF NOT EXISTS model_votes JSONB;
+-- Composite reversal-risk score + per-component breakdown (Sprint 3).
+-- Shape: {"score":0.42, "label":"MEDIUM", "components": {...weighted contributions}}
+-- Diagnostic-only initially — not used to gate or size trades until evaluated.
+ALTER TABLE signal ADD COLUMN IF NOT EXISTS reversal_risk JSONB;
 
 -- Paper-trade fills (so we can attribute PnL).
 CREATE TABLE IF NOT EXISTS paper_fill (

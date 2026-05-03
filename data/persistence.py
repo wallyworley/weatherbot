@@ -270,17 +270,19 @@ def insert_signal(row: dict) -> int:
     sql = """
     INSERT INTO signal(ticker, side, fair_prob, market_ask, market_bid,
                        edge, ev_per_dollar, kelly_fraction, size_usd, action, notes,
-                       skip_reason, model_votes)
+                       skip_reason, model_votes, reversal_risk)
     VALUES (%(ticker)s, %(side)s, %(fair_prob)s, %(market_ask)s, %(market_bid)s,
             %(edge)s, %(ev_per_dollar)s, %(kelly_fraction)s, %(size_usd)s, %(action)s, %(notes)s,
-            %(skip_reason)s, %(model_votes)s::jsonb)
+            %(skip_reason)s, %(model_votes)s::jsonb, %(reversal_risk)s::jsonb)
     RETURNING id
     """
     mv = row.get("model_votes")
+    rr = row.get("reversal_risk")
     row = {
         **row,
         "skip_reason": row.get("skip_reason"),
         "model_votes": json.dumps(mv) if mv is not None else None,
+        "reversal_risk": json.dumps(rr) if rr is not None else None,
     }
     with connect() as conn, conn.cursor() as cur:
         cur.execute(sql, row)
