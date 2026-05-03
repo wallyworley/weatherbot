@@ -96,9 +96,11 @@ def get_product(product_id: str) -> TextProduct:
 # next is the time of observation (LST).
 
 # Time format varies by WFO: "400 PM" (KNYC), "12:15 AM" (KORD). Accept both.
-_CLI_MAX = re.compile(r"^\s*MAXIMUM\s+(-?\d+)\s+(\d{1,2}:?\d{2}\s*(?:AM|PM))",
+# Temperature value may be followed by a flag letter (R=record, E=estimated,
+# M=missing, P=preliminary). `[A-Z]*` consumes any/all flags before the time.
+_CLI_MAX = re.compile(r"^\s*MAXIMUM\s+(-?\d+)[A-Z]*\s+(\d{1,2}:?\d{2}\s*(?:AM|PM))",
                        re.MULTILINE | re.IGNORECASE)
-_CLI_MIN = re.compile(r"^\s*MINIMUM\s+(-?\d+)\s+(\d{1,2}:?\d{2}\s*(?:AM|PM))",
+_CLI_MIN = re.compile(r"^\s*MINIMUM\s+(-?\d+)[A-Z]*\s+(\d{1,2}:?\d{2}\s*(?:AM|PM))",
                        re.MULTILINE | re.IGNORECASE)
 
 

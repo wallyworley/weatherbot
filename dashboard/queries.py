@@ -17,7 +17,16 @@ def _df(sql: str, params=()) -> pd.DataFrame:
 
 
 def latest_health() -> pd.DataFrame:
-    return _df("SELECT * FROM health_check_latest ORDER BY station, component")
+    """Latest health-check row per (station, component), filtered to GLOBAL +
+    currently-active fetch stations. Excludes stale rows for stations that
+    were previously active but have since been removed from
+    ACTIVE_FETCH_STATIONS (e.g., KORD after the 2026-05-02 KMDW switch)."""
+    from weather_bot.config import ACTIVE_FETCH_STATIONS
+    return _df("""
+        SELECT * FROM health_check_latest
+         WHERE station = 'GLOBAL' OR station = ANY(%s)
+         ORDER BY station, component
+    """, (ACTIVE_FETCH_STATIONS,))
 
 
 def health_history(component_like: str = "%", hours: int = 48) -> pd.DataFrame:

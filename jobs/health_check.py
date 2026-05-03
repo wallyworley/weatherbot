@@ -35,6 +35,11 @@ DEFAULT_THRESHOLDS = {
     # MODEL: 7-day rolling |expected - realized| edge gap per settled fill.
     "model_amber_edge_diff_per_fill": 4.0,    # $/fill
     "model_red_edge_diff_per_fill":   8.0,    # $/fill — breach => RED, blocks new fills
+    # Edge_diff RED requires this many settled fills first. Without it, a
+    # newly-graduated station with 5 unlucky fills triggers RED and blocks
+    # itself before there's a real signal. Brier is per-prediction so it can
+    # still fire RED at the lower (n>=5) threshold.
+    "model_red_edge_diff_min_n": 15,
     # MARKETS: number of open Kalshi markets per station.
     "markets_amber_min":   3,
     "markets_red_min":     1,
@@ -146,8 +151,12 @@ def _model_calibration(thresholds: dict) -> list[dict]:
                     else "RED"   if brier >= thresholds["model_red_brier"]
                     else "AMBER")
         d_abs = abs(diff_per)
+        # edge_diff RED requires a minimum sample size — protects newly-active
+        # stations from false RED alerts on small-sample variance.
+        red_min_n = thresholds["model_red_edge_diff_min_n"]
+        d_red_eligible = n >= red_min_n
         d_status = ("GREEN" if d_abs < thresholds["model_amber_edge_diff_per_fill"]
-                    else "RED"   if d_abs >= thresholds["model_red_edge_diff_per_fill"]
+                    else "RED" if (d_abs >= thresholds["model_red_edge_diff_per_fill"] and d_red_eligible)
                     else "AMBER")
         worst = "RED" if "RED" in (b_status, d_status) else ("AMBER" if "AMBER" in (b_status, d_status) else "GREEN")
         rows.append(_health_row(station, "MODEL", worst, brier,

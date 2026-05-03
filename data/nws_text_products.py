@@ -64,9 +64,13 @@ class DsmObservation:
 # Parsers
 # ---------------------------------------------------------------------------
 # Time format varies by WFO: "400 PM" (KNYC), "12:15 AM" (KORD). Accept both.
-_CLI_MAX = re.compile(r"^\s*MAXIMUM\s+(-?\d+)\s+(\d{1,2}:?\d{2}\s*(?:AM|PM))",
+# Temperature value may be followed by a flag letter:
+#   R = tied or broke a record (KMIA 2026-05-02 had "94R")
+#   E = estimated, M = missing, P = preliminary (per NWS CLI format docs)
+# `[A-Z]*` consumes any/all flag letters before the time field.
+_CLI_MAX = re.compile(r"^\s*MAXIMUM\s+(-?\d+)[A-Z]*\s+(\d{1,2}:?\d{2}\s*(?:AM|PM))",
                        re.MULTILINE | re.IGNORECASE)
-_CLI_MIN = re.compile(r"^\s*MINIMUM\s+(-?\d+)\s+(\d{1,2}:?\d{2}\s*(?:AM|PM))",
+_CLI_MIN = re.compile(r"^\s*MINIMUM\s+(-?\d+)[A-Z]*\s+(\d{1,2}:?\d{2}\s*(?:AM|PM))",
                        re.MULTILINE | re.IGNORECASE)
 
 
