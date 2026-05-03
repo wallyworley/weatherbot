@@ -244,6 +244,11 @@ def run():
                         "BIAS_BLAMED %s: bias-on fair=%.3f tripped divergence; bias-off fair=%.3f trades %s",
                         m["ticker"], fair_prob, fair_nb, sig_nb.side,
                     )
+                    # Preserve diagnostics computed earlier on the original sig.
+                    # They describe the same (station, valid_date, bucket) so they
+                    # remain valid when we swap to the no-bias signal.
+                    sig_nb.model_votes = sig.model_votes
+                    sig_nb.reversal_risk = sig.reversal_risk
                     sig, fair_prob = sig_nb, fair_nb
                 elif sig_nb.skip_reason == "DIVERGENCE":
                     sig.notes = f"MODEL_BLAMED|fair_no_bias={fair_nb:.3f} {sig.notes}"

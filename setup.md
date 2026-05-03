@@ -39,10 +39,16 @@ Pulls 60 days of NBM 12Z cycles and 60 days of METAR observations. Takes ~20-40 
 ## 4. Compute bias tables
 
 ```bash
-python -m weather_bot.jobs.nightly_verify
+python -m weather_bot.jobs.retrain_bias
 ```
 
-Creates rolling 30-day bias rows in `station_bias`. Run nightly after observations are settled.
+Creates rolling 30-day bias rows in `station_bias` using a point-in-time-safe
+SQL path with timezone-aware lead_day arithmetic. Run nightly after observations
+are settled — `morning.sh` does this as step 4/5.
+
+(Historical note: this used to be done by `nightly_verify`, but bias retraining
+was split out into `retrain_bias` and `nightly_verify` is now verification-only
+to avoid two paths writing to `station_bias` with conflicting conventions.)
 
 ## 5. Live data pulls (run on cron)
 
@@ -62,9 +68,13 @@ Creates rolling 30-day bias rows in `station_bias`. Run nightly after observatio
 # Every 10 minutes during trading hours — produce signals
 */10 6-22 * * * cd /path/to/weather_bot && .venv/bin/python -m weather_bot.main
 
-# Nightly — recompute bias & verification
-15 3 * * *  cd /path/to/weather_bot && .venv/bin/python -m weather_bot.jobs.nightly_verify
+# Nightly — bias retrain (writes station_bias) + verification (read-only metrics)
+0 11 * * *  cd /path/to/weather_bot && .venv/bin/python -m weather_bot.jobs.retrain_bias
+15 11 * * * cd /path/to/weather_bot && .venv/bin/python -m weather_bot.jobs.nightly_verify
 ```
+
+(In practice both run inside `morning.sh` — schedule that single script
+rather than these two lines if using `morning.sh`.)
 
 ## 6. Paper-trade checklist
 

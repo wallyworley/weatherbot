@@ -208,14 +208,18 @@ def latest_distribution_inputs(station: str, valid_date: date, var: str) -> dict
                             WHERE station=%s AND valid_date=%s AND var=%s)
          ORDER BY percentile
     """, (station, valid_date, var, station, valid_date, var))
+    # Aggregate hourly TMP_2M into a daily MAX over the *station-local* day.
+    # Plain valid_time::date uses DB session tz which is wrong for non-ET stations.
+    from weather_bot.config import STATIONS
+    tz = STATIONS[station].tz
     out["hrrr"] = _df("""
         SELECT MAX(value) AS tmax FROM det_forecast
          WHERE station=%s AND model='HRRR' AND var='TMP_2M'
-           AND valid_time::date = %s
+           AND (valid_time AT TIME ZONE %s)::date = %s
            AND run_time = (SELECT MAX(run_time) FROM det_forecast
                             WHERE station=%s AND model='HRRR' AND var='TMP_2M'
-                              AND valid_time::date=%s)
-    """, (station, valid_date, station, valid_date))
+                              AND (valid_time AT TIME ZONE %s)::date=%s)
+    """, (station, tz, valid_date, station, tz, valid_date))
     return out
 
 
@@ -267,18 +271,26 @@ def model_accuracy(days_back: int = 30) -> pd.DataFrame:
          WHERE pf.var='TMAX_DAILY' AND pf.percentile=50
     ),
     det AS (
-        SELECT df.station, df.valid_time::date AS valid_date, df.model,
+        -- Group by station-local day, not DB session day, so KMDW/KDEN/KLAX
+        -- don't mis-bucket boundary-hour temps. JOIN through stations for tz.
+        SELECT df.station,
+               (df.valid_time AT TIME ZONE st.tz)::date AS valid_date,
+               df.model,
                MAX(df.value) AS pred
           FROM det_forecast df
+          JOIN stations st ON st.code = df.station
           JOIN (
-              SELECT station, model, valid_time::date AS vd, MAX(run_time) AS rt
-                FROM det_forecast
-               WHERE model IN ('HRRR','GFS') AND var='TMP_2M'
-               GROUP BY station, model, valid_time::date
+              SELECT df2.station, df2.model,
+                     (df2.valid_time AT TIME ZONE st2.tz)::date AS vd,
+                     MAX(df2.run_time) AS rt
+                FROM det_forecast df2
+                JOIN stations st2 ON st2.code = df2.station
+               WHERE df2.model IN ('HRRR','GFS') AND df2.var='TMP_2M'
+               GROUP BY df2.station, df2.model, (df2.valid_time AT TIME ZONE st2.tz)::date
           ) lr ON lr.station = df.station AND lr.model = df.model
-              AND lr.vd = df.valid_time::date AND lr.rt = df.run_time
+              AND lr.vd = (df.valid_time AT TIME ZONE st.tz)::date AND lr.rt = df.run_time
          WHERE df.var = 'TMP_2M'
-         GROUP BY df.station, df.valid_time::date, df.model
+         GROUP BY df.station, (df.valid_time AT TIME ZONE st.tz)::date, df.model
     )
     SELECT t.station, t.valid_date, m.model, m.pred, t.truth_tmax,
            ABS(m.pred - t.truth_tmax) AS abs_err
@@ -319,6 +331,8 @@ def forecast_audit_log(station: str, valid_date) -> pd.DataFrame:
     by dailydewpoint's "Detailed Forecast Log" panel — answers "did the model
     keep flipping its mind?" and shows when each source last agreed/disagreed.
     """
+    from weather_bot.config import STATIONS
+    tz = STATIONS[station].tz
     sql = """
     WITH nbm AS (
         SELECT 'NBM p50' AS source, run_time, value AS forecast_f
@@ -329,20 +343,22 @@ def forecast_audit_log(station: str, valid_date) -> pd.DataFrame:
         SELECT 'HRRR' AS source, run_time, MAX(value) AS forecast_f
           FROM det_forecast
          WHERE station=%s AND model='HRRR' AND var='TMP_2M'
-           AND valid_time::date = %s
+           AND (valid_time AT TIME ZONE %s)::date = %s
          GROUP BY run_time
     ),
     gfs AS (
         SELECT 'GFS' AS source, run_time, MAX(value) AS forecast_f
           FROM det_forecast
          WHERE station=%s AND model='GFS' AND var='TMP_2M'
-           AND valid_time::date = %s
+           AND (valid_time AT TIME ZONE %s)::date = %s
          GROUP BY run_time
     )
     SELECT * FROM nbm UNION ALL SELECT * FROM hrrr UNION ALL SELECT * FROM gfs
      ORDER BY run_time, source
     """
-    return _df(sql, (station, valid_date, station, valid_date, station, valid_date))
+    return _df(sql, (station, valid_date,
+                       station, tz, valid_date,
+                       station, tz, valid_date))
 
 
 def nws_overnight_jump(station: str, valid_date) -> dict | None:

@@ -236,9 +236,12 @@ For each job above, create a `~/Library/LaunchAgents/com.weatherbot.<job>.plist`
 The bot operates on two station lists:
 
 - **`ACTIVE_FETCH_STATIONS`** — fetchers ingest data and bias_correction trains
-  per-station tables for everything in this list. Default: `["KNYC", "KORD", "KMIA"]`.
+  per-station tables for everything in this list. Default: `["KNYC", "KMDW", "KMIA"]`.
 - **`ACTIVE_TRADE_STATIONS`** — only stations in this list have markets scored
-  and paper-filled. Default: `["KNYC"]`.
+  and paper-filled. Default: `["KNYC", "KMDW", "KMIA"]`.
+
+  Note: Chicago is **KMDW (Midway)**, not KORD (O'Hare) — Kalshi's CHI markets
+  resolve on Midway temperatures per the rule sheet.
 
 A station graduates from fetch-only to trade-eligible once its bias table has
 `sample_size >= 10` for the current month at lead_day in `{0,1,2}`. Promote by

@@ -14,6 +14,10 @@ from weather_bot.strategy.kalshi_client import KalshiClient, iter_weather_market
 
 SERIES_BY_STATION = {
     "KNYC": ["KXHIGHNY", "KXLOWNY"],
+    # Kalshi CHI markets settle on Chicago Midway (KMDW), not O'Hare (KORD).
+    # Verified 2026-05-02 from market payload rules_primary text. KORD entry
+    # retained for backward-compat in case ACTIVE_STATIONS ever adds it back.
+    "KMDW": ["KXHIGHCHI", "KXLOWCHI"],
     "KORD": ["KXHIGHCHI", "KXLOWCHI"],
     "KLAX": ["KXHIGHLA", "KXLOWLA"],
     "KMIA": ["KXHIGHMIA", "KXLOWMIA"],
@@ -35,6 +39,12 @@ def _snapshot_row(payload: dict) -> dict:
         yes_bid=_dollars("yes_bid_dollars"),
         yes_ask_size=payload.get("yes_ask_size"),
         yes_bid_size=payload.get("yes_bid_size"),
+        # NO-side captured separately. Kalshi's payload may not always include
+        # these fields (some endpoints only return YES side); default to None.
+        no_ask=_dollars("no_ask_dollars"),
+        no_bid=_dollars("no_bid_dollars"),
+        no_ask_size=payload.get("no_ask_size"),
+        no_bid_size=payload.get("no_bid_size"),
         last_price=_dollars("last_price_dollars"),
         volume_24h=_dollars("volume_24h"),
         open_interest=_dollars("open_interest"),

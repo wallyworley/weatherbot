@@ -130,11 +130,18 @@ def latest_at_valid_time(station: str, valid_time) -> dict | None:
 def daily_features(station: str, target_date) -> dict | None:
     """Aggregate atmospheric signals across the local-day window for the given
     station and target_date. Returns peak BL height, mean cloud cover, peak solar,
-    avg 850/925mb temps — useful for explaining why a TMAX forecast might over/undershoot."""
+    avg 850/925mb temps — useful for explaining why a TMAX forecast might
+    over/undershoot.
+
+    Local day uses STATIONS[station].tz so KMDW (CT), KDEN (MT), KLAX (PT)
+    aggregate over the right window — DB-session-tz date would mis-bucket
+    boundary hours."""
+    from weather_bot.config import STATIONS
+    tz = STATIONS[station].tz
     sql = """
     WITH latest_run AS (
         SELECT MAX(run_time) AS rt FROM atmosphere_signals
-         WHERE station = %s AND valid_time::date = %s
+         WHERE station = %s AND (valid_time AT TIME ZONE %s)::date = %s
     )
     SELECT MAX(bl_height_m)     AS bl_peak_m,
            AVG(cloud_cover_pct) AS cloud_mean_pct,
@@ -143,10 +150,11 @@ def daily_features(station: str, target_date) -> dict | None:
            AVG(tmp_925_f)       AS tmp_925_mean_f,
            COUNT(*)             AS n_hours
       FROM atmosphere_signals, latest_run
-     WHERE station = %s AND valid_time::date = %s AND run_time = latest_run.rt
+     WHERE station = %s AND (valid_time AT TIME ZONE %s)::date = %s
+       AND run_time = latest_run.rt
     """
     with persistence.connect() as conn, conn.cursor() as cur:
-        cur.execute(sql, (station, target_date, station, target_date))
+        cur.execute(sql, (station, tz, target_date, station, tz, target_date))
         r = cur.fetchone()
     if not r or r["n_hours"] == 0:
         return None

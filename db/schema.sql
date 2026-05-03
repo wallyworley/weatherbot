@@ -194,6 +194,14 @@ CREATE TABLE IF NOT EXISTS market_snapshot (
     yes_bid       NUMERIC,
     yes_ask_size  INT,
     yes_bid_size  INT,
+    -- NO-side captured separately because Kalshi's NO orderbook can have its
+    -- own bid/ask that diverges from (1 - yes_*) on low-volume markets due
+    -- to fee-aware spread asymmetry. Required for backtest fidelity when the
+    -- bot trades the NO side.
+    no_ask        NUMERIC,
+    no_bid        NUMERIC,
+    no_ask_size   INT,
+    no_bid_size   INT,
     last_price    NUMERIC,
     volume_24h    NUMERIC,
     open_interest NUMERIC,
@@ -206,6 +214,11 @@ CREATE INDEX IF NOT EXISTS idx_metar_time      ON metar_obs (station, obs_time D
 CREATE INDEX IF NOT EXISTS idx_market_date     ON kalshi_market (station, valid_date);
 CREATE INDEX IF NOT EXISTS idx_signal_ticker   ON signal (ticker, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_snapshot_ts     ON market_snapshot (ts);
+-- Backfill for existing DBs created before NO-side capture was added:
+ALTER TABLE market_snapshot ADD COLUMN IF NOT EXISTS no_ask      NUMERIC;
+ALTER TABLE market_snapshot ADD COLUMN IF NOT EXISTS no_bid      NUMERIC;
+ALTER TABLE market_snapshot ADD COLUMN IF NOT EXISTS no_ask_size INT;
+ALTER TABLE market_snapshot ADD COLUMN IF NOT EXISTS no_bid_size INT;
 
 -- ---------------------------------------------------------------------------
 -- Health & autonomy tables

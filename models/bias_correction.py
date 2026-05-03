@@ -83,6 +83,10 @@ def _collect_det_pairs(
 
     agg = "MAX" if var == "TMAX_DAILY" else "MIN"
     start = end_date - timedelta(days=window)
+    # Aggregate det_forecast to a daily value over the *station-local* day,
+    # not the DB session timezone day. Otherwise KMDW (CT), KDEN (MT), KLAX
+    # (PT) etc. would mis-bucket boundary-hour temperatures into the wrong day.
+    tz = STATIONS[station].tz
     sql = f"""
     WITH obs AS (
         SELECT local_date, CASE WHEN %(var)s = 'TMAX_DAILY' THEN tmax_f ELSE tmin_f END AS obs
@@ -91,14 +95,15 @@ def _collect_det_pairs(
            AND local_date BETWEEN %(start)s AND %(end)s
     ),
     fc AS (
-        SELECT valid_time::date AS valid_date,
+        SELECT (valid_time AT TIME ZONE %(tz)s)::date AS valid_date,
                run_time,
                {agg}(value) AS fc_value,
-               (valid_time::date - run_time::date) AS lead_day
+               ((valid_time AT TIME ZONE %(tz)s)::date
+                  - (run_time AT TIME ZONE %(tz)s)::date) AS lead_day
           FROM det_forecast
          WHERE station = %(station)s AND model = %(model)s AND var = 'TMP_2M'
-           AND valid_time::date BETWEEN %(start)s AND %(end)s
-         GROUP BY valid_time::date, run_time
+           AND (valid_time AT TIME ZONE %(tz)s)::date BETWEEN %(start)s AND %(end)s
+         GROUP BY (valid_time AT TIME ZONE %(tz)s)::date, run_time
     )
     SELECT EXTRACT(MONTH FROM fc.valid_date)::int AS month,
            fc.lead_day::int,
@@ -108,7 +113,8 @@ def _collect_det_pairs(
      WHERE fc.fc_value IS NOT NULL AND obs.obs IS NOT NULL
     """
     with connect() as conn, conn.cursor() as cur:
-        cur.execute(sql, dict(station=station, model=model, var=var, start=start, end=end_date))
+        cur.execute(sql, dict(station=station, model=model, var=var,
+                                start=start, end=end_date, tz=tz))
         return [(r["month"], r["lead_day"], r["fc_value"], r["obs"]) for r in cur.fetchall()]
 
 

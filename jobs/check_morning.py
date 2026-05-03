@@ -1,8 +1,14 @@
-"""Verify last night's morning.sh run completed; email on failure.
+"""Verify today's morning.sh run completed; email on failure.
 
-Run this ~30 min after morning.sh's scheduled fire (02:00 local). Looks for
-today's log at logs/morning/YYYY-MM-DD.log and confirms it ends with the
-"Done." marker that morning.sh prints on success.
+Schedule: 11:23 ET via launchd (com.walter.weatherbot-check-morning.plist).
+This must fire AFTER morning.sh's scheduled run (10:23 ET). Looks for today's
+log at logs/morning/YYYY-MM-DD.log and confirms it ends with the "Done."
+marker that morning.sh prints on success.
+
+Historical note: morning.sh originally ran at 02:00 ET and check_morning at
+02:30 ET. On 2026-05-02 morning was moved to 10:23 (so settle_paper_fills
+could use the morning CLI captured at 09:23). check_morning was moved to
+11:23 the next day after a false-alarm email confirmed the timing problem.
 
 Email is sent via Gmail SMTP. The app password is fetched from macOS
 Keychain — set it once with:

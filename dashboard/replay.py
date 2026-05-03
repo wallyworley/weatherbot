@@ -62,15 +62,18 @@ def _latest_nbm(station, valid_date, var, before_ts):
 
 
 def _latest_hrrr(station, valid_date, before_ts):
+    # Group hourly TMP_2M into a daily MAX over the *station-local* day.
+    from weather_bot.config import STATIONS
+    tz = STATIONS[station].tz
     sql = """SELECT MAX(value) AS tmax FROM det_forecast
               WHERE station=%s AND model='HRRR' AND var='TMP_2M'
-                AND valid_time::date=%s AND run_time<=%s
+                AND (valid_time AT TIME ZONE %s)::date=%s AND run_time<=%s
                 AND run_time = (SELECT MAX(run_time) FROM det_forecast
                                  WHERE station=%s AND model='HRRR' AND var='TMP_2M'
-                                   AND valid_time::date=%s AND run_time<=%s)"""
+                                   AND (valid_time AT TIME ZONE %s)::date=%s AND run_time<=%s)"""
     with persistence.connect() as c, c.cursor() as cur:
-        cur.execute(sql, (station, valid_date, before_ts,
-                          station, valid_date, before_ts))
+        cur.execute(sql, (station, tz, valid_date, before_ts,
+                          station, tz, valid_date, before_ts))
         r = cur.fetchone()
         return r["tmax"] if r and r["tmax"] is not None else None
 

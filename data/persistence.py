@@ -101,20 +101,26 @@ def latest_gfs_tmax(station: str, valid_date: date) -> float | None:
 
 def latest_det_tmax(station: str, valid_date: date, model: str) -> float | None:
     """Latest daily TMAX from a deterministic model in det_forecast (HRRR/GFS).
-    Returns max of hourly TMP_2M from the latest run for the given local day."""
+
+    Returns max of hourly TMP_2M from the latest run grouped by the
+    *station-local* calendar day. Bare `valid_time::date` would group by the
+    DB session timezone, which is wrong for stations not in that timezone
+    (e.g., DB session=ET but station=KMDW which is CT).
+    """
+    tz = STATIONS[station].tz
     sql = """
     SELECT MAX(value) AS tmax
       FROM det_forecast
      WHERE station = %s AND model = %s AND var = 'TMP_2M'
-       AND valid_time::date = %s
+       AND (valid_time AT TIME ZONE %s)::date = %s
        AND run_time = (
            SELECT MAX(run_time) FROM det_forecast
             WHERE station = %s AND model = %s AND var = 'TMP_2M'
-              AND valid_time::date = %s
+              AND (valid_time AT TIME ZONE %s)::date = %s
        )
     """
     with connect() as conn, conn.cursor() as cur:
-        cur.execute(sql, (station, model, valid_date, station, model, valid_date))
+        cur.execute(sql, (station, model, tz, valid_date, station, model, tz, valid_date))
         row = cur.fetchone()
         return row["tmax"] if row else None
 
@@ -347,18 +353,28 @@ def settle_paper_fill(fill_id: int, payout: float) -> None:
 def insert_market_snapshots(rows: Iterable[dict]) -> None:
     """Insert one snapshot row per market per pull cycle.
 
+    Captures both YES and NO orderbook top-of-book — NO-side can diverge from
+    (1 - yes_*) on low-volume markets due to fee-aware spread asymmetry,
+    matters for backtest fidelity when bot trades the NO side.
+
     Uses ON CONFLICT DO NOTHING so re-running within the same second is safe.
     The (ticker, ts) primary key uses DEFAULT now() — caller does not supply ts.
+    Missing NO-side fields default to NULL (back-compat with old callers).
     """
     sql = """
     INSERT INTO market_snapshot
         (ticker, yes_ask, yes_bid, yes_ask_size, yes_bid_size,
+         no_ask, no_bid, no_ask_size, no_bid_size,
          last_price, volume_24h, open_interest)
     VALUES
         (%(ticker)s, %(yes_ask)s, %(yes_bid)s, %(yes_ask_size)s, %(yes_bid_size)s,
+         %(no_ask)s, %(no_bid)s, %(no_ask_size)s, %(no_bid_size)s,
          %(last_price)s, %(volume_24h)s, %(open_interest)s)
     ON CONFLICT (ticker, ts) DO NOTHING
     """
+    rows_norm = [{**{"no_ask": None, "no_bid": None,
+                      "no_ask_size": None, "no_bid_size": None}, **r}
+                 for r in rows]
     with connect() as conn, conn.cursor() as cur:
-        cur.executemany(sql, list(rows))
+        cur.executemany(sql, rows_norm)
         conn.commit()

@@ -15,7 +15,9 @@ def test_event_ticker_high_ny():
 def test_event_ticker_low_chi():
     evt = kalshi_parser.parse_event_ticker("KXLOWCHI-26APR18")
     assert evt["var"] == "TMIN_DAILY"
-    assert evt["station"] == "KORD"
+    # Kalshi CHI markets resolve on Chicago Midway (KMDW), not O'Hare.
+    # Verified 2026-05-02 from market payload rules_primary.
+    assert evt["station"] == "KMDW"
 
 
 def test_bucket_range():
