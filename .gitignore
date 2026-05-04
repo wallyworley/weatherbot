@@ -22,3 +22,4 @@ data/*.parquet
 .idea/
 .vscode/
 *.swp
+memory/
