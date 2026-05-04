@@ -144,7 +144,13 @@ def _format_alert(row: dict) -> tuple[str, str]:
 
 
 def _fetch_unalerted_reds() -> list[dict]:
-    """Get RED rows from the latest health_check that haven't been alerted yet."""
+    """Get RED rows that start a new RED streak and haven't been alerted yet.
+
+    health_check inserts a new row every run, so checking alerted_at IS NULL
+    on the latest row would re-alert every cycle. Instead we require that no
+    previous alerted row exists since the most recent non-RED row for the same
+    (station, component) — i.e., alert exactly once per continuous RED streak.
+    """
     sql = """
     SELECT hc.* FROM health_check hc
      WHERE hc.status = 'RED'
@@ -153,6 +159,19 @@ def _fetch_unalerted_reds() -> list[dict]:
        AND hc.ts = (
            SELECT MAX(ts) FROM health_check
             WHERE station = hc.station AND component = hc.component
+       )
+       AND NOT EXISTS (
+           SELECT 1 FROM health_check prev
+            WHERE prev.station = hc.station
+              AND prev.component = hc.component
+              AND prev.alerted_at IS NOT NULL
+              AND prev.ts > (
+                  SELECT COALESCE(MAX(ts2), '2000-01-01'::timestamptz)
+                    FROM health_check hc2
+                   WHERE hc2.station = hc.station
+                     AND hc2.component = hc.component
+                     AND hc2.status != 'RED'
+              )
        )
      ORDER BY hc.component, hc.station
     """

@@ -525,6 +525,25 @@ def pnl_today() -> dict:
             "net": realized + unrealized, "n_settled": n_settled, "n_open": len(open_pos)}
 
 
+def pnl_yesterday() -> dict:
+    """Yesterday's settled P&L (fills whose valid_date = yesterday and are settled)."""
+    row = _df("""
+        SELECT COALESCE(SUM((pf.payout - pf.price) * pf.contracts - pf.fees), 0.0) AS net,
+               COUNT(*) AS n_fills,
+               SUM(CASE WHEN (pf.payout - pf.price) * pf.contracts - pf.fees > 0 THEN 1 ELSE 0 END) AS n_wins
+          FROM paper_fill pf
+          JOIN kalshi_market km ON km.ticker = pf.ticker
+         WHERE pf.settled = TRUE AND km.valid_date = CURRENT_DATE - INTERVAL '1 day'
+    """)
+    if row.empty:
+        return {"net": None, "n_fills": 0, "n_wins": 0}
+    return {
+        "net": float(row.iloc[0]["net"]),
+        "n_fills": int(row.iloc[0]["n_fills"]),
+        "n_wins": int(row.iloc[0]["n_wins"]),
+    }
+
+
 def open_positions_with_obs() -> pd.DataFrame:
     """Open positions augmented with today's running obs and current p50 forecast."""
     return _df("""

@@ -61,6 +61,23 @@ COLOR = {"GREEN": "#16a34a", "AMBER": "#f59e0b", "RED": "#dc2626", "GREY": "#737
 EMOJI = {"GREEN": "🟢", "AMBER": "🟡", "RED": "🔴"}
 
 
+def _bucket_label(lower_f, upper_f) -> str:
+    """Human-readable Kalshi temperature bucket matching Kalshi's exact display text.
+
+    upper_f is stored as exclusive (hi+1) by the parser, so we subtract 1
+    before displaying. Format mirrors Kalshi: "79° to 80°", "78° or below", "87° or above".
+    """
+    lo = lower_f if lower_f is not None and not (isinstance(lower_f, float) and pd.isna(lower_f)) else None
+    hi = upper_f if upper_f is not None and not (isinstance(upper_f, float) and pd.isna(upper_f)) else None
+    if lo is None and hi is None:
+        return "?"
+    if lo is None:
+        return f"{hi - 1:.0f}° or below"
+    if hi is None:
+        return f"{lo:.0f}° or above"
+    return f"{lo:.0f}° to {hi - 1:.0f}°"
+
+
 def status_pill(label: str, status: str, value: str | None = None, sub: str | None = None,
                 tooltip: str | None = None):
     color = COLOR.get(status, COLOR["GREY"])
@@ -139,8 +156,13 @@ def tab_status():
         s = overall_status(health, ["PNL"], trade_stations)
         net = sum(json.loads(r if isinstance(r, str) else json.dumps(r)).get("net_7d", 0)
                   for r in pnl_rows["detail"].tolist())
-        status_pill("P&L 7D", s, value=f"${net:+,.2f}",
-                    tooltip="Net P&L on settled fills, last 7 days.")
+        yest = queries.pnl_yesterday()
+        if yest["net"] is not None:
+            yest_sub = f"yesterday {yest['net']:+,.2f} ({yest['n_wins']}/{yest['n_fills']} wins)"
+        else:
+            yest_sub = "yesterday —"
+        status_pill("P&L 7D", s, value=f"${net:+,.2f}", sub=yest_sub,
+                    tooltip="Net P&L on settled fills, last 7 days. Yesterday = prior calendar day settled fills.")
     with cols[5]:
         today = queries.pnl_today()
         t_net = today["net"]
@@ -596,20 +618,22 @@ def tab_trading():
             p50_str = f"{r['p50']:.1f}°F" if pd.notna(r.get("p50")) else "—"
             mtm_str = f"${r['mtm']:+.2f}" if r["mtm"] is not None else "—"
             state_label, state_color, state_explain = r["state"], r["_state_color"], r["_state_explain"]
+            bucket = _bucket_label(r.get("lower_f"), r.get("upper_f"))
             rows_html.append(
                 f"<tr>"
-                f"<td>{r['ticker']}</td><td>{r['side']}</td>"
+                f"<td><strong>{bucket}</strong></td><td>{r['side']}</td>"
                 f"<td>{r['price']:.2f}</td><td>{r['contracts']}</td>"
                 f"<td>{r['valid_date']}</td><td>{r['days_to_settle']}d</td>"
                 f"<td>{obs_str}</td><td>{p50_str}</td><td>{mtm_str}</td>"
                 f"<td title='{state_explain}' style='color:{state_color};font-weight:600'>{state_label}</td>"
+                f"<td style='opacity:0.5;font-size:0.8em'>{r['ticker']}</td>"
                 f"</tr>"
             )
         header = ("<table style='width:100%;font-size:0.85em;border-collapse:collapse'>"
                   "<thead><tr style='border-bottom:1px solid #444'>"
-                  "<th>ticker</th><th>side</th><th>price</th><th>contracts</th>"
+                  "<th>bucket</th><th>side</th><th>price</th><th>contracts</th>"
                   "<th>valid_date</th><th>days</th>"
-                  "<th>obs so far</th><th>p50</th><th>MtM</th><th>settlement</th>"
+                  "<th>obs so far</th><th>p50</th><th>MtM</th><th>settlement</th><th>ticker</th>"
                   "</tr></thead><tbody>")
         st.markdown(header + "".join(rows_html) + "</tbody></table>", unsafe_allow_html=True)
         st.caption("settlement state: **LOCKED** (obs already decides outcome) · "
@@ -674,10 +698,11 @@ def tab_trading():
             emoji = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}.get(label, "")
             return f"{emoji} {label} ({score:.2f})"
         sigs_f["risk"] = sigs_f["reversal_risk"].apply(_fmt_risk)
+        sigs_f["bucket"] = sigs_f.apply(lambda r: _bucket_label(r.get("lower_f"), r.get("upper_f")), axis=1)
 
-        st.dataframe(sigs_f[["ts", "ticker", "station", "var", "side", "fair_prob",
+        st.dataframe(sigs_f[["ts", "bucket", "station", "var", "side", "fair_prob",
                               "market_ask", "market_bid", "divergence", "edge", "size_usd",
-                              "action", "skip_reason", "votes", "risk", "notes"]],
+                              "action", "skip_reason", "votes", "risk", "notes", "ticker"]],
                       use_container_width=True, hide_index=True)
 
     # Distribution preview

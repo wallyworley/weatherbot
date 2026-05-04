@@ -274,22 +274,43 @@ def build_station_distribution(
         # which created excess tail mass. Keep the default 2.5°F — the interior
         # knot rescaling already covers the bulk of the width correction.
 
+    from weather_bot.config import STATIONS
+    import pytz
+    tz = pytz.timezone(STATIONS[station].tz)
+    hr_local = now.astimezone(tz).hour
+
     # Same-day HRRR blend.
+    hrrr_used = False
     if lead_day == 0 and var == "TMAX_DAILY":
         hrrr_val = persistence.latest_hrrr_tmax(station, target_date)
         if hrrr_val is not None:
-            # Apply HRRR bias if available.
             hrrr_bias = persistence.get_station_bias(station, "HRRR", var, month, 0)
             if hrrr_bias:
                 hrrr_val -= float(hrrr_bias["mean_bias_f"])
-            from weather_bot.config import STATIONS
-            import pytz
-            tz = pytz.timezone(STATIONS[station].tz)
-            hr_local = now.astimezone(tz).hour
             w = _hrrr_blend_weight(hr_local)
             if w > 0:
                 nbm_median = cdf.median()
                 cdf.shift += w * (hrrr_val - nbm_median)
+                hrrr_used = True
+                log.info("HRRR blend %s %s: val=%.1f w=%.2f shift=%+.2f",
+                         station, target_date, hrrr_val, w, w * (hrrr_val - nbm_median))
+
+    # GFS blend — multi-day (lead >= 1) and same-day fallback when HRRR unavailable.
+    # GFS consistently beats NBM at all stations (MAE 1.05-1.24°F vs 1.56-2.85°F),
+    # so a modest constant weight is safe. Lower weight than HRRR: GFS lacks the
+    # boundary-layer obs that make same-day HRRR so accurate.
+    _GFS_WEIGHT = 0.30
+    if var == "TMAX_DAILY" and (lead_day >= 1 or (lead_day == 0 and not hrrr_used)):
+        gfs_val = persistence.latest_gfs_tmax(station, target_date)
+        if gfs_val is not None:
+            gfs_bias = persistence.get_station_bias(station, "GFS", var, month, max(lead_day, 0))
+            if gfs_bias:
+                gfs_val -= float(gfs_bias["mean_bias_f"])
+            w = _GFS_WEIGHT
+            nbm_median = cdf.median()
+            cdf.shift += w * (gfs_val - nbm_median)
+            log.info("GFS blend %s %s lead=%d: val=%.1f w=%.2f shift=%+.2f",
+                     station, target_date, lead_day, gfs_val, w, w * (gfs_val - nbm_median))
 
     # Intraday persistence conditioning — only on same-day markets.
     # TMAX: day's final high >= max observed so far (floor).
