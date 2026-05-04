@@ -2,6 +2,25 @@
 
 ## Next Highest-Leverage Work
 
+### HFMETAR rollout — DONE phases 1+2+3 (2026-05-03)
+
+Backfill, live path, and bias retrain all complete. KMDW + KMIA now use 5-min
+MADIS HFMETAR via IEM for both `metar_fetcher.backfill()` and live `run()`.
+KNYC stays on aviationweather.gov hourly METAR (non-ASOS coop site, no feed).
+`Station.is_asos` flag drives routing. KMIA bias rows shifted ~−0.81°F per
+bucket. Verification numbers post-rebackfill: KMDW |bias|=0.06°F, KMIA |bias|=0.05°F
+vs CLI (was +0.73 / +0.81 pre-rollout).
+
+**Open: phase 4 review on/after 2026-05-10.** Run
+`python -m research.review_hfmetar_impact` to compare pre/post forecast
+accuracy and paper-fill PnL. If KMIA post-cutover MAE and PnL/contract are
+no worse than pre, consider:
+- Loosening the CLI-required gate in `settle_paper_fills`: with daily_obs
+  now within ~0.05°F of CLI for ASOS stations, the bot could reasonably
+  settle on daily_obs when CLI is delayed past the 11AM ET cutoff (currently
+  the bot waits or skips).
+- Promoting a graduated KMDW once it accumulates bias-table samples.
+
 ### Point-in-time replay and verification
 
 The dashboard has a useful counterfactual replay tool, but the nightly

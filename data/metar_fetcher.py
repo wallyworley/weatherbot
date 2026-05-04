@@ -219,38 +219,70 @@ def compute_daily(station: Station, metars: Iterable[dict], day: date) -> dict |
 
 
 def run(hours: int = 36, days_back: int = 2) -> None:
-    """Pull recent METARs (live path). Use `backfill(days=N)` for history."""
+    """Pull recent METARs (live path). Use `backfill(days=N)` for history.
+
+    For ASOS stations (`station.is_asos`), pulls 5-min HFMETAR via IEM —
+    same source as the historical backfill, keeping daily_obs consistently
+    HFMETAR-derived for those stations. Non-ASOS stations (KNYC) stay on
+    aviationweather.gov hourly METAR. Live HFMETAR latency is ~2-5 minutes.
+    """
+    from weather_bot.data import iem_fetcher  # local import to avoid cycles
+
     all_metars: list[dict] = []
     daily_rows: list[dict] = []
+    failed: list[tuple[str, str]] = []  # (station_code, error_str)
     for code in ACTIVE_STATIONS:
         station = STATIONS[code]
-        metars = fetch(code, hours)
-        # Guard against implausible swings BEFORE compute_daily runs so
-        # corrupt readings don't pollute daily TMAX (and downstream bias
-        # correction). Filter is per-station to give clean prior-comparison.
-        metars = filter_implausible_swings(metars)
-        all_metars.extend(metars)
-        log.info("METAR: %s fetched=%d (post-guard)", code, len(metars))
+        try:
+            if station.is_asos:
+                # IEM `hours` is integer; round up to be safe at the lookback edge.
+                metars = iem_fetcher.fetch_recent(code, hours=int(hours) + 1)
+                source_tag = "HFMETAR"
+            else:
+                metars = fetch(code, hours)
+                source_tag = "METAR"
+            # Guard against implausible swings BEFORE compute_daily runs so
+            # corrupt readings don't pollute daily TMAX (and downstream bias
+            # correction). Filter is per-station to give clean prior-comparison.
+            metars = filter_implausible_swings(metars)
+            all_metars.extend(metars)
+            log.info("METAR: %s source=%s fetched=%d (post-guard)", code, source_tag, len(metars))
 
-        today_local = datetime.now(tz=pytz.timezone(station.tz)).date()
-        for offset in range(days_back + 1):
-            d = today_local - timedelta(days=offset)
-            row = compute_daily(station, metars, d)
-            if row:
-                daily_rows.append(row)
+            today_local = datetime.now(tz=pytz.timezone(station.tz)).date()
+            for offset in range(days_back + 1):
+                d = today_local - timedelta(days=offset)
+                row = compute_daily(station, metars, d)
+                if row:
+                    row["source"] = source_tag
+                    daily_rows.append(row)
+        except Exception as exc:
+            log.error("METAR fetch failed for %s: %s", code, exc)
+            failed.append((code, str(exc)))
+            continue
 
     if all_metars:
         persistence.upsert_metar(all_metars)
     if daily_rows:
         persistence.upsert_daily_obs(daily_rows)
-    log.info("Persisted %d METAR rows, %d daily rows", len(all_metars), len(daily_rows))
+    log.info("Persisted %d METAR rows, %d daily rows (failed stations: %s)",
+             len(all_metars), len(daily_rows),
+             ", ".join(f"{c}({e})" for c, e in failed) or "none")
+    if failed and len(failed) == len(ACTIVE_STATIONS):
+        # All stations failed — surface as a job-level failure so launchd /
+        # check_morning notice it. Partial failures are tolerated.
+        raise RuntimeError(f"METAR fetch failed for all stations: {failed}")
 
 
 def backfill(days: int) -> None:
-    """Pull `days` days of METARs from IEM ASOS archive, compute daily Tmax/Tmin.
+    """Pull `days` days of METARs from IEM, compute daily Tmax/Tmin.
 
-    Uses Iowa Environmental Mesonet as the historical source — aviationweather.gov
-    is unreliable beyond ~48h. Single CSV request per station, no chunking.
+    For ASOS stations (`station.is_asos`), uses the 5-min HFMETAR feed which
+    eliminates the systematic ~0.8°F undercount of hourly :53 METAR vs CLI
+    (verified 2026-05-03 backtest). For non-ASOS sites like KNYC (coop) the
+    feed has no sub-hourly rows, so we use the hourly path.
+
+    daily_obs.source is tagged "HFMETAR" or "METAR" accordingly so we can
+    audit which method produced each row.
     """
     from weather_bot.data import iem_fetcher  # local import to avoid cycles
 
@@ -260,9 +292,14 @@ def backfill(days: int) -> None:
 
     for code in ACTIVE_STATIONS:
         station = STATIONS[code]
-        log.info("METAR backfill (IEM): %s %s -> %s", code, start_date, end_date)
+        use_hfmetar = station.is_asos
+        source_tag = "HFMETAR" if use_hfmetar else "METAR"
+        log.info("METAR backfill (IEM, %s): %s %s -> %s", source_tag, code, start_date, end_date)
         try:
-            metars = iem_fetcher.fetch_historical(code, start_date, end_date)
+            if use_hfmetar:
+                metars = iem_fetcher.fetch_historical_5min(code, start_date, end_date)
+            else:
+                metars = iem_fetcher.fetch_historical(code, start_date, end_date)
         except Exception as exc:
             log.error("IEM backfill failed for %s: %s", code, exc)
             continue
@@ -278,6 +315,7 @@ def backfill(days: int) -> None:
             d = today_local - timedelta(days=offset)
             row = compute_daily(station, metars, d)
             if row:
+                row["source"] = source_tag
                 daily_rows.append(row)
         if daily_rows:
             persistence.upsert_daily_obs(daily_rows)

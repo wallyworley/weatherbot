@@ -17,7 +17,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Iterable
 
-from weather_bot.config import ACTIVE_FETCH_STATIONS, ACTIVE_TRADE_STATIONS, BANKROLL_USD
+from weather_bot.config import ACTIVE_FETCH_STATIONS, ACTIVE_TRADE_STATIONS, BANKROLL_USD, STATIONS
 from weather_bot.data import persistence
 
 log = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 # realized-vs-expected diff ~$5/fill). See docs in dashboard/help_text.py for
 # reasoning. Override via --thresholds-json on the command line for tuning.
 DEFAULT_THRESHOLDS = {
-    # DATA: feed staleness in minutes. Cadence-aware: NBM 6h, HRRR 1h, METAR 30m.
+    # DATA: feed staleness in minutes. Cadence-aware: NBM 6h, HRRR 1h, METAR/HFMETAR 1h (gated by hourly pull_metar cron, not source cadence).
     "data_amber_lag_mult": 1.5,   # >1.5x cadence = AMBER
     "data_red_lag_mult":   3.0,   # >3.0x cadence = RED
     # MODEL: 7-day rolling Brier for settled fills.
@@ -70,6 +70,10 @@ FEED_CADENCE_MIN = {
     # newest obs is ~0min old; right before it's ~60min old. We don't want
     # AMBER to fire just because we're approaching the next observation.
     "METAR": 60,
+    # ASOS stations produce 5-min HFMETAR but our launchd-metar cron pulls
+    # every 60 min, so freshness is gated by the cron interval, not the source
+    # cadence. Keep parity with METAR until the cron is shortened.
+    "HFMETAR": 60,
     "KALSHI": 15,
 }
 
@@ -78,38 +82,56 @@ FEED_CADENCE_MIN = {
 # Metric collectors
 # ---------------------------------------------------------------------------
 def _data_freshness(thresholds: dict) -> list[dict]:
-    """One row per feed: status driven by minutes since latest ingestion."""
+    """One row per feed: status driven by minutes since latest ingestion.
+
+    METAR is split per active station because different stations now use
+    different sources (ASOS=HFMETAR ~5 min cadence, KNYC=hourly METAR), and
+    a fresh row at one station would otherwise mask a stalled feed at another.
+    """
     rows: list[dict] = []
-    queries = {
+    global_queries = {
         "NBM":   "SELECT MAX(ingested_at) AS t FROM prob_forecast",
         "HRRR":  "SELECT MAX(ingested_at) AS t FROM det_forecast WHERE model='HRRR'",
-        "METAR": "SELECT MAX(obs_time)    AS t FROM metar_obs",
         "KALSHI":"SELECT MAX(updated_at)  AS t FROM kalshi_market",
     }
     now = datetime.now(tz=timezone.utc)
     with persistence.connect() as conn, conn.cursor() as cur:
-        for feed, sql in queries.items():
+        for feed, sql in global_queries.items():
             cur.execute(sql)
             r = cur.fetchone()
-            t = r["t"] if r else None
-            if t is None:
-                rows.append(_health_row("GLOBAL", f"DATA_{feed}", "RED", None,
-                                        detail={"reason": "no rows in table"},
-                                        amber_t=None, red_t=None))
+            rows.append(_freshness_row("GLOBAL", feed, r["t"] if r else None,
+                                        FEED_CADENCE_MIN[feed], thresholds, now))
+
+        # Per-station METAR freshness — the feed kind depends on is_asos so
+        # the cadence used in the threshold also depends on the station.
+        for code in ACTIVE_FETCH_STATIONS:
+            station = STATIONS.get(code)
+            if station is None:
                 continue
-            if t.tzinfo is None:
-                t = t.replace(tzinfo=timezone.utc)
-            lag_min = (now - t).total_seconds() / 60.0
-            cadence = FEED_CADENCE_MIN[feed]
-            amber_t = cadence * thresholds["data_amber_lag_mult"]
-            red_t   = cadence * thresholds["data_red_lag_mult"]
-            status = "GREEN" if lag_min < amber_t else ("RED" if lag_min > red_t else "AMBER")
-            rows.append(_health_row("GLOBAL", f"DATA_{feed}", status, lag_min,
-                                    detail={"lag_min": round(lag_min, 1),
-                                            "cadence_min": cadence,
-                                            "last_ingest": t.isoformat()},
-                                    amber_t=amber_t, red_t=red_t))
+            feed = "HFMETAR" if station.is_asos else "METAR"
+            cur.execute("SELECT MAX(obs_time) AS t FROM metar_obs WHERE station=%s", (code,))
+            r = cur.fetchone()
+            rows.append(_freshness_row(code, feed, r["t"] if r else None,
+                                        FEED_CADENCE_MIN[feed], thresholds, now))
     return rows
+
+
+def _freshness_row(station: str, feed: str, t, cadence: int, thresholds: dict, now) -> dict:
+    if t is None:
+        return _health_row(station, f"DATA_{feed}", "RED", None,
+                           detail={"reason": "no rows in table"},
+                           amber_t=None, red_t=None)
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    lag_min = (now - t).total_seconds() / 60.0
+    amber_t = cadence * thresholds["data_amber_lag_mult"]
+    red_t   = cadence * thresholds["data_red_lag_mult"]
+    status = "GREEN" if lag_min < amber_t else ("RED" if lag_min > red_t else "AMBER")
+    return _health_row(station, f"DATA_{feed}", status, lag_min,
+                       detail={"lag_min": round(lag_min, 1),
+                               "cadence_min": cadence,
+                               "last_ingest": t.isoformat()},
+                       amber_t=amber_t, red_t=red_t)
 
 
 def _model_calibration(thresholds: dict) -> list[dict]:

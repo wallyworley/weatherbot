@@ -14,6 +14,7 @@ Three sub-questions, three scripts:
 | Script | Question |
 |---|---|
 | `compare_observations.py` | Does our METAR-reconstructed daily TMAX/TMIN match what NWS publishes (and uses for Kalshi settlement)? |
+| `compare_hfmetar.py`      | Would switching daily TMAX from hourly METAR to 5-min MADIS HFMETAR close the gap to CLI? |
 | `compare_forecasts.py`    | Are ECMWF / GFS competitive with NBM / HRRR at lead-1 TMAX accuracy? |
 | (manual)                  | Does adding ECMWF/GFS to the ensemble change bucket probabilities enough to flip trade decisions? |
 
@@ -42,6 +43,10 @@ python -m research.sources.openmeteo_fetcher  --station KNYC --target-date 2026-
 
 # Compare CLI vs DSM vs METAR for the past 30 days, all fetch stations
 python -m research.compare_observations --days-back 30
+
+# Compare hourly METAR vs 5-min HFMETAR against CLI ground truth
+# (requires cli_obs populated — run pull_cli --days-back 30 first if sparse)
+python -m research.compare_hfmetar --days-back 30
 
 # Compare NBM/HRRR/ECMWF/GFS forecast accuracy at lead day 1
 python -m research.compare_forecasts --days-back 30 --lead-days 1
@@ -84,3 +89,25 @@ distribution.py until that signal is established.**
 
 If the comparison shows no improvement, leave the bot alone and delete the
 fetchers — that's also a successful outcome of this layer.
+
+## 2026-05-03 finding: HFMETAR vs hourly METAR
+
+`compare_hfmetar.py` over 30 days, 81 paired CLI+METAR station-days:
+
+| Station | Paired days | hourly mean abs err | HFMETAR mean abs err | Helped / hurt / tied |
+|---|---|---|---|---|
+| KNYC | 30 | 0.87°F | 0.87°F | 0 / 0 / 30 |
+| KMDW | 30 | 0.73°F | 0.53°F | 16 / 8 / 6 |
+| KMIA | 21 | 0.81°F | 0.37°F | 11 / 5 / 5 |
+
+Key result is the **signed mean** shift: hourly systematically undercounts CLI
+by +0.73 to +0.87°F (the :53 reading misses intra-hour peaks). HFMETAR collapses
+that bias to ±0.05°F at the ASOS stations.
+
+KNYC is unchanged because it's a coop site, not ASOS — see
+`memory/knyc_no_hfmetar.md`. Don't expect HFMETAR to help there ever.
+
+Promotion path: swap `iem_fetcher.fetch_historical()` for
+`fetch_historical_5min()` in `metar_fetcher.backfill()` for KMDW + KMIA. Keep
+KNYC on hourly. Bias correction will need retraining since the systematic
++0.7°F miss it currently corrects for would no longer be present.

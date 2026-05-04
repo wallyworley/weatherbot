@@ -60,8 +60,9 @@ to avoid two paths writing to `station_bias` with conflicting conventions.)
 # Every 6 hours at :30 — pull latest NBM QMD (cycles at 00/06/12/18Z)
 30 3,9,15,21 * * * cd /path/to/weather_bot && .venv/bin/python -m weather_bot.jobs.pull_nbm
 
-# Every 30 minutes — pull METAR observations
-*/30 * * * * cd /path/to/weather_bot && .venv/bin/python -m weather_bot.jobs.pull_metar
+# Hourly — pull observations (5-min HFMETAR via IEM for ASOS stations,
+# hourly METAR via aviationweather.gov for non-ASOS like KNYC).
+0 * * * * cd /path/to/weather_bot && .venv/bin/python -m weather_bot.jobs.pull_metar
 
 # Every 15 minutes — refresh Kalshi market list
 */15 * * * * cd /path/to/weather_bot && .venv/bin/python -m weather_bot.jobs.pull_kalshi_markets

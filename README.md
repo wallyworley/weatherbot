@@ -222,7 +222,7 @@ For each job above, create a `~/Library/LaunchAgents/com.weatherbot.<job>.plist`
 |---|---|---|
 | `jobs.pull_nbm` | Pull NBM QMD percentile forecasts | Every 6h, ~3h after cycle |
 | `jobs.pull_hrrr` | Pull HRRR deterministic forecasts | Hourly |
-| `jobs.pull_metar` | Pull observations from aviationweather.gov | Every 30 min |
+| `jobs.pull_metar` | Pull observations: 5-min HFMETAR via IEM for ASOS stations, hourly METAR via aviationweather.gov for KNYC | Hourly |
 | `jobs.pull_kalshi_markets` | Refresh Kalshi market list + price snapshots | Every 15 min |
 | `main` (via `tick.sh`) | Score markets, generate paper fills | Every 15 min when markets are open |
 | `jobs.settle_paper_fills` | Reconcile fills against observed temperatures | Once daily, after midnight |

@@ -27,10 +27,15 @@ class Station:
     lat: float
     lon: float          # negative west
     tz: str
+    # ASOS stations have a 5-min MADIS HFMETAR feed available via IEM that
+    # closes the ~0.8°F undercount of hourly METAR vs CLI (verified 2026-05-03,
+    # research/compare_hfmetar.py). KNYC is a coop site, not ASOS — no feed,
+    # leave on hourly. See memory/knyc_no_hfmetar.md.
+    is_asos: bool = True
 
 # Kalshi daily temp contracts reference these NWS stations.
 STATIONS: dict[str, Station] = {
-    "KNYC": Station("KNYC", "New York Central Park", 40.7794, -73.9692, "America/New_York"),
+    "KNYC": Station("KNYC", "New York Central Park", 40.7794, -73.9692, "America/New_York", is_asos=False),
     "KLGA": Station("KLGA", "New York LaGuardia",    40.7772, -73.8726, "America/New_York"),
     # Kalshi NHIGH for Chicago resolves on **Midway (KMDW)** per the rule sheet,
     # not O'Hare (KORD). Verified 2026-05-02 by inspecting market payloads
@@ -144,6 +149,29 @@ IEM_ASOS_URL = (
     "&year2={y2}&month2={m2}&day2={d2}&hour2=0&minute2=0"
     "&tz=Etc%2FUTC&format=onlycomma&latlon=no&missing=null&trace=null"
     "&direct=yes&report_type=3&report_type=4"
+)
+
+# IEM 5-minute MADIS HFMETAR feed. Includes routine METAR (report_type=3,4),
+# SPECI, and the 5-min HFMETAR rows (report_type=1) — the latter have CSV
+# tmpf=M but carry temp/dewpoint to 0.1°C in the raw METAR's Txxxxxxxx group.
+# Use for live morning-window monitoring; IEM throttles 1 req/sec/IP.
+IEM_ASOS_RECENT_URL = (
+    "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?"
+    "station={station}&data=tmpf,dwpf,sknt,metar"
+    "&hours={hours}"
+    "&tz=Etc%2FUTC&format=onlycomma&latlon=no&missing=null&trace=null"
+    "&direct=yes"
+)
+
+# IEM date-ranged URL with no report_type filter — returns routine METAR +
+# SPECI + 5-min MADIS HFMETAR. Used for historical 5-min backtests.
+IEM_ASOS_HFMETAR_URL = (
+    "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?"
+    "station={station}&data=tmpf,dwpf,sknt,metar"
+    "&year1={y1}&month1={m1}&day1={d1}&hour1=0&minute1=0"
+    "&year2={y2}&month2={m2}&day2={d2}&hour2=0&minute2=0"
+    "&tz=Etc%2FUTC&format=onlycomma&latlon=no&missing=null&trace=null"
+    "&direct=yes"
 )
 
 # ---------------------------------------------------------------------------
