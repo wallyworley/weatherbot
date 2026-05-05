@@ -535,7 +535,7 @@ def pnl_yesterday() -> dict:
           JOIN kalshi_market km ON km.ticker = pf.ticker
          WHERE pf.settled = TRUE AND km.valid_date = CURRENT_DATE - INTERVAL '1 day'
     """)
-    if row.empty:
+    if row.empty or int(row.iloc[0]["n_fills"]) == 0:
         return {"net": None, "n_fills": 0, "n_wins": 0}
     return {
         "net": float(row.iloc[0]["net"]),
