@@ -155,14 +155,34 @@ def is_station_calibrated(
     force the signal to SKIP regardless of computed edge. This is the
     safety rail that lets us add new fetch-only stations without those
     stations accidentally trading uncalibrated.
-    """
-    row = persistence.get_station_bias(station, "NBM_QMD", var, target_date.month, max(lead_day, 0))
-    if row is None:
-        return False, f"BIAS_MISSING|station={station}|month={target_date.month}|lead={lead_day}"
 
-    n = int(row.get("sample_size") or 0)
-    if n < min_n:
-        return False, f"BIAS_THIN|n={n}<{min_n}"
+    Important: get_station_bias has a month-fallback that returns April rows
+    when May is thin. We must check the exact-month cell first — if it exists
+    but has n < min_n, block the trade. Only treat a missing exact-month row
+    as a pass-through to the fallback when the month literally has no data yet
+    (e.g., the first day of a new month before any retrain).
+    """
+    month = target_date.month
+    lead = max(lead_day, 0)
+
+    # Exact-month check: if a cell exists for this month, its sample size rules.
+    # The month-fallback in get_station_bias would hide a thin-but-present cell.
+    exact = persistence.get_station_bias_exact(station, "NBM_QMD", var, month, lead)
+    if exact is not None:
+        n_exact = int(exact.get("sample_size") or 0)
+        if n_exact < min_n:
+            return False, f"BIAS_THIN|n={n_exact}<{min_n}|month={month}"
+        # Exact month cell is thick enough — fall through to staleness check below.
+        row = exact
+    else:
+        # No exact-month row yet (new month, first day). Use fallback so we
+        # don't block trading entirely, but require the fallback to be thick.
+        row = persistence.get_station_bias(station, "NBM_QMD", var, month, lead)
+        if row is None:
+            return False, f"BIAS_MISSING|station={station}|month={month}|lead={lead_day}"
+        n = int(row.get("sample_size") or 0)
+        if n < min_n:
+            return False, f"BIAS_THIN|n={n}<{min_n}"
 
     updated_at = row.get("updated_at")
     if updated_at is not None:

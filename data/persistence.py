@@ -186,6 +186,15 @@ def upsert_station_bias(rows: Iterable[dict]):
         conn.commit()
 
 
+def get_station_bias_exact(station: str, model: str, var: str, month: int, lead_day: int) -> dict | None:
+    """Return bias row only if the exact (month, lead_day) cell exists — no fallback."""
+    sql = """SELECT * FROM station_bias
+              WHERE station=%s AND model=%s AND var=%s AND month=%s AND lead_day=%s"""
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, (station, model, var, month, lead_day))
+        return cur.fetchone()
+
+
 def get_station_bias(station: str, model: str, var: str, month: int, lead_day: int) -> dict | None:
     """Return bias row for the requested (month, lead_day), or fall back to
     the nearest available lead_day within the same regime.
