@@ -530,7 +530,7 @@ def pnl_yesterday() -> dict:
     row = _df("""
         SELECT COALESCE(SUM((pf.payout - pf.price) * pf.contracts - pf.fees), 0.0) AS net,
                COUNT(*) AS n_fills,
-               SUM(CASE WHEN (pf.payout - pf.price) * pf.contracts - pf.fees > 0 THEN 1 ELSE 0 END) AS n_wins
+               COALESCE(SUM(CASE WHEN (pf.payout - pf.price) * pf.contracts - pf.fees > 0 THEN 1 ELSE 0 END), 0) AS n_wins
           FROM paper_fill pf
           JOIN kalshi_market km ON km.ticker = pf.ticker
          WHERE pf.settled = TRUE AND km.valid_date = CURRENT_DATE - INTERVAL '1 day'
