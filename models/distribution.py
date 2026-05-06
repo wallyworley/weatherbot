@@ -219,6 +219,12 @@ def build_station_distribution(
         raw_std = float(bias_row["stddev_f"])
         target_std = raw_std
 
+        # Lead-day variance inflation: calibration shows lead_day >= 1 forecasts
+        # are overconfident (+30-56 bps), while lead_day == 0 is well-calibrated.
+        # Boost target_std by 1.35x for lead_day >= 1 to match observed uncertainty.
+        if lead_day >= 1:
+            target_std *= 1.35
+
         # Empirical-Bayes style shrinkage: lambda = n / (n + k), k=10 prior strength.
         #   n=30 -> 0.75 applied | n=19 -> 0.66 | n=10 -> 0.50 | n=5 -> 0.33
         _PRIOR_N = 10
@@ -260,7 +266,9 @@ def build_station_distribution(
         # producing a cluster of YES-side fills at fair=30-45% / market=5-20%
         # that lost 7-of-8. Tightening to 1.10x improved Brier 0.139→0.133 and
         # replay P&L by ~$20 while preserving high-divergence (>=0.40) home runs.
-        _MAX_WIDEN_FACTOR = 1.10
+        # CALIBRATION FIX (May 6, 2026): Lead_day >= 1 shows +30-56 bps overconfidence.
+        # Raise cap to 1.45x to allow 1.35x lead-specific inflation to apply fully.
+        _MAX_WIDEN_FACTOR = 1.45 if lead_day >= 1 else 1.10
         if target_std > 0 and len(cdf.values) >= 2:
             cur_p90 = float(np.interp(0.90, cdf.probs, cdf.values))
             cur_p10 = float(np.interp(0.10, cdf.probs, cdf.values))
