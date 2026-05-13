@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -18,6 +19,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
+from weather_bot import config
 from weather_bot.dashboard import help_text, queries, replay as replay_engine
 from weather_bot.data import persistence
 
@@ -26,10 +28,40 @@ st.set_page_config(page_title="weather_bot · Command Center", layout="wide", pa
 # Tab dispatch lives in the sidebar (st.radio) instead of st.tabs because
 # tabs eagerly evaluate every panel on every refresh — visible cost on a
 # 15s auto-refresh. Radio renders only the selected tab.
-TAB_ORDER = ["📊 Status", "📐 Calibration", "💱 Trading", "🔬 Deep Dive"]
+TAB_ORDER = ["Simple", "Home", "Trading", "Profitability", "Status", "Calibration", "Deep Dive"]
+
+st.markdown("""
+<style>
+  .block-container { padding-top: 1.2rem; }
+  .wb-card {
+    border: 1px solid rgba(128, 128, 128, 0.25);
+    border-radius: 8px;
+    padding: 0.85rem 1rem;
+    background: rgba(128, 128, 128, 0.05);
+    min-height: 102px;
+  }
+  .wb-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    color: rgba(128, 128, 128, 0.95);
+    letter-spacing: 0;
+  }
+  .wb-value { font-size: 1.55rem; font-weight: 700; margin-top: 0.2rem; }
+  .wb-sub { font-size: 0.84rem; color: rgba(128, 128, 128, 0.95); margin-top: 0.2rem; }
+  .wb-callout {
+    border-left: 6px solid var(--wb-color);
+    border-radius: 8px;
+    padding: 1rem 1.1rem;
+    background: rgba(128, 128, 128, 0.06);
+    margin: 0.4rem 0 1rem 0;
+  }
+  .wb-callout-title { font-size: 1.3rem; font-weight: 700; margin-bottom: 0.25rem; }
+  .wb-callout-body { font-size: 0.98rem; line-height: 1.45; color: rgba(128, 128, 128, 0.98); }
+</style>
+""", unsafe_allow_html=True)
 
 with st.sidebar:
-    st.title("⚙️ Controls")
+    st.title("Controls")
     selected_tab = st.radio("View", TAB_ORDER, key="selected_tab",
                               label_visibility="collapsed")
     st.divider()
@@ -43,14 +75,14 @@ with st.sidebar:
         st.rerun()
     st.caption("Last loaded: " + datetime.now().strftime("%H:%M:%S"))
     st.divider()
-    show_help = st.toggle("Show help panels", value=True,
+    show_help = st.toggle("Show help panels", value=False,
                           help="Expand legend / explanation text on each tab.")
     st.divider()
     st.caption("**Trading:** " + ", ".join(queries.trade_eligible_stations()))
     st.caption("**Gathering data only:** " + ", ".join(s for s in queries.fetch_stations()
                                               if s not in queries.trade_eligible_stations()))
     st.divider()
-    with st.expander("📖 Glossary — What These Terms Mean"):
+    with st.expander("Glossary"):
         st.markdown(help_text.GLOSSARY)
 
 
@@ -85,7 +117,7 @@ def status_pill(label: str, status: str, value: str | None = None, sub: str | No
     sub_html = f"<div style='font-size:0.85em;opacity:0.85'>{sub}</div>" if sub else ""
     val_html = f"<div style='font-size:1.4em;font-weight:600;margin-top:4px'>{value}</div>" if value else ""
     block = f"""
-        <div style="background:{color};color:white;padding:14px 18px;border-radius:10px;margin-bottom:8px;">
+        <div style="background:{color};color:white;padding:14px 18px;border-radius:8px;margin-bottom:8px;">
           <div style='font-size:0.78em;letter-spacing:0.05em;text-transform:uppercase'>{label} {emoji}</div>
           {val_html}
           {sub_html}
@@ -94,6 +126,32 @@ def status_pill(label: str, status: str, value: str | None = None, sub: str | No
     st.markdown(block, unsafe_allow_html=True)
     if tooltip:
         st.caption(tooltip)
+
+
+def metric_card(label: str, value: str, sub: str = "", color: str | None = None):
+    style = f"color:{color};" if color else ""
+    st.markdown(
+        f"""
+        <div class="wb-card">
+          <div class="wb-label">{label}</div>
+          <div class="wb-value" style="{style}">{value}</div>
+          <div class="wb-sub">{sub}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def callout(title: str, body: str, color: str = "#16a34a"):
+    st.markdown(
+        f"""
+        <div class="wb-callout" style="--wb-color:{color};">
+          <div class="wb-callout-title">{title}</div>
+          <div class="wb-callout-body">{body}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def overall_status(rows: pd.DataFrame, components: list[str], stations_filter: set[str] | None = None) -> str:
@@ -107,9 +165,342 @@ def overall_status(rows: pd.DataFrame, components: list[str], stations_filter: s
     return "GREEN"
 
 
+SKIP_REASON_LABELS = {
+    "BIAS_GATE": "waiting for enough station history",
+    "TRIPWIRE_RED": "safety stop is active",
+    "NO_EDGE": "market price is not good enough",
+    "DIVERGENCE": "bot and market disagree too much",
+    "PROFIT_GATE": "profitability guardrail blocked it",
+    "FEE_LOAD": "fees are too high",
+    "NO_BOOK": "missing usable market price",
+    "AGREEMENT": "weather models do not agree",
+    "UNCLASSIFIED": "uncategorized skip",
+}
+
+
+def _model_trust_summary() -> tuple[str, str, str]:
+    rel = queries.event_reliability_bins(days_back=30)
+    if rel.empty:
+        return "Learning", "not enough settled signal outcomes yet", COLOR["GREY"]
+    rel = rel.copy()
+    rel["gap"] = (rel["mean_pred"].astype(float) - rel["observed_freq"].astype(float)).abs()
+    rel["weight"] = rel["n_events"].astype(float).clip(lower=0.0)
+    total_weight = float(rel["weight"].sum())
+    if total_weight <= 0:
+        return "Learning", "not enough effective events yet", COLOR["GREY"]
+    weighted_gap = float((rel["gap"] * rel["weight"]).sum() / total_weight)
+    if weighted_gap >= 0.15:
+        return "Low", f"average miss is about {weighted_gap:.0%}", COLOR["RED"]
+    if weighted_gap >= 0.08:
+        return "Mixed", f"average miss is about {weighted_gap:.0%}", COLOR["AMBER"]
+    return "Good", f"average miss is about {weighted_gap:.0%}", COLOR["GREEN"]
+
+
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
+def tab_simple():
+    health = queries.latest_health()
+    positions = queries.open_positions_with_obs()
+    signals = queries.signals_today()
+    skip = queries.skip_breakdown(days_back=7)
+    today = queries.pnl_today()
+    yest = queries.pnl_yesterday()
+    slices = queries.profitability_slices(days_back=7)
+
+    red_alerts = 0
+    amber_alerts = 0
+    if not health.empty:
+        red_alerts = len(health[(health.status == "RED") & (health.acknowledged_at.isna())])
+        amber_alerts = len(health[health.status == "AMBER"])
+
+    opens_today = int((signals["action"] == "OPEN").sum()) if not signals.empty else 0
+    skips_today = int((signals["action"] == "SKIP").sum()) if not signals.empty else 0
+    open_cost = 0.0
+    if not positions.empty:
+        open_cost = float((positions["price"].astype(float) * positions["contracts"].astype(int)).sum())
+
+    trust_label, trust_detail, trust_color = _model_trust_summary()
+    pnl_7d = 0.0 if slices.empty else float(slices["net_pnl"].sum())
+
+    if red_alerts:
+        verdict = "Stop and look"
+        verdict_body = f"{red_alerts} red safety alert is active. The bot should be blocking affected new trades until reviewed."
+        verdict_color = COLOR["RED"]
+    elif trust_label == "Low":
+        verdict = "Paper only"
+        verdict_body = "The model is still too overconfident. Let it keep collecting data, but do not treat the probabilities as live-money ready."
+        verdict_color = COLOR["AMBER"]
+    elif amber_alerts:
+        verdict = "Watch"
+        verdict_body = f"{amber_alerts} warning item is active. Nothing screams broken, but the bot deserves a quick glance."
+        verdict_color = COLOR["AMBER"]
+    else:
+        verdict = "Looks okay"
+        verdict_body = "Feeds and safety checks look normal. Still paper trading, so this is observation mode."
+        verdict_color = COLOR["GREEN"]
+
+    st.subheader("Simple View", help="Plain-English summary first; detailed diagnostics stay in the other tabs.")
+    callout(verdict, verdict_body, verdict_color)
+
+    cols = st.columns(4)
+    with cols[0]:
+        metric_card("Mode", "Paper only" if config.PAPER_MODE else "Live trading",
+                    "no real orders" if config.PAPER_MODE else "real orders enabled",
+                    COLOR["GREEN"] if config.PAPER_MODE else COLOR["RED"])
+    with cols[1]:
+        trade_text = f"{opens_today} opened" if opens_today else "No new trades"
+        metric_card("Today", trade_text, f"{skips_today} skipped")
+    with cols[2]:
+        metric_card("Open Risk", f"${open_cost:,.0f}", f"{len(positions)} open paper positions")
+    with cols[3]:
+        metric_card("Model Trust", trust_label, trust_detail, trust_color)
+
+    st.divider()
+
+    left, right = st.columns([1, 1])
+    with left:
+        st.subheader("What The Bot Is Doing")
+        if signals.empty:
+            st.info("No signals have been logged today.")
+        elif opens_today == 0:
+            if not skip.empty:
+                top = skip.iloc[0]
+                reason = str(top["skip_reason"])
+                simple_reason = SKIP_REASON_LABELS.get(reason, reason.lower())
+                callout(
+                    "Mostly waiting",
+                    f"The main reason is: <strong>{simple_reason}</strong>. Raw code: <code>{reason}</code>.",
+                    COLOR["AMBER"],
+                )
+            else:
+                callout("Mostly waiting", "The bot has not found a trade worth opening today.", COLOR["AMBER"])
+        else:
+            callout("Taking paper trades", f"The bot opened {opens_today} paper trade(s) today.", COLOR["GREEN"])
+
+        if not skip.empty:
+            easy_skip = skip.head(5).copy()
+            easy_skip["plain_english"] = easy_skip["skip_reason"].map(SKIP_REASON_LABELS).fillna(easy_skip["skip_reason"])
+            st.dataframe(
+                easy_skip[["plain_english", "n", "n_tickers"]],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "plain_english": "Why it skipped",
+                    "n": "Signals",
+                    "n_tickers": "Markets",
+                },
+            )
+
+    with right:
+        st.subheader("Money Snapshot")
+        money_cols = st.columns(3)
+        money_cols[0].metric("Today", f"${today['net']:+,.2f}")
+        money_cols[1].metric("Last 7 days", f"${pnl_7d:+,.2f}")
+        if yest["net"] is None:
+            money_cols[2].metric("Yesterday", "n/a")
+        else:
+            money_cols[2].metric("Yesterday", f"${yest['net']:+,.2f}", f"{yest['n_wins']}/{yest['n_fills']} wins")
+        st.caption("These are paper-trading dollars. Negative numbers are useful feedback while calibration is being fixed.")
+
+    st.divider()
+    st.subheader("Open Positions")
+    if positions.empty:
+        st.info("No open paper positions.")
+    else:
+        simple_pos = positions.copy()
+        simple_pos["bucket"] = simple_pos.apply(lambda r: _bucket_label(r.get("lower_f"), r.get("upper_f")), axis=1)
+        simple_pos["cost"] = simple_pos["price"].astype(float) * simple_pos["contracts"].astype(int)
+        simple_pos["day"] = simple_pos["valid_date"].astype(str)
+        st.dataframe(
+            simple_pos[["station", "day", "bucket", "side", "contracts", "cost"]],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "station": "City",
+                "day": "Weather day",
+                "bucket": "Temperature range",
+                "side": "Bet",
+                "contracts": "Contracts",
+                "cost": st.column_config.NumberColumn("Cost", format="$%.2f"),
+            },
+        )
+
+    st.divider()
+    with st.expander("Advanced detail charts"):
+        tab_home()
+
+
+def tab_home():
+    health = queries.latest_health()
+    trade_stations = set(queries.trade_eligible_stations())
+    today = queries.pnl_today()
+    yest = queries.pnl_yesterday()
+    positions = queries.open_positions_with_obs()
+    signals = queries.signals_today()
+    skip = queries.skip_breakdown(days_back=7)
+
+    red_alerts = 0
+    if not health.empty:
+        red_alerts = len(health[(health.status == "RED") & (health.acknowledged_at.isna())])
+
+    st.subheader("Today", help="The shortest path to: are we healthy, exposed, and making money?")
+    cols = st.columns(5)
+    with cols[0]:
+        color = "#16a34a" if today["net"] >= 0 else "#dc2626"
+        metric_card("Today P&L", f"${today['net']:+,.2f}",
+                    f"${today['realized']:+.2f} settled · ${today['unrealized']:+.2f} MtM", color)
+    with cols[1]:
+        metric_card("Open Positions", str(len(positions)), f"{today['n_open']} for today's valid date")
+    with cols[2]:
+        opens = int((signals["action"] == "OPEN").sum()) if not signals.empty else 0
+        skips = int((signals["action"] == "SKIP").sum()) if not signals.empty else 0
+        metric_card("Signals Today", f"{opens} open", f"{skips} skipped")
+    with cols[3]:
+        y_sub = "no settled fills yesterday" if yest["net"] is None else f"{yest['n_wins']}/{yest['n_fills']} wins"
+        y_val = "n/a" if yest["net"] is None else f"${yest['net']:+,.2f}"
+        metric_card("Yesterday", y_val, y_sub)
+    with cols[4]:
+        alert_color = "#dc2626" if red_alerts else "#16a34a"
+        metric_card("Blocking Alerts", str(red_alerts), "unacked red health rows", alert_color)
+
+    st.divider()
+
+    left, right = st.columns([1.25, 1])
+    with left:
+        st.subheader("Open Position Watchlist", help="Settlement state and mark-to-market for live paper positions.")
+        if positions.empty:
+            st.info("No open positions.")
+        else:
+            watch = positions.copy()
+            states = watch.apply(lambda r: pd.Series(_settlement_state(r),
+                                                     index=["state", "_state_color", "_state_explain"]),
+                                 axis=1)
+            watch = pd.concat([watch, states], axis=1)
+            watch["bucket"] = watch.apply(lambda r: _bucket_label(r.get("lower_f"), r.get("upper_f")), axis=1)
+            watch["mtm"] = watch.apply(
+                lambda r: None if pd.isna(r.yes_ask) or pd.isna(r.yes_bid)
+                else ((float(r.yes_ask) if r.side == "YES" else 1.0 - float(r.yes_bid)) - float(r.price))
+                * int(r.contracts),
+                axis=1,
+            )
+            st.dataframe(
+                watch[["station", "bucket", "side", "price", "contracts", "valid_date",
+                       "days_to_settle", "p50", "mtm", "state", "ticker"]],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "price": st.column_config.NumberColumn(format="%.2f"),
+                    "p50": st.column_config.NumberColumn(format="%.1f"),
+                    "mtm": st.column_config.NumberColumn(format="$%+.2f"),
+                },
+            )
+
+    with right:
+        st.subheader("Why Trades Are Skipped", help="Last 7 days, grouped by canonical skip reason.")
+        if skip.empty:
+            st.caption("No skip signals in the last 7 days.")
+        else:
+            fig = px.bar(skip, x="skip_reason", y="n", text="n",
+                         labels={"skip_reason": "Reason", "n": "Signals"},
+                         color="skip_reason")
+            fig.update_layout(height=320, showlegend=False, margin=dict(l=5, r=5, t=5, b=5))
+            st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+    st.subheader("Station Snapshot", help="The current weather context for each trade station.")
+    cols = st.columns(len(queries.trade_eligible_stations()))
+    for col, st_code in zip(cols, queries.trade_eligible_stations()):
+        with col:
+            rate = queries.temp_rate_of_change(st_code)
+            field = queries.regional_temp_field(st_code)
+            primary_temp = field["primary_temp"] if field else (rate["last_temp_f"] if rate else None)
+            rate_str = ""
+            if rate is not None and rate.get("rate_f_per_hr") is not None:
+                direction = "warming" if rate["rate_f_per_hr"] > 0.1 else ("cooling" if rate["rate_f_per_hr"] < -0.1 else "flat")
+                rate_str = f"{direction} {abs(rate['rate_f_per_hr']):.1f} deg/hr"
+            elif rate is not None and rate.get("suppressed"):
+                rate_str = "rate suppressed"
+            temp = "no recent temp" if primary_temp is None else f"{primary_temp:.1f}F"
+            if field is not None and field["n_stations"] > 1:
+                sub = f"{rate_str} · spread {field['spread']:.1f}F · primary {field['vs_mean']:+.1f}F vs mean"
+            else:
+                sub = rate_str or "waiting on regional field"
+            metric_card(st_code, temp, sub)
+
+
+def tab_profitability():
+    st.subheader("Profitability Guardrails", help="Production controls currently shaping paper/live entries.")
+    guard_cols = st.columns(5)
+    with guard_cols[0]:
+        metric_card("Controls", "on" if config.PROFIT_CONTROLS_ENABLED else "off",
+                    "PROFIT_CONTROLS_ENABLED")
+    with guard_cols[1]:
+        paused = ", ".join(config.PAUSED_TRADE_STATIONS) or "none"
+        metric_card("Paused Stations", paused, "skip reason PROFIT_GATE")
+    with guard_cols[2]:
+        metric_card("KNYC Lead 1+", f"{config.KNYC_L1_SIZE_MULT:.0%}", "size multiplier")
+    with guard_cols[3]:
+        metric_card("NO Under 50c", f"{config.NO_UNDER_50C_SIZE_MULT:.0%}", "size multiplier")
+    with guard_cols[4]:
+        metric_card("YES 25-50c", f"{config.YES_25_50C_SIZE_MULT:.0%}", "size multiplier")
+
+    st.divider()
+    days_back = st.slider("Profitability window", min_value=7, max_value=90, value=30, step=7)
+    slices = queries.profitability_slices(days_back=days_back)
+
+    if slices.empty:
+        st.info("No settled fills in this window yet.")
+    else:
+        total_pnl = float(slices["net_pnl"].sum())
+        total_expected = float(slices["model_claimed_ev"].sum())
+        fills = int(slices["fills"].sum())
+        metric_cols = st.columns(4)
+        metric_cols[0].metric("Net P&L", f"${total_pnl:+,.2f}")
+        metric_cols[1].metric("Model-Claimed EV", f"${total_expected:+,.2f}")
+        metric_cols[2].metric("Actual vs Claimed", f"${total_pnl - total_expected:+,.2f}")
+        metric_cols[3].metric("Settled Fills", f"{fills:,}")
+        st.caption(
+            "Model-Claimed EV is what the bot believed at entry. A large positive "
+            "claim with weak realized P&L is an overconfidence warning, not profit."
+        )
+
+        chart = slices.copy()
+        chart["slice"] = (
+            chart["station"] + " L" + chart["lead_day"].astype(str) + " " +
+            chart["side"] + " " + chart["price_band"]
+        )
+        fig = px.bar(chart.sort_values("net_pnl"), x="net_pnl", y="slice", orientation="h",
+                     color="net_pnl", color_continuous_scale=["#dc2626", "#d4d4d4", "#16a34a"],
+                     labels={"net_pnl": "Net P&L", "slice": "Slice"})
+        fig.update_layout(height=max(360, 26 * len(chart)), margin=dict(l=5, r=5, t=5, b=5))
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.dataframe(
+            slices,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "avg_price": st.column_config.NumberColumn(format="%.2f"),
+                "win_rate": st.column_config.NumberColumn(format="%.1%"),
+                "net_pnl": st.column_config.NumberColumn(format="$%+.2f"),
+                "pnl_per_fill": st.column_config.NumberColumn(format="$%+.2f"),
+                "model_claimed_ev": st.column_config.NumberColumn(format="$%+.2f"),
+                "realized_vs_claimed": st.column_config.NumberColumn(format="$%+.2f"),
+            },
+        )
+
+    st.divider()
+    st.subheader("Latest Profitability Replay", help="Output from jobs/profitability_report.py.")
+    reports = sorted(Path("research/reports").glob("profitability_report_*.md"))
+    if not reports:
+        st.caption("No profitability report found yet. Run `python -m weather_bot.jobs.profitability_report --days-back 30`.")
+    else:
+        latest = reports[-1]
+        st.caption(str(latest))
+        st.markdown(latest.read_text())
+
+
 def tab_status():
     if show_help:
         with st.expander("ℹ️ How to Read This Tab", expanded=False):
@@ -138,7 +529,7 @@ def tab_status():
         else:
             sub = "no settled fills yet"
         status_pill("MODEL", s, sub=sub,
-                    tooltip="Brier score + |expected − realized| edge per settled fill, last 7d.")
+                    tooltip="Brier score + |model-claimed - realized| edge per settled fill, last 7d.")
     with cols[2]:
         s = overall_status(health, ["MARKETS"], trade_stations)
         n_tot = sum(int(json.loads(r if isinstance(r, str) else json.dumps(r)).get("n_open", 0))
@@ -232,8 +623,48 @@ def tab_calibration():
     daily["edge_diff"] = daily["realized"] - daily["expected"]
     daily["edge_diff_per_fill"] = daily["edge_diff"] / daily["n"]
 
+    trust_label, trust_detail, trust_color = _model_trust_summary()
+    avg_gap = float(daily["edge_diff_per_fill"].mean()) if not daily.empty else 0.0
+    if avg_gap < -4:
+        gap_label = "Overconfident"
+        gap_color = COLOR["RED"]
+        gap_sub = "claimed more edge than reality delivered"
+    elif avg_gap > 4:
+        gap_label = "Underconfident"
+        gap_color = COLOR["AMBER"]
+        gap_sub = "may be passing on too much edge"
+    else:
+        gap_label = "Close"
+        gap_color = COLOR["GREEN"]
+        gap_sub = "claimed edge and actual results are near each other"
+
+    st.subheader("Plain-English Calibration Summary")
+    summary_cols = st.columns(3)
+    with summary_cols[0]:
+        metric_card("Can I trust the odds?", trust_label, trust_detail, trust_color)
+    with summary_cols[1]:
+        metric_card("Profit claim", gap_label, f"{avg_gap:+.2f} dollars per fill · {gap_sub}", gap_color)
+    with summary_cols[2]:
+        total_fills = int(daily["n"].sum())
+        metric_card("Evidence", f"{total_fills} fills", "last 14 settled days")
+
+    if trust_label == "Low" or gap_label == "Overconfident":
+        callout(
+            "Bottom line",
+            "The bot is still learning. Treat these probabilities as research signals, not live-money odds.",
+            COLOR["AMBER"],
+        )
+    else:
+        callout(
+            "Bottom line",
+            "Calibration is not flashing danger right now, but keep watching the simple summary before trusting size.",
+            COLOR["GREEN"],
+        )
+
+    st.divider()
+
     # Edge-gap line chart with threshold band
-    st.subheader("Daily Expected vs Realized Edge",
+    st.subheader("Daily Model-Claimed vs Realized Edge",
                  help=help_text.METRIC_TOOLTIPS["edge_gap"])
     fig = go.Figure()
     for station in daily["station"].unique():
@@ -247,14 +678,16 @@ def tab_calibration():
                    annotation_text="RED ($8/fill)", annotation_position="right")
     fig.add_hline(y=-8, line_dash="dash", line_color="red")
     fig.add_hline(y=0, line_color="grey", opacity=0.3)
-    fig.update_layout(yaxis_title="$/fill (realized − expected)", xaxis_title="valid_date",
+    fig.update_layout(yaxis_title="$/fill (realized - model-claimed)", xaxis_title="valid_date",
                        height=350, margin=dict(l=10, r=10, t=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
     # Reliability diagram
-    st.subheader("Reliability Diagram (Last 30 Days)",
+    st.subheader("Fill-Weighted Reliability Diagram (Last 30 Days)",
                  help="Forecast probability deciles vs realized win frequency. "
-                      "On a calibrated model, points sit on the diagonal.")
+                      "On a calibrated model, points sit on the diagonal. "
+                      "Fill-weighted view can over-count one weather event when "
+                      "several fills were opened on the same station/date.")
     rel = queries.reliability_bins(days_back=30)
     if rel.empty:
         st.caption("Not enough data yet.")
@@ -273,6 +706,63 @@ def tab_calibration():
                             xaxis=dict(range=[0,1]), yaxis=dict(range=[0,1]),
                             height=380, margin=dict(l=10, r=10, t=10, b=10))
         st.plotly_chart(fig2, use_container_width=True)
+
+    st.subheader("Event-Weighted Reliability Diagram (Last 30 Days)",
+                 help="Same reliability check, but each ticker/side/probability "
+                      "bucket contributes one event of weight. This is the more "
+                      "honest view when signals or fills are clustered around a "
+                      "single station-date.")
+    erel = queries.event_reliability_bins(days_back=30)
+    if erel.empty:
+        st.caption("Not enough settled signal outcomes yet.")
+    else:
+        fig_event = go.Figure()
+        fig_event.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines",
+                                       line=dict(color="grey", dash="dot"),
+                                       name="perfect", showlegend=False))
+        for station in erel["station"].unique():
+            sub = erel[erel["station"] == station]
+            marker_size = sub["n_events"].astype(float).clip(lower=1) * 3 + 4
+            fig_event.add_trace(go.Scatter(
+                x=sub["mean_pred"], y=sub["observed_freq"],
+                mode="lines+markers",
+                marker=dict(size=marker_size),
+                name=station,
+                customdata=sub[["n_events", "n_signals"]],
+                hovertemplate=(
+                    "pred=%{x:.2f}<br>obs=%{y:.2f}<br>"
+                    "events=%{customdata[0]:.1f}<br>signals=%{customdata[1]}<extra></extra>"
+                ),
+            ))
+        fig_event.update_layout(xaxis_title="forecast P", yaxis_title="observed freq",
+                                xaxis=dict(range=[0,1]), yaxis=dict(range=[0,1]),
+                                height=380, margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig_event, use_container_width=True)
+
+    st.subheader("Signal-Based YES Probability Calibration Map (Last 60 Days)",
+                 help="Logged YES bucket probability vs actual bucket outcome, "
+                      "event-weighted so repeated scoring of the same market "
+                      "does not dominate. This is the evidence table used by "
+                      "the live probability calibrator before sizing.")
+    ycal = queries.yes_probability_calibration(days_back=60)
+    if ycal.empty:
+        st.caption("No settled signal outcomes available for YES-probability calibration.")
+    else:
+        ycal = ycal.copy()
+        ycal["bucket"] = ycal["bin"].apply(lambda b: f"{(int(b)-1)*10:>2d}-{int(b)*10:>3d}%")
+        ycal["gap"] = ycal["mean_pred"] - ycal["observed_freq"]
+        st.dataframe(
+            ycal[["station", "bucket", "n", "mean_pred", "observed_freq", "gap", "n_yes"]],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "n": st.column_config.NumberColumn("effective events", format="%.1f"),
+                "mean_pred": st.column_config.NumberColumn("predicted", format="%.3f"),
+                "observed_freq": st.column_config.NumberColumn("observed", format="%.3f"),
+                "gap": st.column_config.NumberColumn("pred-observed", format="%+.3f"),
+                "n_yes": st.column_config.NumberColumn("YES events", format="%.1f"),
+            },
+        )
 
     # Per-bucket calibration table — diagnose WHICH probability ranges are off
     st.subheader("Per-Bucket Calibration (Last 30 Days)",
@@ -325,7 +815,7 @@ def tab_calibration():
     # until we have a week+ of pull_gfs data.
     st.subheader("Per-Model Forecast Accuracy (vs CLI Truth)",
                  help="Daily |predicted_TMAX − CLI_TMAX| per model. NBM uses p50 of the "
-                      "latest run for each valid_date. HRRR/GFS use max(hourly TMP_2M) "
+                      "latest run for each valid_date. HRRR/GFS/ECMWF use max(hourly TMP_2M) "
                       "from the latest run. CLI is the Kalshi NHIGH settlement source.")
     macc = queries.model_accuracy(days_back=14)
     if macc.empty:
@@ -338,7 +828,8 @@ def tab_calibration():
         fig = px.bar(agg, x="station", y="mae", color="model", barmode="group",
                       text=agg["mae"].round(2),
                       labels={"mae": "MAE (°F)", "station": "Station", "model": "Model"},
-                      color_discrete_map={"NBM": "#2563eb", "HRRR": "#f59e0b", "GFS": "#16a34a"})
+                      color_discrete_map={"NBM": "#2563eb", "HRRR": "#f59e0b",
+                                          "GFS": "#16a34a", "ECMWF": "#9333ea"})
         fig.update_traces(textposition="outside")
         fig.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10),
                            legend=dict(orientation="h", y=1.1))
@@ -529,8 +1020,11 @@ def tab_trading():
             primary_temp = field["primary_temp"] if field else (rate["last_temp_f"] if rate else None)
             rate_str = ""
             if rate is not None:
-                arrow = "↑" if rate["rate_f_per_hr"] > 0.1 else ("↓" if rate["rate_f_per_hr"] < -0.1 else "→")
-                rate_str = f" {arrow}{abs(rate['rate_f_per_hr']):.1f}°/hr"
+                if rate.get("rate_f_per_hr") is None:
+                    rate_str = " rate suppressed"
+                else:
+                    arrow = "↑" if rate["rate_f_per_hr"] > 0.1 else ("↓" if rate["rate_f_per_hr"] < -0.1 else "→")
+                    rate_str = f" {arrow}{abs(rate['rate_f_per_hr']):.1f}°/hr"
 
             header = f"### {st_code}"
             if primary_temp is not None:
@@ -581,12 +1075,12 @@ def tab_trading():
                     )
 
             # Forecast audit trail — drill down to see how predictions evolved
-            with st.expander(f"📋 Forecast audit log ({st_code} today)", expanded=False):
+            with st.expander(f"Forecast audit log ({st_code} today)", expanded=False):
                 audit = queries.forecast_audit_log(st_code, today)
                 if audit.empty:
                     st.caption("No forecasts logged for today yet.")
                 else:
-                    st.caption(f"{len(audit)} forecast issuances chronologically (NBM p50, HRRR daily-MAX, GFS daily-MAX)")
+                    st.caption(f"{len(audit)} forecast issuances chronologically (NBM p50, HRRR/GFS/ECMWF daily-MAX)")
                     audit["forecast_f"] = audit["forecast_f"].round(1)
                     st.dataframe(audit, use_container_width=True, hide_index=True, height=240)
     st.divider()
@@ -647,7 +1141,8 @@ def tab_trading():
     st.subheader("SKIP Breakdown (Last 7 Days)",
                  help="Why most signals don't become trades. FEE_LOAD = fee/price > 20%; "
                       "NO_EDGE = edge below threshold; DIVERGENCE = |fair − market| > 0.50; "
-                      "BIAS_GATE = bias table missing/thin/stale; TRIPWIRE_RED = health-check block.")
+                      "BIAS_GATE = bias table missing/thin/stale; TRIPWIRE_RED = health-check block; "
+                      "PROFIT_GATE = blocked by profitability controls.")
     breakdown = queries.skip_breakdown(days_back=7)
     if breakdown.empty:
         st.caption("No SKIP signals in the last 7 days.")
@@ -711,7 +1206,7 @@ def tab_trading():
                       "with Kalshi market buckets shaded. Eyeball check: are we agreeing with the market?")
     today = date.today()
     for station in queries.trade_eligible_stations():
-        with st.expander(f"📍 {station} — TMAX_DAILY for {today}"):
+        with st.expander(f"{station} — TMAX_DAILY for {today}"):
             inputs = queries.latest_distribution_inputs(station, today, "TMAX_DAILY")
             buckets = queries.kalshi_buckets_today(station, today, "TMAX_DAILY")
             _render_distribution(station, today, "TMAX_DAILY", inputs, buckets)
@@ -829,16 +1324,19 @@ def tab_deep_dive():
 # ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
-st.title("🌡️ weather_bot · Command Center")
+st.title("weather_bot Command Center")
 if show_help:
     with st.expander("ℹ️ How to Use This Dashboard", expanded=False):
         st.markdown(help_text.OVERVIEW)
 
 # Single-tab render based on sidebar radio selection (no st.tabs eager eval).
 TAB_DISPATCH = {
-    "📊 Status":      tab_status,
-    "📐 Calibration": tab_calibration,
-    "💱 Trading":     tab_trading,
-    "🔬 Deep Dive":   tab_deep_dive,
+    "Simple":        tab_simple,
+    "Home":          tab_home,
+    "Trading":       tab_trading,
+    "Profitability": tab_profitability,
+    "Status":        tab_status,
+    "Calibration":   tab_calibration,
+    "Deep Dive":     tab_deep_dive,
 }
 TAB_DISPATCH[selected_tab]()

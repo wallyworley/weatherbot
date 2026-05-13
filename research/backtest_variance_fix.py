@@ -1,23 +1,29 @@
-"""Backtest the variance fix on historical April-May data.
+"""Backtest the lead-aware variance fix on historical April-May data.
 
-Simulates what P&L would have been if the 1.35x lead_day>=1 variance inflation
-had been in place. Compares:
+Simulates what expected P&L would have been if the lead-aware variance
+inflation had been in place. Compares:
   - PRE-FIX: using original (narrow) distributions
-  - POST-FIX: using 1.35x-widened distributions for lead >= 1
+  - POST-FIX: using lead-aware widened distributions
 
 Shows: How much P&L improves with the fix applied.
 """
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from collections import defaultdict
 
 import numpy as np
 from psycopg.rows import dict_row
 
 from weather_bot.data import persistence
-from weather_bot.models.distribution import build_cdf_from_percentiles, PiecewiseCDF
+from weather_bot.models.distribution import (
+    build_cdf_from_percentiles,
+    lead_day_for_station,
+    lead_day_variance_multiplier,
+    max_widen_factor_for_lead,
+    PiecewiseCDF,
+)
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +34,7 @@ def simulate_fair_prob_with_variance_fix(
     var: str,
     lower_f: float | None,
     upper_f: float | None,
+    asof_utc: datetime,
     apply_fix: bool = True,
 ) -> tuple[float, float]:
     """Compute fair probability of landing in (lower_f, upper_f).
@@ -36,16 +43,9 @@ def simulate_fair_prob_with_variance_fix(
 
     The fix only affects lead_day >= 1, so lead_day==0 is identical.
     """
-    from weather_bot.data import persistence
-    from datetime import datetime, timezone
-    from weather_bot.config import STATIONS
-    import pytz
+    lead_day = lead_day_for_station(station, target_date, asof_utc)
 
-    # Reconstruct lead_day (matches distribution.py logic)
-    now = datetime.now(tz=timezone.utc)
-    lead_day = (target_date - now.date()).days
-
-    rows = persistence.latest_nbm_percentiles(station, target_date, var=var)
+    rows = _latest_nbm_percentiles_asof(station, target_date, var, asof_utc)
     cdf_base = build_cdf_from_percentiles(rows)
     if cdf_base is None:
         return None, None
@@ -66,7 +66,12 @@ def simulate_fair_prob_with_variance_fix(
         se_mean = raw_std / (n ** 0.5) if n > 0 else float("inf")
         if abs(raw_bias) < se_mean:
             shrink = 0.0
-        staleness = 1.0  # Assume recent data for this backtest
+        staleness = 1.0
+        run_time = rows[0].get("run_time") if rows else None
+        if run_time is not None:
+            age_h = (asof_utc - run_time).total_seconds() / 3600.0
+            if age_h > 8.0:
+                staleness = max(0.0, 1.0 - (age_h - 8.0) / (18.0 - 8.0))
 
         effective_bias = shrink * raw_bias * staleness
 
@@ -88,7 +93,7 @@ def simulate_fair_prob_with_variance_fix(
                 median_val = float(np.interp(0.5, cdf_pre.probs, cdf_pre.values))
                 cdf_pre.values = median_val + scale_pre * (cdf_pre.values - median_val)
 
-        # POST-FIX: wider variance for lead >= 1
+        # POST-FIX: lead-aware variance widening.
         cdf_post = PiecewiseCDF(
             values=cdf_base.values.copy(),
             probs=cdf_base.probs.copy(),
@@ -97,16 +102,14 @@ def simulate_fair_prob_with_variance_fix(
         cdf_post.shift -= effective_bias
 
         target_std_post = raw_std
-        if lead_day >= 1:
-            target_std_post *= 1.35
+        target_std_post *= lead_day_variance_multiplier(lead_day)
 
         if target_std_post > 0 and len(cdf_post.values) >= 2:
             cur_p90 = float(np.interp(0.90, cdf_post.probs, cdf_post.values))
             cur_p10 = float(np.interp(0.10, cdf_post.probs, cdf_post.values))
             current_std = (cur_p90 - cur_p10) / 2.56
             if current_std > 0 and target_std_post > current_std:
-                max_widen = 1.45 if lead_day >= 1 else 1.10
-                scale_post = min(target_std_post / current_std, max_widen)
+                scale_post = min(target_std_post / current_std, max_widen_factor_for_lead(lead_day))
                 median_val = float(np.interp(0.5, cdf_post.probs, cdf_post.values))
                 cdf_post.values = median_val + scale_post * (cdf_post.values - median_val)
 
@@ -116,6 +119,29 @@ def simulate_fair_prob_with_variance_fix(
         return fair_pre, fair_post
 
     return None, None
+
+
+def _latest_nbm_percentiles_asof(
+    station: str,
+    valid_date: date,
+    var: str,
+    asof_utc: datetime,
+) -> list[dict]:
+    """Latest NBM percentile set that would have been known at `asof_utc`."""
+    sql = """
+    SELECT percentile, value, run_time
+      FROM prob_forecast
+     WHERE station = %s AND valid_date = %s AND var = %s
+       AND run_time = (
+           SELECT MAX(run_time) FROM prob_forecast
+            WHERE station = %s AND valid_date = %s AND var = %s
+              AND run_time <= %s
+       )
+     ORDER BY percentile
+    """
+    with persistence.connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, (station, valid_date, var, station, valid_date, var, asof_utc))
+        return cur.fetchall()
 
 
 def backtest(start_date: date = None, end_date: date = None):
@@ -134,6 +160,7 @@ def backtest(start_date: date = None, end_date: date = None):
         pf.side,
         pf.price,
         pf.contracts,
+        pf.fees,
         m.lower_f, m.upper_f,
         m.valid_date,
         COALESCE(pf.payout, 0) AS payout
@@ -156,7 +183,7 @@ def backtest(start_date: date = None, end_date: date = None):
             cur.execute(sql, {"start_date": start_date, "end_date": end_date})
             for row in cur.fetchall():
                 n_fills += 1
-                lead_day = (row["valid_date"] - row["ts"].date()).days
+                lead_day = lead_day_for_station(row["station"], row["valid_date"], row["ts"])
 
                 # Outcome: 1 if payout=1, 0 if payout=0
                 outcome = 1.0 if row["payout"] > 0.5 else 0.0
@@ -168,15 +195,14 @@ def backtest(start_date: date = None, end_date: date = None):
                     row["var"],
                     row["lower_f"],
                     row["upper_f"],
+                    row["ts"],
                     apply_fix=True,
                 )
 
                 if fair_pre is None or fair_post is None:
                     continue
 
-                # Expected value: win_prob * (1 - price) - (1 - win_prob) * price - fee
-                # For simplicity, estimate fee as ~2% of price
-                fee_est = 0.02 * row["price"]
+                fee_total = float(row["fees"] or 0.0)
 
                 if row["side"] == "YES":
                     win_prob_pre = fair_pre
@@ -188,21 +214,19 @@ def backtest(start_date: date = None, end_date: date = None):
                 # Realized P&L: payout - price (actual) - fee
                 realized_pnl = (row["payout"] - row["price"]) * row[
                     "contracts"
-                ] - fee_est * row["contracts"]
+                ] - fee_total
 
                 # Expected P&L pre-fix
                 ev_pre = (
                     win_prob_pre * (1.0 - row["price"])
                     - (1.0 - win_prob_pre) * row["price"]
-                    - fee_est
-                ) * row["contracts"]
+                ) * row["contracts"] - fee_total
 
                 # Expected P&L post-fix
                 ev_post = (
                     win_prob_post * (1.0 - row["price"])
                     - (1.0 - win_prob_post) * row["price"]
-                    - fee_est
-                ) * row["contracts"]
+                ) * row["contracts"] - fee_total
 
                 # Calibration error: how wrong were we?
                 cal_error_pre = abs(win_prob_pre - outcome)
@@ -258,7 +282,7 @@ if __name__ == "__main__":
     print(f"\nTOTAL FILLS: {results['total_fills']}")
     print(f"\nPRE-FIX (narrow variance):")
     print(f"  Expected P&L: ${results['total_pre_pnl']:+.2f}")
-    print(f"\nPOST-FIX (1.35x variance for lead >= 1):")
+    print(f"\nPOST-FIX (lead-aware variance):")
     print(f"  Expected P&L: ${results['total_post_pnl']:+.2f}")
     print(f"\nIMPROVEMENT:")
     print(f"  ${results['improvement']:+.2f}")

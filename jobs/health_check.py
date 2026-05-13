@@ -26,7 +26,9 @@ log = logging.getLogger(__name__)
 # realized-vs-expected diff ~$5/fill). See docs in dashboard/help_text.py for
 # reasoning. Override via --thresholds-json on the command line for tuning.
 DEFAULT_THRESHOLDS = {
-    # DATA: feed staleness in minutes. Cadence-aware: NBM 6h, HRRR 1h, METAR/HFMETAR 1h (gated by hourly pull_metar cron, not source cadence).
+    # DATA: feed staleness in minutes. Cadence-aware: NBM/GFS/ECMWF 6h; HRRR 1h;
+    # HFMETAR is polled every 5min but tolerated at 10min because IEM/MADIS
+    # publication lag commonly runs 10-15min; Kalshi snapshots are 5min.
     "data_amber_lag_mult": 1.5,   # >1.5x cadence = AMBER
     "data_red_lag_mult":   3.0,   # >3.0x cadence = RED
     # MODEL: 7-day rolling Brier for settled fills.
@@ -64,17 +66,18 @@ DEFAULT_THRESHOLDS = {
 FEED_CADENCE_MIN = {
     "NBM": 360,    # 6h between cycles (00/06/12/18Z)
     "HRRR": 60,    # hourly
+    "GFS": 360,    # Open-Meteo pull runs hourly, but new model cycles are 6-hourly
+    "ECMWF": 360,  # Open-Meteo pull runs hourly, but new model cycles are 6-hourly
     # METAR observations are produced hourly at major airport stations (with
     # occasional SPECI bulletins on rapid weather change). The launchd
     # fetcher cron also runs hourly. Right after the top of the hour the
     # newest obs is ~0min old; right before it's ~60min old. We don't want
     # AMBER to fire just because we're approaching the next observation.
     "METAR": 60,
-    # ASOS stations produce 5-min HFMETAR but our launchd-metar cron pulls
-    # every 60 min, so freshness is gated by the cron interval, not the source
-    # cadence. Keep parity with METAR until the cron is shortened.
-    "HFMETAR": 60,
-    "KALSHI": 15,
+    # ASOS stations produce 5-min HFMETAR and the VPS timer polls every 5min,
+    # but source publication lag is usually larger than the observation cadence.
+    "HFMETAR": 10,
+    "KALSHI": 5,
 }
 
 
@@ -92,6 +95,8 @@ def _data_freshness(thresholds: dict) -> list[dict]:
     global_queries = {
         "NBM":   "SELECT MAX(ingested_at) AS t FROM prob_forecast",
         "HRRR":  "SELECT MAX(ingested_at) AS t FROM det_forecast WHERE model='HRRR'",
+        "GFS":   "SELECT MAX(ingested_at) AS t FROM det_forecast WHERE model='GFS'",
+        "ECMWF": "SELECT MAX(ingested_at) AS t FROM det_forecast WHERE model='ECMWF'",
         "KALSHI":"SELECT MAX(updated_at)  AS t FROM kalshi_market",
     }
     now = datetime.now(tz=timezone.utc)
@@ -142,7 +147,9 @@ def _model_calibration(thresholds: dict) -> list[dict]:
         SELECT pf.id, pf.ticker, pf.side, pf.price, pf.contracts, pf.fees, pf.payout,
                km.station, km.valid_date,
                s.fair_prob, s.market_ask, s.market_bid,
-               (s.fair_prob*(1.0 - pf.price) - (1.0 - s.fair_prob)*pf.price) * pf.contracts - pf.fees AS expected,
+               ((CASE WHEN pf.side='YES' THEN s.fair_prob ELSE 1.0 - s.fair_prob END) * (1.0 - pf.price)
+                - (1.0 - (CASE WHEN pf.side='YES' THEN s.fair_prob ELSE 1.0 - s.fair_prob END)) * pf.price)
+                * pf.contracts - pf.fees AS expected,
                (pf.payout - pf.price) * pf.contracts - pf.fees AS realized,
                CASE WHEN pf.payout > 0 THEN 1.0 ELSE 0.0 END AS outcome
           FROM paper_fill pf

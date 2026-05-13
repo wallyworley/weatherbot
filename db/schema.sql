@@ -144,7 +144,7 @@ CREATE TABLE IF NOT EXISTS signal (
     notes          TEXT,
     skip_reason    TEXT                -- canonical reason when action='SKIP':
                                        -- DIVERGENCE | FEE_LOAD | NO_EDGE | NO_BOOK |
-                                       -- TRIPWIRE_RED | BIAS_GATE
+                                       -- TRIPWIRE_RED | BIAS_GATE | PROFIT_GATE
 );
 -- Backfill for existing DBs created before skip_reason was added:
 ALTER TABLE signal ADD COLUMN IF NOT EXISTS skip_reason TEXT;

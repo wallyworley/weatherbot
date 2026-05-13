@@ -49,8 +49,8 @@ model.
 1. **Accuracy score** — how often the bot's "70% confidence" trades actually
    win 70% of the time. Lower number is better. Around 0.14 is healthy;
    above 0.20 means the bot is consistently over- or underconfident.
-2. **Profit gap** — how much the bot expected to make vs what it actually
-   made, per trade. If the bot expected +$10/trade and only made +$5, the
+2. **Profit gap** — how much the bot claimed it would make vs what it actually
+   made, per trade. If the bot claimed +$10/trade and only made +$5, the
    gap is −$5/trade. Big negative gaps mean the bot is overrating itself.
 
 **Real example:** On 2026-04-30 the profit gap hit −$196 across the day's
@@ -74,7 +74,7 @@ threshold and prompts investigation.
 CALIBRATION_TAB = """
 **This tab exists so you'll catch the next bad streak before it costs $200.**
 
-**Daily expected vs actual profit chart** — each dot is one day's average
+**Daily model-claimed vs actual profit chart** — each dot is one day's average
 "profit gap per trade" — how much the bot thought it would make minus what
 it actually made. The yellow band is the warning zone; the red band means
 something's wrong with the bot's confidence. **One stray dot above the band
@@ -123,6 +123,8 @@ minutes. Filter by what the bot decided:
   stop until you click Ack.
 - `SKIP/FEE_LOAD` — Kalshi fees would eat more than 20% of the trade's
   cost. Mechanically unprofitable.
+- `SKIP/PROFIT_GATE` — the trade was blocked or downsized below 1 contract
+  by the profitability controls.
 
 **Distribution preview** — the bot's current forecast for today's high
 temperature at each station, drawn as a probability curve. The orange dashed
@@ -159,7 +161,7 @@ METRIC_TOOLTIPS = {
     "brier":       "Accuracy score (Brier). Lower is better. 0 = always right, "
                    "0.25 = same as flipping a coin, above 0.20 means the bot's "
                    "confidence doesn't match reality.",
-    "edge_gap":    "Total dollars the bot **expected** to win minus what it "
+    "edge_gap":    "Total dollars the bot **claimed** it would win minus what it "
                    "**actually** won across all completed trades. Negative means "
                    "the bot was overestimating itself. The 04-30 incident hit −$196.",
     "edge_per":    "Same as above, but per trade — easier to compare across days "
@@ -176,7 +178,7 @@ METRIC_TOOLTIPS = {
                    "after a safety multiplier. Hard-capped at 2% per trade no matter what.",
     "lag_min":     "Minutes since the most recent update from each data feed. "
                    "NBM (forecasts) updates every 6 hours, weather observations every "
-                   "30 minutes, Kalshi every 15 minutes.",
+                   "5 minutes for HFMETAR/Kalshi, hourly for standard METAR.",
     "sample_size": "How many real weather days the bot has used to learn this "
                    "station's quirks for this month and timeframe. Below 10 = "
                    "not enough data, the bot won't trade.",

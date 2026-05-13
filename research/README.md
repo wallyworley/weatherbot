@@ -7,7 +7,7 @@ decide on, and either promote pieces into `data/` + `models/` or drop.
 
 ## Question this layer answers
 
-> Should we integrate NWS CLI/DSM and ECMWF/GFS forecasts into the bot?
+> Should we integrate NWS CLI/DSM, ECMWF/GFS, and WeatherNext forecasts into the bot?
 
 Three sub-questions, three scripts:
 
@@ -15,8 +15,8 @@ Three sub-questions, three scripts:
 |---|---|
 | `compare_observations.py` | Does our METAR-reconstructed daily TMAX/TMIN match what NWS publishes (and uses for Kalshi settlement)? |
 | `compare_hfmetar.py`      | Would switching daily TMAX from hourly METAR to 5-min MADIS HFMETAR close the gap to CLI? |
-| `compare_forecasts.py`    | Are ECMWF / GFS competitive with NBM / HRRR at lead-1 TMAX accuracy? |
-| (manual)                  | Does adding ECMWF/GFS to the ensemble change bucket probabilities enough to flip trade decisions? |
+| `compare_forecasts.py`    | Are ECMWF / GFS / WeatherNext competitive with NBM / HRRR at lead-1 TMAX accuracy? |
+| (manual)                  | Does adding ECMWF/GFS/WeatherNext to the ensemble change bucket probabilities enough to flip trade decisions? |
 
 The third is a counterfactual that builds on the first two — defer until they have signal.
 
@@ -28,6 +28,7 @@ The third is a counterfactual that builds on the first two — defer until they 
 | **NWS DSM** (Daily Summary Message) | `sources/nws_text_products.py` | Automated ASOS, issued ~midnight LST. Use as **early preview** of CLI; cross-check for Kalshi's 11 AM delay scenario. |
 | **ECMWF IFS** (0.25°) | `sources/openmeteo_fetcher.py` | Via Open-Meteo. Accuracy leader at 3–7 day leads in the literature. |
 | **GFS** (0.25°) | `sources/openmeteo_fetcher.py` | Via Open-Meteo. Already familiar; cheaper alternative to direct NOAA S3 GRIB ingestion. |
+| **WeatherNext 2** (0.25°, 64-member ensemble) | `sources/weathernext_fetcher.py` | Optional BigQuery adapter. Requires Google WeatherNext data request + Analytics Hub subscription; provides ensemble TMAX p10/p50/p90 once configured. |
 
 Both NWS products go through `https://api.weather.gov/products`. Open-Meteo
 historical archive is `historical-forecast-api.open-meteo.com/v1/forecast`.
@@ -51,8 +52,18 @@ python -m research.compare_hfmetar --days-back 30
 # Compare NBM/HRRR/ECMWF/GFS forecast accuracy at lead day 1
 python -m research.compare_forecasts --days-back 30 --lead-days 1
 
+# Include WeatherNext 2 after subscribing to the BigQuery dataset
+export WEATHERNEXT_BQ_TABLE="your-project.your_dataset.weathernext_2_0_0"
+python -m research.compare_forecasts --days-back 30 --lead-days 1 --include-weathernext
+
 # Multi-lead sweep
 python -m research.compare_forecasts --days-back 30 --lead-days 0 1 2
+
+# Stored-source benchmark from production DB rows only
+python -m weather_bot.jobs.forecast_benchmark_report --days-back 30
+
+# Shadow-only ensemble replay; does not affect live/paper trading
+python -m weather_bot.jobs.shadow_ensemble_report --days-back 30
 ```
 
 Output goes to `research/reports/{obs_compare,fc_compare}_<date>.{csv,md}`.
@@ -82,10 +93,15 @@ If `compare_observations.py` shows CLI/DSM differ meaningfully from METAR, promo
 for ongoing capture. Reconciliation in `jobs/settle_paper_fills.py` should then
 prefer CLI over METAR-derived TMAX.
 
-If `compare_forecasts.py` shows ECMWF / GFS clearly outperform or are
-complementary to NBM / HRRR, promote `sources/openmeteo_fetcher.py` → `data/`
-and add a blend factor in `models/distribution.py`. **Do not modify
-distribution.py until that signal is established.**
+If `compare_forecasts.py` shows ECMWF / GFS / WeatherNext clearly outperform or
+are complementary to NBM / HRRR, promote the source into the live ensemble and
+add a blend factor in `models/distribution.py`. **Do not modify distribution.py
+until that signal is established.**
+
+For live-captured challenger models, prefer
+`jobs.forecast_benchmark_report` over the Open-Meteo historical comparison.
+Then use `jobs.shadow_ensemble_report` to test probability/reliability impact
+before changing `main.py` or `models/distribution.py`.
 
 If the comparison shows no improvement, leave the bot alone and delete the
 fetchers — that's also a successful outcome of this layer.

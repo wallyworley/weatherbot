@@ -16,68 +16,32 @@ table contract stays the same.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
-
-import requests
+from datetime import datetime
 
 from weather_bot.config import ACTIVE_STATIONS, STATIONS, Station
-from weather_bot.data import persistence
+from weather_bot.data import openmeteo_det_fetcher, persistence
 
 log = logging.getLogger(__name__)
 
 OM_GFS_URL = "https://api.open-meteo.com/v1/gfs"
-HORIZON_DAYS = 7   # GFS public horizon is 16d but for daily-temp markets we need ~7
+HORIZON_DAYS = openmeteo_det_fetcher.HORIZON_DAYS
 
 
 def _latest_gfs_cycle(now: datetime | None = None) -> datetime:
     """Most recent GFS run time (00/06/12/18 UTC)."""
-    now = now or datetime.now(tz=timezone.utc)
-    h = (now.hour // 6) * 6
-    return now.replace(hour=h, minute=0, second=0, microsecond=0)
+    return openmeteo_det_fetcher.latest_six_hour_cycle(now)
 
 
 def fetch_gfs_tmp_series(station: Station, horizon_days: int = HORIZON_DAYS,
                           run_time: datetime | None = None) -> list[dict]:
     """Pull hourly 2m temp from Open-Meteo's GFS, return det_forecast rows."""
-    run_time = run_time or _latest_gfs_cycle()
-    today_local = datetime.now(tz=ZoneInfo(station.tz)).date()
-    start = today_local
-    end = today_local + timedelta(days=horizon_days)
-
-    params = {
-        "latitude": station.lat,
-        "longitude": station.lon,
-        "hourly": "temperature_2m",
-        "temperature_unit": "fahrenheit",
-        "timezone": "UTC",   # ask for UTC times so valid_time is straightforward
-        "start_date": start.isoformat(),
-        "end_date": end.isoformat(),
-    }
-    r = requests.get(OM_GFS_URL, params=params, timeout=30)
-    r.raise_for_status()
-    j = r.json()
-    times = j["hourly"]["time"]
-    temps = j["hourly"]["temperature_2m"]
-
-    rows: list[dict] = []
-    for t_str, v in zip(times, temps):
-        if v is None:
-            continue
-        valid_time = datetime.fromisoformat(t_str).replace(tzinfo=timezone.utc)
-        lead_hr = int((valid_time - run_time).total_seconds() // 3600)
-        if lead_hr < 0:
-            continue   # past hour — stale
-        rows.append(dict(
-            station=station.code,
-            model="GFS",
-            run_time=run_time,
-            valid_time=valid_time,
-            lead_hr=lead_hr,
-            var="TMP_2M",
-            value=float(v),
-        ))
-    return rows
+    return openmeteo_det_fetcher.fetch_tmp_series(
+        station=station,
+        model="GFS",
+        url=OM_GFS_URL,
+        horizon_days=horizon_days,
+        run_time=run_time or _latest_gfs_cycle(),
+    )
 
 
 def run(cycle: datetime | None = None) -> None:

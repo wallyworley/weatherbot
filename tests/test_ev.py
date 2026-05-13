@@ -10,6 +10,13 @@ def test_fee_symmetric():
     assert f10 >= 0
 
 
+def test_fee_rounds_per_order_not_per_contract():
+    one_contract_fee = ev.fee_per_contract(0.1)
+    hundred_contract_fee = ev.fee_for_order(0.1, 100)
+    assert hundred_contract_fee < one_contract_fee * 100
+    assert ev.fee_per_contract(0.1, 100) == hundred_contract_fee / 100
+
+
 def test_kelly_zero_when_no_edge():
     # Fair price == fair prob → zero edge before fees → Kelly = 0
     p = 0.5
@@ -23,6 +30,13 @@ def test_kelly_positive_when_edge():
     b = (1 - 0.5) / 0.5
     f = ev.kelly_fraction_optimal(p, b)
     assert f > 0.15
+
+
+def test_fee_aware_kelly_is_lower_than_fee_less_kelly():
+    p = 0.60
+    price = 0.50
+    b = (1 - price) / price
+    assert ev.kelly_fraction_with_fee(p, price, fee=0.02) < ev.kelly_fraction_optimal(p, b)
 
 
 def test_evaluate_opens_when_edge_is_large():

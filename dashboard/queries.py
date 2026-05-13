@@ -56,7 +56,8 @@ def latest_health() -> pd.DataFrame:
     from weather_bot.config import ACTIVE_FETCH_STATIONS
     return _df("""
         SELECT * FROM health_check_latest
-         WHERE station = 'GLOBAL' OR station = ANY(%s)
+         WHERE (station = 'GLOBAL' OR station = ANY(%s))
+           AND NOT (station = 'GLOBAL' AND component IN ('DATA_METAR', 'DATA_HFMETAR'))
          ORDER BY station, component
     """, (ACTIVE_FETCH_STATIONS,))
 
@@ -114,6 +115,70 @@ def skip_breakdown(days_back: int = 7) -> pd.DataFrame:
     """, (days_back,))
 
 
+def signal_activity(days_back: int = 7) -> pd.DataFrame:
+    """Daily signal counts by action and skip reason."""
+    return _df("""
+        SELECT ts::date AS day,
+               action,
+               COALESCE(skip_reason, 'OPEN') AS reason,
+               COUNT(*) AS n
+          FROM signal
+         WHERE ts >= CURRENT_DATE - (%s || ' days')::interval
+         GROUP BY day, action, reason
+         ORDER BY day DESC, action, reason
+    """, (days_back,))
+
+
+def profitability_slices(days_back: int = 30) -> pd.DataFrame:
+    """Settled-fill P&L by station, lead day, side, and price band.
+
+    Recomputes Kalshi fees at order level so older paper-fill rows remain
+    comparable after the fee-methodology correction.
+    """
+    return _df("""
+    WITH fills AS (
+        SELECT pf.id, pf.ts, pf.ticker, pf.side, pf.price, pf.contracts, pf.payout,
+               CEIL((0.07 * pf.contracts * pf.price * (1.0 - pf.price)) * 100) / 100.0 AS fees,
+               km.station,
+               km.valid_date,
+               GREATEST(0, (km.valid_date - (pf.ts AT TIME ZONE st.tz)::date)) AS lead_day,
+               CASE
+                   WHEN pf.price < 0.25 THEN '<25c'
+                   WHEN pf.price < 0.50 THEN '25-50c'
+                   WHEN pf.price < 0.75 THEN '50-75c'
+                   ELSE '75c+'
+               END AS price_band,
+               CASE WHEN pf.payout > 0 THEN 1 ELSE 0 END AS won,
+               (pf.payout - pf.price) * pf.contracts
+                   - CEIL((0.07 * pf.contracts * pf.price * (1.0 - pf.price)) * 100) / 100.0 AS net_pnl,
+               ((CASE WHEN pf.side='YES' THEN s.fair_prob ELSE 1.0 - s.fair_prob END) - pf.price)
+                   * pf.contracts
+                   - CEIL((0.07 * pf.contracts * pf.price * (1.0 - pf.price)) * 100) / 100.0 AS model_claimed_ev
+          FROM paper_fill pf
+          JOIN kalshi_market km ON km.ticker = pf.ticker
+          JOIN stations st ON st.code = km.station
+          LEFT JOIN signal s ON s.id = pf.signal_id
+         WHERE pf.settled = TRUE
+           AND km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
+    )
+    SELECT station,
+           lead_day,
+           side,
+           price_band,
+           COUNT(*) AS fills,
+           SUM(contracts) AS contracts,
+           AVG(price) AS avg_price,
+           AVG(won::float) AS win_rate,
+           SUM(net_pnl) AS net_pnl,
+           AVG(net_pnl) AS pnl_per_fill,
+           SUM(model_claimed_ev) AS model_claimed_ev,
+           SUM(net_pnl) - SUM(model_claimed_ev) AS realized_vs_claimed
+      FROM fills
+     GROUP BY station, lead_day, side, price_band
+     ORDER BY net_pnl ASC
+    """, (days_back,))
+
+
 def per_fill_ledger(days_back: int = 14) -> pd.DataFrame:
     return _df("""
         SELECT pf.id, pf.ts AS fill_ts, pf.ticker, pf.side, pf.price, pf.contracts,
@@ -121,7 +186,9 @@ def per_fill_ledger(days_back: int = 14) -> pd.DataFrame:
                km.lower_f, km.upper_f,
                s.fair_prob, s.market_ask, s.market_bid,
                (pf.payout - pf.price) * pf.contracts - pf.fees AS realized_pnl,
-               (s.fair_prob*(1 - pf.price) - (1 - s.fair_prob)*pf.price) * pf.contracts - pf.fees AS expected_pnl,
+               ((CASE WHEN pf.side='YES' THEN s.fair_prob ELSE 1.0 - s.fair_prob END) * (1 - pf.price)
+                - (1 - (CASE WHEN pf.side='YES' THEN s.fair_prob ELSE 1.0 - s.fair_prob END)) * pf.price)
+                * pf.contracts - pf.fees AS expected_pnl,
                ABS(s.fair_prob - (s.market_ask + s.market_bid)/2.0) AS divergence
           FROM paper_fill pf
           JOIN kalshi_market km ON km.ticker = pf.ticker
@@ -137,7 +204,9 @@ def daily_calibration(days_back: int = 14) -> pd.DataFrame:
                COUNT(*) AS n,
                COUNT(*) FILTER (WHERE pf.payout > 0) AS wins,
                SUM((pf.payout - pf.price) * pf.contracts - pf.fees) AS realized,
-               SUM((s.fair_prob*(1 - pf.price) - (1 - s.fair_prob)*pf.price) * pf.contracts - pf.fees) AS expected
+               SUM(((CASE WHEN pf.side='YES' THEN s.fair_prob ELSE 1.0 - s.fair_prob END) * (1 - pf.price)
+                    - (1 - (CASE WHEN pf.side='YES' THEN s.fair_prob ELSE 1.0 - s.fair_prob END)) * pf.price)
+                    * pf.contracts - pf.fees) AS expected
           FROM paper_fill pf
           JOIN kalshi_market km ON km.ticker = pf.ticker
           JOIN signal s ON s.id = pf.signal_id
@@ -211,6 +280,143 @@ def reliability_bins(days_back: int = 30, station: str | None = None) -> pd.Data
     return _df(sql, (days_back, station, station))
 
 
+def event_reliability_bins(days_back: int = 30, station: str | None = None) -> pd.DataFrame:
+    """Event-weighted side calibration from logged signals with known outcomes.
+
+    Fill-weighted reliability can make one station-day look like many
+    independent forecasts. Here each ticker/side/bin contributes total weight
+    1, no matter how many times the loop scored it.
+    """
+    return _df("""
+    WITH signal_outcomes AS (
+        SELECT km.station,
+               km.ticker,
+               s.side,
+               CASE WHEN s.side = 'YES' THEN s.fair_prob ELSE 1.0 - s.fair_prob END AS p_side,
+               CASE
+                   WHEN truth.value_f IS NULL THEN NULL
+                   WHEN (km.lower_f IS NULL OR truth.value_f >= km.lower_f)
+                    AND (km.upper_f IS NULL OR truth.value_f < km.upper_f)
+                   THEN CASE WHEN s.side = 'YES' THEN 1.0 ELSE 0.0 END
+                   ELSE CASE WHEN s.side = 'YES' THEN 0.0 ELSE 1.0 END
+               END AS won
+          FROM signal s
+          JOIN kalshi_market km ON km.ticker = s.ticker
+          LEFT JOIN cli_obs c ON c.station = km.station AND c.local_date = km.valid_date
+          LEFT JOIN daily_obs d ON d.station = km.station AND d.local_date = km.valid_date
+          LEFT JOIN LATERAL (
+              SELECT CASE
+                       WHEN km.var = 'TMAX_DAILY' THEN COALESCE(c.tmax_f, d.tmax_f)
+                       WHEN km.var = 'TMIN_DAILY' THEN COALESCE(c.tmin_f, d.tmin_f)
+                       ELSE NULL
+                     END AS value_f
+          ) truth ON TRUE
+         WHERE km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
+           AND s.fair_prob IS NOT NULL
+           AND km.station IS NOT NULL
+           AND km.valid_date IS NOT NULL
+           AND km.var IN ('TMAX_DAILY', 'TMIN_DAILY')
+           AND (%s::text IS NULL OR km.station = %s)
+    ), binned AS (
+        SELECT station,
+               ticker,
+               side,
+               LEAST(10, GREATEST(1, WIDTH_BUCKET(p_side, 0, 1, 10))) AS bin,
+               p_side,
+               won
+          FROM signal_outcomes
+         WHERE won IS NOT NULL
+    ), weighted AS (
+        SELECT *,
+               1.0 / COUNT(*) OVER (PARTITION BY ticker, side, bin) AS event_weight
+          FROM binned
+    )
+    SELECT station,
+           bin,
+           SUM(p_side * event_weight) / NULLIF(SUM(event_weight), 0) AS mean_pred,
+           SUM(won * event_weight) / NULLIF(SUM(event_weight), 0) AS observed_freq,
+           SUM(event_weight) AS n_events,
+           COUNT(*) AS n_signals
+      FROM weighted
+     GROUP BY station, bin
+    HAVING SUM(event_weight) >= 1
+     ORDER BY station, bin
+    """, (days_back, station, station))
+
+
+def yes_probability_calibration(days_back: int = 60, n_bins: int = 10) -> pd.DataFrame:
+    """Calibration of raw YES bucket probability vs actual bucket outcome.
+
+    Unlike the side-probability reliability chart, this answers the core model
+    question: when the CDF said a bucket had X% probability, how often did that
+    exact bucket settle YES?
+    """
+    return _df("""
+    WITH signal_outcomes AS (
+        SELECT km.station,
+               km.ticker,
+               s.fair_prob AS p_yes,
+               CASE
+                   WHEN truth.value_f IS NULL THEN NULL
+                   WHEN (km.lower_f IS NULL OR truth.value_f >= km.lower_f)
+                    AND (km.upper_f IS NULL OR truth.value_f < km.upper_f)
+                   THEN 1.0
+                   ELSE 0.0
+               END AS yes_won
+          FROM signal s
+          JOIN kalshi_market km ON km.ticker = s.ticker
+          LEFT JOIN cli_obs c ON c.station = km.station AND c.local_date = km.valid_date
+          LEFT JOIN daily_obs d ON d.station = km.station AND d.local_date = km.valid_date
+          LEFT JOIN LATERAL (
+              SELECT CASE
+                       WHEN km.var = 'TMAX_DAILY' THEN COALESCE(c.tmax_f, d.tmax_f)
+                       WHEN km.var = 'TMIN_DAILY' THEN COALESCE(c.tmin_f, d.tmin_f)
+                       ELSE NULL
+                     END AS value_f
+          ) truth ON TRUE
+         WHERE km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
+           AND s.fair_prob IS NOT NULL
+           AND km.station IS NOT NULL
+           AND km.valid_date IS NOT NULL
+           AND km.var IN ('TMAX_DAILY', 'TMIN_DAILY')
+    ), binned AS (
+        SELECT station,
+               ticker,
+               LEAST(%s, GREATEST(1, WIDTH_BUCKET(p_yes, 0, 1, %s))) AS bin,
+               p_yes,
+               yes_won
+          FROM signal_outcomes
+         WHERE yes_won IS NOT NULL
+    ), weighted AS (
+        SELECT *,
+               1.0 / COUNT(*) OVER (PARTITION BY ticker, bin) AS event_weight
+          FROM binned
+    ), station_bins AS (
+        SELECT station,
+               bin,
+               SUM(event_weight) AS n,
+               SUM(p_yes * event_weight) / NULLIF(SUM(event_weight), 0) AS mean_pred,
+               SUM(yes_won * event_weight) / NULLIF(SUM(event_weight), 0) AS observed_freq,
+               SUM(yes_won * event_weight) AS n_yes
+          FROM weighted
+         GROUP BY station, bin
+    ), global_bins AS (
+        SELECT 'ALL'::text AS station,
+               bin,
+               SUM(event_weight) AS n,
+               SUM(p_yes * event_weight) / NULLIF(SUM(event_weight), 0) AS mean_pred,
+               SUM(yes_won * event_weight) / NULLIF(SUM(event_weight), 0) AS observed_freq,
+               SUM(yes_won * event_weight) AS n_yes
+          FROM weighted
+         GROUP BY bin
+    )
+    SELECT * FROM global_bins
+    UNION ALL
+    SELECT * FROM station_bins
+     ORDER BY station, bin
+    """, (days_back, n_bins, n_bins))
+
+
 def bias_table_summary() -> pd.DataFrame:
     return _df("""
         SELECT station, model, var, month, lead_day, sample_size,
@@ -279,7 +485,7 @@ def model_accuracy(days_back: int = 30) -> pd.DataFrame:
     Models compared:
       - NBM:  prob_forecast percentile=50 (latest run for each valid_date)
       - HRRR: max(value) of det_forecast hourly TMP_2M for the valid_date
-      - GFS:  same shape as HRRR, model='GFS'
+      - GFS/ECMWF: same shape as HRRR, model from det_forecast
 
     Truth = cli_obs.tmax_f (Kalshi NHIGH settlement source). Falls back to
     daily_obs.tmax_f only when CLI hasn't been captured yet (CLI is the more
@@ -326,7 +532,7 @@ def model_accuracy(days_back: int = 30) -> pd.DataFrame:
                      MAX(df2.run_time) AS rt
                 FROM det_forecast df2
                 JOIN stations st2 ON st2.code = df2.station
-               WHERE df2.model IN ('HRRR','GFS') AND df2.var='TMP_2M'
+               WHERE df2.model IN ('HRRR','GFS','ECMWF') AND df2.var='TMP_2M'
                GROUP BY df2.station, df2.model, (df2.valid_time AT TIME ZONE st2.tz)::date
           ) lr ON lr.station = df.station AND lr.model = df.model
               AND lr.vd = (df.valid_time AT TIME ZONE st.tz)::date AND lr.rt = df.run_time
@@ -367,7 +573,7 @@ def vote_distribution_today() -> pd.DataFrame:
 def forecast_audit_log(station: str, valid_date) -> pd.DataFrame:
     """Chronological audit trail of every forecast issued for a (station, valid_date).
 
-    Combines NBM p50, HRRR daily-MAX, and GFS daily-MAX into one timeline so
+    Combines NBM p50, HRRR/GFS/ECMWF daily-MAX into one timeline so
     the user can see how predictions evolved leading up to the day. Inspired
     by dailydewpoint's "Detailed Forecast Log" panel — answers "did the model
     keep flipping its mind?" and shows when each source last agreed/disagreed.
@@ -393,11 +599,19 @@ def forecast_audit_log(station: str, valid_date) -> pd.DataFrame:
          WHERE station=%s AND model='GFS' AND var='TMP_2M'
            AND (valid_time AT TIME ZONE %s)::date = %s
          GROUP BY run_time
+    ),
+    ecmwf AS (
+        SELECT 'ECMWF' AS source, run_time, MAX(value) AS forecast_f
+          FROM det_forecast
+         WHERE station=%s AND model='ECMWF' AND var='TMP_2M'
+           AND (valid_time AT TIME ZONE %s)::date = %s
+         GROUP BY run_time
     )
-    SELECT * FROM nbm UNION ALL SELECT * FROM hrrr UNION ALL SELECT * FROM gfs
+    SELECT * FROM nbm UNION ALL SELECT * FROM hrrr UNION ALL SELECT * FROM gfs UNION ALL SELECT * FROM ecmwf
      ORDER BY run_time, source
     """
     return _df(sql, (station, valid_date,
+                       station, tz, valid_date,
                        station, tz, valid_date,
                        station, tz, valid_date))
 
@@ -449,7 +663,12 @@ def nws_overnight_jump(station: str, valid_date) -> dict | None:
     }
 
 
-def temp_rate_of_change(station: str, lookback_hours: int = 2) -> dict | None:
+def temp_rate_of_change(
+    station: str,
+    lookback_hours: int = 2,
+    min_span_minutes: int = 30,
+    max_abs_rate_f_per_hr: float = 12.0,
+) -> dict | None:
     """Rate of temperature change (°F/hour) at a station over the recent past.
 
     Used as a reversal-risk signal — fast warming late in the day suggests TMAX
@@ -469,16 +688,30 @@ def temp_rate_of_change(station: str, lookback_hours: int = 2) -> dict | None:
         return None
     first, last = rows[0], rows[-1]
     dt_hours = (last["obs_time"] - first["obs_time"]).total_seconds() / 3600.0
-    if dt_hours <= 0:
+    if dt_hours <= 0 or dt_hours * 60.0 < min_span_minutes:
         return None
+    rate = (float(last["temp_f"]) - float(first["temp_f"])) / dt_hours
+    if abs(rate) > max_abs_rate_f_per_hr:
+        return {
+            "station": station,
+            "rate_f_per_hr": None,
+            "first_temp_f": float(first["temp_f"]),
+            "last_temp_f": float(last["temp_f"]),
+            "first_time": first["obs_time"].isoformat(),
+            "last_time": last["obs_time"].isoformat(),
+            "n_obs": len(rows),
+            "suppressed": True,
+            "reason": f"implausible rate {rate:+.1f} F/hr",
+        }
     return {
         "station": station,
-        "rate_f_per_hr": (float(last["temp_f"]) - float(first["temp_f"])) / dt_hours,
+        "rate_f_per_hr": rate,
         "first_temp_f": float(first["temp_f"]),
         "last_temp_f": float(last["temp_f"]),
         "first_time": first["obs_time"].isoformat(),
         "last_time": last["obs_time"].isoformat(),
         "n_obs": len(rows),
+        "suppressed": False,
     }
 
 

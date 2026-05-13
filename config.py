@@ -203,3 +203,38 @@ BANKROLL_USD = float(os.getenv("BANKROLL_USD", "1000"))
 MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.02"))
 KELLY_FRACTION = float(os.getenv("KELLY_FRACTION", "0.25"))
 MIN_EDGE_BPS = int(os.getenv("MIN_EDGE_BPS", "200"))   # 200 bps = 2 cents per $1
+
+# ---------------------------------------------------------------------------
+# Probability calibration
+# ---------------------------------------------------------------------------
+# Raw CDF bucket probabilities are weather-model probabilities. Before sizing,
+# shrink them toward what similarly-priced paper predictions have actually done.
+# This is deliberately simple and auditable: decile bucket -> observed frequency,
+# with a prior pulling small samples back toward the raw model.
+PROB_CALIBRATION_ENABLED = os.getenv("PROB_CALIBRATION_ENABLED", "true").lower() == "true"
+PROB_CALIBRATION_DAYS_BACK = int(os.getenv("PROB_CALIBRATION_DAYS_BACK", "60"))
+PROB_CALIBRATION_MIN_BUCKET_N = int(os.getenv("PROB_CALIBRATION_MIN_BUCKET_N", "20"))
+PROB_CALIBRATION_PRIOR_N = float(os.getenv("PROB_CALIBRATION_PRIOR_N", "35"))
+PROB_CALIBRATION_MAX_DELTA = float(os.getenv("PROB_CALIBRATION_MAX_DELTA", "0.15"))
+
+# ---------------------------------------------------------------------------
+# Profitability controls (paper/live entry shaping)
+# ---------------------------------------------------------------------------
+# These are deliberately simple, evidence-backed controls from the corrected
+# paper-fill slices. They reduce or block slices that have been persistent
+# losers while keeping the core weather model intact.
+PROFIT_CONTROLS_ENABLED = os.getenv("PROFIT_CONTROLS_ENABLED", "true").lower() == "true"
+PAUSED_TRADE_STATIONS = [
+    s.strip().upper()
+    for s in os.getenv("PAUSED_TRADE_STATIONS", "KMDW").split(",")
+    if s.strip()
+]
+
+# KNYC same-day has carried the historical edge; KNYC day-ahead has not.
+KNYC_L1_SIZE_MULT = float(os.getenv("KNYC_L1_SIZE_MULT", "0.25"))
+
+# Side/price-band size multipliers from corrected-fee slices:
+#   - NO below 50c has been poor
+#   - YES 25-50c has been poor
+NO_UNDER_50C_SIZE_MULT = float(os.getenv("NO_UNDER_50C_SIZE_MULT", "0.50"))
+YES_25_50C_SIZE_MULT = float(os.getenv("YES_25_50C_SIZE_MULT", "0.50"))

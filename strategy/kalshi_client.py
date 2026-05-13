@@ -25,14 +25,20 @@ log = logging.getLogger(__name__)
 
 
 class KalshiClient:
+    RETRY_STATUSES = {429, 500, 502, 503, 504}
+
     def __init__(
         self,
         api_key_id: str | None = None,
         private_key_path: str | None = None,
         base_url: str | None = None,
+        max_retries: int = 3,
+        backoff_seconds: float = 1.0,
     ):
         self.api_key_id = api_key_id or KALSHI_API_KEY_ID
         self.base_url = (base_url or KALSHI_BASE_URL).rstrip("/")
+        self.max_retries = max_retries
+        self.backoff_seconds = backoff_seconds
         path = private_key_path or KALSHI_PRIVATE_KEY_PATH
         self._pk = None
         if path and Path(path).exists():
@@ -62,9 +68,30 @@ class KalshiClient:
     def get(self, path: str, params: dict | None = None) -> dict:
         url = self.base_url + path
         headers = self._headers("GET", path)
-        r = requests.get(url, params=params, headers=headers, timeout=30)
-        r.raise_for_status()
-        return r.json()
+        for attempt in range(self.max_retries + 1):
+            r = requests.get(url, params=params, headers=headers, timeout=30)
+            if r.status_code in self.RETRY_STATUSES and attempt < self.max_retries:
+                delay = self._retry_delay(r, attempt)
+                log.warning(
+                    "Kalshi GET %s returned HTTP %s; retrying in %.1fs",
+                    path,
+                    r.status_code,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            r.raise_for_status()
+            return r.json()
+        raise RuntimeError("unreachable")
+
+    def _retry_delay(self, response: requests.Response, attempt: int) -> float:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return min(float(retry_after), 60.0)
+            except ValueError:
+                pass
+        return min(self.backoff_seconds * (2**attempt), 60.0)
 
     # ----- High-level helpers -----
     def list_events(self, series_ticker: str, status: str = "open", cursor: str | None = None) -> dict:

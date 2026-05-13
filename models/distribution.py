@@ -36,6 +36,47 @@ from weather_bot.models import bias_correction
 log = logging.getLogger(__name__)
 
 
+def station_local_date(station: str, ts: datetime) -> date:
+    """Return the calendar date at `station` for a timezone-aware timestamp."""
+    from weather_bot.config import STATIONS
+    import pytz
+
+    tz = pytz.timezone(STATIONS[station].tz)
+    return ts.astimezone(tz).date()
+
+
+def lead_day_for_station(station: str, target_date: date, now_utc: datetime) -> int:
+    """Calendar-day lead time using the station's local date."""
+    return (target_date - station_local_date(station, now_utc)).days
+
+
+def lead_day_variance_multiplier(lead_day: int) -> float:
+    """Empirical NBM spread inflation by lead time.
+
+    Residual-vs-implied spread checks through 2026-05-06 show L1 needs
+    moderate widening, L2 less, and L3+ very little. Keep L0 untouched here:
+    same-day uncertainty is dominated by HRRR and intraday conditioning.
+    """
+    if lead_day == 1:
+        return 1.25
+    if lead_day == 2:
+        return 1.15
+    if lead_day >= 3:
+        return 1.05
+    return 1.0
+
+
+def max_widen_factor_for_lead(lead_day: int) -> float:
+    """Cap knot widening so noisy bias samples cannot blow out the CDF."""
+    if lead_day == 1:
+        return 1.35
+    if lead_day == 2:
+        return 1.25
+    if lead_day >= 3:
+        return 1.15
+    return 1.10
+
+
 @dataclass
 class PiecewiseCDF:
     """CDF from sorted (value, percentile) knots; linear interior, exponential tails.
@@ -203,7 +244,7 @@ def build_station_distribution(
         return None
 
     now = now_utc or datetime.now(tz=timezone.utc)
-    lead_day = (target_date - now.date()).days
+    lead_day = lead_day_for_station(station, target_date, now)
     month = target_date.month
 
     # Apply station bias correction: shift mean AND inflate distribution width.
@@ -219,11 +260,9 @@ def build_station_distribution(
         raw_std = float(bias_row["stddev_f"])
         target_std = raw_std
 
-        # Lead-day variance inflation: calibration shows lead_day >= 1 forecasts
-        # are overconfident (+30-56 bps), while lead_day == 0 is well-calibrated.
-        # Boost target_std by 1.35x for lead_day >= 1 to match observed uncertainty.
-        if lead_day >= 1:
-            target_std *= 1.35
+        # Lead-day variance inflation: residual-vs-implied spread checks show
+        # modest overconfidence for L1/L2, with little benefit by L3+.
+        target_std *= lead_day_variance_multiplier(lead_day)
 
         # Empirical-Bayes style shrinkage: lambda = n / (n + k), k=10 prior strength.
         #   n=30 -> 0.75 applied | n=19 -> 0.66 | n=10 -> 0.50 | n=5 -> 0.33
@@ -266,9 +305,7 @@ def build_station_distribution(
         # producing a cluster of YES-side fills at fair=30-45% / market=5-20%
         # that lost 7-of-8. Tightening to 1.10x improved Brier 0.139→0.133 and
         # replay P&L by ~$20 while preserving high-divergence (>=0.40) home runs.
-        # CALIBRATION FIX (May 6, 2026): Lead_day >= 1 shows +30-56 bps overconfidence.
-        # Raise cap to 1.45x to allow 1.35x lead-specific inflation to apply fully.
-        _MAX_WIDEN_FACTOR = 1.45 if lead_day >= 1 else 1.10
+        _MAX_WIDEN_FACTOR = max_widen_factor_for_lead(lead_day)
         if target_std > 0 and len(cdf.values) >= 2:
             cur_p90 = float(np.interp(0.90, cdf.probs, cdf.values))
             cur_p10 = float(np.interp(0.10, cdf.probs, cdf.values))

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from weather_bot.data import persistence
+from weather_bot.models.distribution import lead_day_for_station
 from research.sources.openmeteo_fetcher import fetch_forecast_daily
 
 log = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ class FillRecord:
     edge: float
     won: int
     net_pnl: float
-    fee_load: float                # fee/price
+    fee_load: float                # effective fee / stake
     station: str
     valid_date: date
     lower_f: Optional[float]
@@ -52,7 +53,9 @@ class FillRecord:
 
 def _load_fills(days_back: int) -> list[FillRecord]:
     sql = """
-    SELECT pf.id, pf.side, pf.price, pf.contracts, pf.fees, pf.payout,
+    SELECT pf.id, pf.side, pf.price, pf.contracts,
+           CEIL((0.07 * pf.contracts * pf.price * (1.0 - pf.price)) * 100) / 100.0 AS fees,
+           pf.payout,
            s.fair_prob, s.edge, s.ts AS signal_ts,
            km.station, km.var, km.valid_date, km.lower_f, km.upper_f
       FROM paper_fill pf
@@ -76,12 +79,12 @@ def _load_fills(days_back: int) -> list[FillRecord]:
             net_pnl = (payout - price) * contracts - fees if payout is not None else 0.0
             fair = float(r["fair_prob"])
             p_side = fair if r["side"] == "YES" else 1.0 - fair
-            lead_day = (r["valid_date"] - r["signal_ts"].date()).days
+            lead_day = lead_day_for_station(r["station"], r["valid_date"], r["signal_ts"])
             out.append(FillRecord(
                 fill_id=r["id"], side=r["side"], price=price, contracts=contracts,
                 fees=fees, payout=payout, fair_prob=fair, p_side=p_side,
                 edge=float(r["edge"]), won=won, net_pnl=net_pnl,
-                fee_load=fees / price if price > 0 else 0.0,
+                fee_load=fees / (price * contracts) if price > 0 and contracts > 0 else 0.0,
                 station=r["station"], valid_date=r["valid_date"],
                 lower_f=r["lower_f"], upper_f=r["upper_f"],
                 lead_day=max(0, lead_day),

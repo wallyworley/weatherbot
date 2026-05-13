@@ -2,8 +2,10 @@
 Expected value, fees, and sizing.
 
 Kalshi fee formula (2026-04):
-    fee_per_contract = ceil(0.07 * P * (1 - P) * 100) / 100   (in dollars)
-    (equivalent to round up(0.07 * C * P * (1-P)) / C per contract)
+    order_fee = ceil(0.07 * C * P * (1 - P) * 100) / 100   (in dollars)
+
+The rounding is per order, not per contract. Use fee_for_order() whenever the
+contract count is known; fee_per_contract() is only the one-contract case.
 
 We compute both YES-buy and NO-buy expected values and pick the better.
 Sizing uses quarter-Kelly on the favorable side, capped by position limit.
@@ -46,28 +48,51 @@ class Signal:
     action: str               # 'OPEN' | 'SKIP'
     notes: str = ""
     skip_reason: str | None = None  # 'DIVERGENCE' | 'NO_EDGE' | 'FEE_LOAD' | 'NO_BOOK' |
-                                     # 'TRIPWIRE_RED' | 'BIAS_GATE' | 'AGREEMENT' | None
+                                     # 'TRIPWIRE_RED' | 'BIAS_GATE' | 'AGREEMENT' |
+                                     # 'PROFIT_GATE' | None
     model_votes: dict | None = None  # {"NBM":"YES","HRRR":"YES","GFS":"NO","n_yes":2,"n_no":1,...}
     reversal_risk: dict | None = None  # {"score":0.42,"label":"MEDIUM","components":{...}}
 
 
-def fee_per_contract(price: float) -> float:
-    """Kalshi rounds the per-order fee UP to the nearest cent; per-contract
-    effective fee scales ~ linearly for small orders."""
-    return math.ceil(KALSHI_FEE_COEFF * price * (1.0 - price) * 100) / 100.0
+def fee_for_order(price: float, contracts: int) -> float:
+    """Kalshi order fee rounded up to the nearest cent."""
+    if contracts <= 0:
+        return 0.0
+    raw_fee = KALSHI_FEE_COEFF * contracts * price * (1.0 - price)
+    return math.ceil(raw_fee * 100) / 100.0
+
+
+def fee_per_contract(price: float, contracts: int = 1) -> float:
+    """Effective per-contract fee for an order of `contracts`.
+
+    With the default of one contract this preserves the legacy helper behavior.
+    """
+    if contracts <= 0:
+        return 0.0
+    return fee_for_order(price, contracts) / contracts
 
 
 def kelly_fraction_optimal(p: float, b: float) -> float:
-    """Standard Kelly for a binary bet paying net odds b at probability p.
-
-    b = (1 - price) / price  when buying at `price` to win $1.
-    Returns fraction of bankroll.
-    """
+    """Standard Kelly for a binary bet paying net odds b at probability p."""
     q = 1.0 - p
     if b <= 0:
         return 0.0
     f = (b * p - q) / b
     return max(0.0, f)
+
+
+def kelly_fraction_with_fee(p: float, price: float, fee: float) -> float:
+    """Kelly fraction for a binary contract including per-contract fees.
+
+    Win profit is `1 - price - fee`; loss is `price + fee`. The returned
+    fraction is of bankroll at risk, where risk includes both stake and fee.
+    """
+    win_profit = 1.0 - price - fee
+    loss = price + fee
+    if win_profit <= 0 or loss <= 0:
+        return 0.0
+    b = win_profit / loss
+    return kelly_fraction_optimal(p, b)
 
 
 def evaluate(
@@ -106,24 +131,27 @@ def evaluate(
         if price is None or price <= 0 or price >= 1:
             continue
 
-        fee = fee_per_contract(price)
+        # First estimate order size with no rounding-fee knowledge, then compute
+        # the effective order-level fee and recompute Kelly with fee-aware odds.
+        b = (1.0 - price) / price
+        rough_k = min(kelly_fraction_optimal(win_prob, b) * KELLY_FRACTION, MAX_POSITION_PCT)
+        rough_size_usd = max(0.0, rough_k * bankroll)
+        est_contracts = max(1, int(rough_size_usd / price)) if price > 0 else 1
+        fee = fee_per_contract(price, est_contracts)
+        k = kelly_fraction_with_fee(win_prob, price, fee) * KELLY_FRACTION
+        k = min(k, MAX_POSITION_PCT)                   # risk cap
+        risk_usd = max(0.0, k * bankroll)
+        size_usd = risk_usd * (price / (price + fee)) if (price + fee) > 0 else 0.0
         # Payout per contract if correct: $1.00. Profit: 1 - price - fee. Loss: price + fee.
         ev_contract = win_prob * (1.0 - price) - (1.0 - win_prob) * price - fee
         edge = ev_contract                              # in $ per contract
         ev_per_dollar = ev_contract / price             # return on capital
 
-        b = (1.0 - price) / price
-        k = kelly_fraction_optimal(win_prob, b) * KELLY_FRACTION
-        k = min(k, MAX_POSITION_PCT)                   # risk cap
-
-        size_usd = max(0.0, k * bankroll)
         edge_bps = int(edge * 10_000 / max(price, 1e-6))
 
-        # Fee-sanity filter: Kalshi's fee floors at $0.01/contract, which crushes
-        # penny trades (at price=$0.01, fee=$0.01 = 100% fee load). Skip any trade
-        # where fees would exceed 20% of price — that's mechanically unprofitable
-        # except at extreme edges, and the rounding error in the fee formula makes
-        # our EV calc unreliable there anyway.
+        # Fee-sanity filter: tiny estimated orders can still be dominated by the
+        # one-cent order-level rounding. Skip when effective fees are too large
+        # relative to stake.
         fee_load = fee / price
         fee_ok = fee_load <= 0.20
 

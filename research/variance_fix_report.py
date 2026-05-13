@@ -1,175 +1,100 @@
-"""Generate before/after report on the variance fix.
-
-Shows:
-1. PRE-FIX calibration (what we measured on April 1 - May 6 data)
-2. POST-FIX expectations (what should happen with 1.35x variance)
-3. Validation steps for monitoring improvement going forward
-"""
+"""Print the current variance-fix methodology and validation checklist."""
 from __future__ import annotations
-
-import logging
-from datetime import date
-
-log = logging.getLogger(__name__)
 
 
 def show_variance_fix_report():
-    """Display the variance fix impact report."""
+    """Display the lead-aware variance fix report."""
 
     print("\n" + "=" * 100)
-    print("VARIANCE FIX IMPLEMENTATION REPORT")
-    print("Deployed: 2026-05-06 16:14 UTC | Commit: aadab2c")
+    print("LEAD-AWARE VARIANCE FIX REPORT")
+    print("Updated: 2026-05-07")
     print("=" * 100)
 
-    print("\n\n█ PART 1: PRE-FIX CALIBRATION (April 1 - May 6, 128 settled trades)")
+    print("\nPART 1: CORRECTED BASELINE")
     print("-" * 100)
-
-    pre_fix_data = {
-        "KNYC": {
-            "L0": {"n": 22, "error": -0.0000, "status": "✅ Perfect"},
-            "L1": {"n": 73, "error": +0.4065, "status": "❌ Overconfident by 40.65 bps"},
-        },
-        "KMIA": {
-            "L0": {"n": 5, "error": -0.0120, "status": "✅ Nearly perfect"},
-            "L1": {"n": 18, "error": +0.3222, "status": "❌ Overconfident by 32.22 bps"},
-        },
-        "KMDW": {
-            "L0": {"n": 5, "error": +0.0208, "status": "✅ Acceptable"},
-            "L1": {"n": 5, "error": +0.5580, "status": "❌ Overconfident by 55.80 bps"},
-        },
-    }
-
-    print("\nCalibration Error by Station & Lead Time:")
-    print("(Positive = forecast too confident | Negative = forecast too conservative)\n")
-    print(f"{'Station':<10} {'Lead':<6} {'Fills':<8} {'Error':<12} {'Status':<50}")
-    print("-" * 100)
-
-    total_l1_error = 0.0
-    total_l1_fills = 0
-
-    for station in ["KNYC", "KMIA", "KMDW"]:
-        for lead in [0, 1]:
-            data = pre_fix_data[station][f"L{lead}"]
-            print(
-                f"{station:<10} L{lead:<5} {data['n']:<8} "
-                f"{data['error']:+.4f}     {data['status']:<50}"
-            )
-            if lead == 1:
-                total_l1_error += data["error"] * data["n"]
-                total_l1_fills += data["n"]
-
-    avg_l1_error = total_l1_error / total_l1_fills if total_l1_fills > 0 else 0
-    print("-" * 100)
-    print(f"{'SUMMARY':<10} L1{'=':<4} {total_l1_fills:<8} {avg_l1_error:+.4f}     Average L1 overconfidence")
-
-    print("\n\n█ PART 2: THE FIX (1.35x variance inflation for lead >= 1)")
-    print("-" * 100)
-
     print("""
-Changes made in models/distribution.py:
-  1. Line 226: target_std *= 1.35 (for lead_day >= 1)
-  2. Line 271: _MAX_WIDEN_FACTOR = 1.45 (was 1.10) for lead >= 1
+The old diagnosis used trade price as a proxy for fair probability and inverted
+NO payouts. The corrected baseline uses side-adjusted signal fair probability:
 
-Why 1.35x?
-  - Calibration shows L1 is 32-56 bps overconfident
-  - This means the distribution is too narrow
-  - Need to widen by 1.35x to match observed uncertainty
-  - 1.35x × 1.10x (original cap) = 1.49x → capped at 1.45x to avoid over-widening
+  p_side = fair_prob for YES fills, 1 - fair_prob for NO fills
+  outcome = 1 when paper_fill.payout > 0, else 0
 
-Who benefits?
-  - KNYC L1: 73 fills (32-41% of total) — should see biggest improvement
-  - KMIA L1: 18 fills (14% of total)
-  - KMDW L1: 5 fills (4% of total)
-  - L0 (same-day): unchanged (already well-calibrated)
+Apr 1-May 6 settled fills:
+
+  Lead  Fills  Predicted win  Observed win  Error
+  L0    33     0.500          0.394         +0.106
+  L1    96     0.700          0.542         +0.159
+
+By station for L1:
+
+  KNYC  n=73  error=+0.164
+  KMIA  n=18  error=+0.098
+  KMDW  n=5   error=+0.308
 """)
 
-    print("\n█ PART 3: EXPECTED POST-FIX RESULTS")
+    print("\nPART 2: CURRENT FIX")
     print("-" * 100)
-
     print("""
-Expectation: L1 calibration error → ±0.05 to ±0.10 (from current +0.30-0.56)
+models/distribution.py applies lead-aware spread inflation:
 
-Model-level impact:
-  ✓ Fair probabilities will be more uncertain for 1-day-ahead forecasts
-  ✓ Extreme bets (fair=95% vs market=5%) become less extreme with wider dist
-  ✓ Edge calculations will be more conservative (lower edge_bps)
-  ✓ Some low-edge trades may fall below MIN_EDGE_BPS=200 and auto-SKIP
+  L0:  multiplier 1.00, cap 1.10
+  L1:  multiplier 1.25, cap 1.35
+  L2:  multiplier 1.15, cap 1.25
+  L3+: multiplier 1.05, cap 1.15
 
-P&L impact:
-  ✓ Fewer overconfident bets means fewer 0-1 large losses
-  ✓ Win rate on L1 should stay ~50% but realized P&L should improve
-  ✓ Estimated recovery: $300-400 of the $1,032 calibration loss
-  ✓ New weekly P&L target: -$50 to -$100 (near breakeven)
+Why:
 
-Risk:
-  ⚠ Over-widening could reduce edge below MIN_EDGE_BPS on legitimate trades
-  ⚠ May reduce trading volume on L1 (higher threshold to pass edge gate)
-  → Monitor via MIN_EDGE_BPS filter; adjust if too many SKIPs
-
-What we're NOT changing:
-  ✓ Bias correction (mean shift) — still using station_bias table
-  ✓ Lead 0 (same-day) — already well-calibrated
-  ✓ Fee logic, sizing, or Kelly calculation
-  ✓ Market data or Kalshi integration
+  - Residual-vs-implied spread ratios were about L1=1.29, L2=1.22, L3=1.08.
+  - KMIA L1 did not justify blanket 1.35x widening.
+  - L0 is left alone because HRRR blending and intraday conditioning dominate
+    same-day uncertainty.
 """)
 
-    print("\n█ PART 4: VALIDATION & MONITORING")
+    print("\nPART 3: RELATED CORRECTIONS")
     print("-" * 100)
-
     print("""
-For next 5 trading days (May 7-11), monitor:
+Use station-local lead days:
 
-1. Calibration error (should improve):
-   ```
-   python research/profile_calibration.py --start 2026-05-07 --end 2026-05-11
-   ```
-   Expected: L1 error → ±0.05-0.10 (from +0.30-0.56)
+  lead_day_for_station(station, valid_date, now_utc)
 
-2. Edge accuracy:
-   ```
-   python research/monitor_edge_accuracy.py --hours 120
-   ```
-   Expected: P&L converges to zero (no systematic bias)
+Use order-level Kalshi fees:
 
-3. Signal volume & skip reasons:
-   - Are we skipping more L1 trades due to edge < MIN_EDGE_BPS?
-   - Track FEE_LOAD, NO_EDGE ratios over time
+  fee_for_order(price, contracts)
 
-4. Win rate by lead time:
-   - L1 win rate should stay ~50% (directional accuracy unchanged)
-   - But spread of outcomes should narrow (overconfidence gone)
-
-Red flags to watch:
-  ✗ L1 calibration error worsens (→ revert the fix)
-  ✗ L1 P&L becomes significantly negative (→ reduce multiplier to 1.25x)
-  ✗ Signal volume drops > 20% (→ lower multiplier)
-  ✓ Win rate by lead time becomes 50-50 (expected, healthy)
-  ✓ Calibration error approaches zero (success)
+Do not multiply a rounded one-contract fee by contract count.
 """)
 
-    print("\n█ PART 5: QUICK REFERENCE")
+    print("\nPART 4: VALIDATION COMMANDS")
     print("-" * 100)
+    print("""
+.venv/bin/python -m pytest tests/ -q
+.venv/bin/python -m compileall -q main.py strategy models data dashboard jobs research verification tests
+.venv/bin/python research/profile_calibration.py --start-date 2026-04-01 --end-date 2026-05-06
+.venv/bin/python research/backtest_variance_fix.py --start 2026-04-01 --end 2026-05-06
+.venv/bin/python research/monitor_edge_accuracy.py --hours 1000
 
-    print(f"""
-Commit hash:       aadab2c
-Deployed time:     2026-05-06 16:14 UTC
-Files changed:     models/distribution.py (2 lines)
-Tests:             ✅ 20/20 passing
-Rollback command:  git revert aadab2c
+Current smoke expectations:
 
-Pre-fix metrics:
-  • Expected P&L: +$675 (what model thinks)
-  • Realized P&L: -$357 (what actually happened)
-  • Miss: -$1,032
+  - Tests: 23 passed
+  - Backtest: about +$14 expected-P&L improvement on Apr 1-May 6
+  - L1 corrected baseline: about +0.159
+""")
 
-Post-fix target:
-  • Expected P&L: +$675 (unchanged)
-  • Realized P&L: -$50 to -$100 (35-40% improvement)
+    print("\nPART 5: TUNING RULES")
+    print("-" * 100)
+    print("""
+Do not tune from tiny samples. Wait for 30-50 additional settled fills.
 
-Key baseline (PRE-FIX):
-  • L0 error: -0.0000 (perfect)
-  • L1 error: +0.4065 (overconfident)
-  • Improvement needed: ~35% for L1 variance
+If L1 remains overconfident above +0.15:
+  - Consider L1 1.30x.
+  - Do not change L2/L3 unless their own samples support it.
+
+If L1 becomes underconfident below -0.05:
+  - Consider L1 1.20x.
+
+If only one station drifts:
+  - Investigate station-specific bias/data first.
+  - Avoid global multiplier changes.
 """)
 
 

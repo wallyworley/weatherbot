@@ -108,6 +108,8 @@ def _format_alert(row: dict) -> tuple[str, str]:
         "MARKETS":      "Open Kalshi markets",
         "DATA_NBM":     "NBM forecast feed",
         "DATA_HRRR":    "HRRR forecast feed",
+        "DATA_GFS":     "GFS forecast feed",
+        "DATA_ECMWF":   "ECMWF forecast feed",
         "DATA_METAR":   "Weather observations feed",
         "DATA_KALSHI":  "Kalshi market feed",
     }.get(component, component)
@@ -166,7 +168,7 @@ def _fetch_unalerted_reds() -> list[dict]:
               AND prev.component = hc.component
               AND prev.alerted_at IS NOT NULL
               AND prev.ts > (
-                  SELECT COALESCE(MAX(ts2), '2000-01-01'::timestamptz)
+                  SELECT COALESCE(MAX(hc2.ts), '2000-01-01'::timestamptz)
                     FROM health_check hc2
                    WHERE hc2.station = hc.station
                      AND hc2.component = hc.component

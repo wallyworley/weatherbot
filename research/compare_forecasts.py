@@ -1,9 +1,10 @@
-"""Compare NBM / HRRR / ECMWF / GFS forecast accuracy at one or more lead days.
+"""Compare NBM / HRRR / ECMWF / GFS / WeatherNext forecast accuracy.
 
 For each (station, valid_date) pair in the past N days:
 - Pull NBM p50 from prob_forecast (run on valid_date - lead_day)
 - Pull HRRR daily TMAX from det_forecast (run on valid_date - lead_day, daily MAX)
 - Pull ECMWF/GFS from Open-Meteo historical-forecast-api
+- Optionally pull WeatherNext 2 from BigQuery when configured
 - Compare each against CLI tmax (settlement authority)
 
 Outputs CSV + markdown summary with MAE / RMSE / signed bias per source.
@@ -27,7 +28,7 @@ import logging
 import math
 import statistics
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -52,6 +53,9 @@ class FcRow:
     hrrr_tmax: Optional[float]
     ecmwf_tmax: Optional[float]
     gfs_tmax: Optional[float]
+    weathernext_tmax_p50: Optional[float] = None
+    weathernext_members: int = 0
+    weathernext_error: Optional[str] = None
 
 
 _NWS_ARCHIVE_DAYS = 6
@@ -116,7 +120,14 @@ def _hrrr_daily_tmax(station: str, valid_date: date, lead_day: int) -> Optional[
     return float(r["tmax"]) if r and r["tmax"] is not None else None
 
 
-def collect(station: str, days_back: int, lead_day: int) -> list[FcRow]:
+def collect(
+    station: str,
+    days_back: int,
+    lead_day: int,
+    *,
+    include_weathernext: bool = False,
+    weathernext_init_hour: int = 0,
+) -> list[FcRow]:
     rows: list[FcRow] = []
     today = date.today()
     for i in range(1, days_back + 1):
@@ -137,9 +148,36 @@ def collect(station: str, days_back: int, lead_day: int) -> list[FcRow]:
         except Exception as e:
             log.warning("gfs %s %s: %s", station, d, e)
             gf_tmax = None
+
+        wn_tmax = None
+        wn_members = 0
+        wn_error = None
+        if include_weathernext:
+            from research.sources import weathernext_fetcher
+
+            init_time = datetime.combine(
+                d - timedelta(days=lead_day),
+                time(hour=weathernext_init_hour),
+                tzinfo=timezone.utc,
+            )
+            wn = weathernext_fetcher.fetch_forecast_daily(
+                station,
+                d,
+                init_time=init_time,
+                fail_soft=True,
+            )
+            wn_tmax = wn.get("tmax_p50_f")
+            wn_members = int(wn.get("members") or 0)
+            wn_error = wn.get("error")
+            if wn_error:
+                log.warning("weathernext %s %s: %s", station, d, wn_error)
+
         rows.append(FcRow(station=station, valid_date=d, lead_day=lead_day,
                            truth_tmax=truth, nbm_p50=nbm, hrrr_tmax=hrrr,
-                           ecmwf_tmax=ec_tmax, gfs_tmax=gf_tmax))
+                           ecmwf_tmax=ec_tmax, gfs_tmax=gf_tmax,
+                           weathernext_tmax_p50=wn_tmax,
+                           weathernext_members=wn_members,
+                           weathernext_error=wn_error))
     return rows
 
 
@@ -176,7 +214,8 @@ def summarize(rows: list[FcRow]) -> str:
 
     lines = ["# Forecast Source Comparison (TMAX_DAILY)\n",
              f"_generated {datetime.now(tz=timezone.utc):%Y-%m-%d %H:%M UTC}_\n",
-             "Compares NBM (p50) / HRRR (daily max) / ECMWF / GFS predictions "
+             "Compares NBM (p50) / HRRR (daily max) / ECMWF / GFS / WeatherNext "
+             "predictions "
              "against CLI ground truth.\n",
              "MAE/RMSE in °F. Bias > 0 means the source forecast warmer than reality.\n"]
 
@@ -191,7 +230,8 @@ def summarize(rows: list[FcRow]) -> str:
             for src, attr in [("NBM p50", "nbm_p50"),
                                 ("HRRR",    "hrrr_tmax"),
                                 ("ECMWF",   "ecmwf_tmax"),
-                                ("GFS",     "gfs_tmax")]:
+                                ("GFS",     "gfs_tmax"),
+                                ("WeatherNext2 p50", "weathernext_tmax_p50")]:
                 e = _errors(sub, attr)
                 if e["n"] == 0:
                     lines.append(f"| {src} | 0 | — | — | — |")
@@ -208,13 +248,26 @@ if __name__ == "__main__":
     ap.add_argument("--lead-days", type=int, nargs="+", default=[1],
                      help="lead day(s) to compare; 1 = day-ahead, 0 = same-day intraday")
     ap.add_argument("--out-dir", default="research/reports")
+    ap.add_argument("--include-weathernext", action="store_true",
+                    help="Include WeatherNext 2 BigQuery data when configured.")
+    ap.add_argument("--weathernext-init-hour", type=int, default=0,
+                    choices=[0, 6, 12, 18],
+                    help="WeatherNext init hour UTC for the issue date.")
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
     all_rows: list[FcRow] = []
     for st in args.stations:
         for ld in args.lead_days:
-            all_rows.extend(collect(st, args.days_back, ld))
+            all_rows.extend(
+                collect(
+                    st,
+                    args.days_back,
+                    ld,
+                    include_weathernext=args.include_weathernext,
+                    weathernext_init_hour=args.weathernext_init_hour,
+                )
+            )
 
     csv_path = out_dir / f"fc_compare_{date.today()}.csv"
     md_path = out_dir / f"fc_compare_{date.today()}.md"

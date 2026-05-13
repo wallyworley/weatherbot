@@ -99,8 +99,12 @@ def latest_gfs_tmax(station: str, valid_date: date) -> float | None:
     return latest_det_tmax(station, valid_date, model="GFS")
 
 
+def latest_ecmwf_tmax(station: str, valid_date: date) -> float | None:
+    return latest_det_tmax(station, valid_date, model="ECMWF")
+
+
 def latest_det_tmax(station: str, valid_date: date, model: str) -> float | None:
-    """Latest daily TMAX from a deterministic model in det_forecast (HRRR/GFS).
+    """Latest daily TMAX from a deterministic model in det_forecast.
 
     Returns max of hourly TMP_2M from the latest run grouped by the
     *station-local* calendar day. Bare `valid_time::date` would group by the

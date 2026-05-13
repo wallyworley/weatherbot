@@ -1,7 +1,15 @@
 """Unit tests for the piecewise-CDF distribution builder."""
+from datetime import date, datetime, timezone
+
 import numpy as np
 
-from weather_bot.models.distribution import PiecewiseCDF, build_cdf_from_percentiles
+from weather_bot.models.distribution import (
+    PiecewiseCDF,
+    build_cdf_from_percentiles,
+    lead_day_for_station,
+    lead_day_variance_multiplier,
+    max_widen_factor_for_lead,
+)
 
 
 def test_cdf_monotonic_and_bounded():
@@ -57,3 +65,24 @@ def test_shift_moves_distribution():
     p_after = cdf.prob_between(77, 83)
     # Probability of a window that moves with the shift should stay ~same.
     assert abs(p_before - p_after) < 0.05
+
+
+def test_lead_day_uses_station_local_date():
+    # 2026-05-07 03:00 UTC is still May 6 in Chicago.
+    now_utc = datetime(2026, 5, 7, 3, 0, tzinfo=timezone.utc)
+    assert lead_day_for_station("KMDW", date(2026, 5, 7), now_utc) == 1
+    assert lead_day_for_station("KNYC", date(2026, 5, 7), now_utc) == 1
+
+    # But after midnight Eastern, KNYC should be same-day while KMDW is still L1.
+    now_utc = datetime(2026, 5, 7, 4, 30, tzinfo=timezone.utc)
+    assert lead_day_for_station("KNYC", date(2026, 5, 7), now_utc) == 0
+    assert lead_day_for_station("KMDW", date(2026, 5, 7), now_utc) == 1
+
+
+def test_lead_day_variance_schedule_is_lead_aware():
+    assert lead_day_variance_multiplier(0) == 1.0
+    assert lead_day_variance_multiplier(1) == 1.25
+    assert lead_day_variance_multiplier(2) == 1.15
+    assert lead_day_variance_multiplier(3) == 1.05
+    assert max_widen_factor_for_lead(0) == 1.10
+    assert max_widen_factor_for_lead(1) == 1.35

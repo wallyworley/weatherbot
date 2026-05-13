@@ -143,10 +143,14 @@ def _forecast_vs_obs(cur, station: str, var: str, days: int) -> None:
         obs = r["obs"]
         raw_p50 = r["raw_p50"]
 
-        # Build the bias-corrected distribution as-of forecast time.
+        # Build the bias-corrected distribution as-of station-local midnight.
+        from weather_bot.config import STATIONS
+        import pytz
+        tz = pytz.timezone(STATIONS[station].tz)
+        local_midnight = tz.localize(datetime.combine(r["local_date"], datetime.min.time()))
         cdf = build_station_distribution(
             station, r["local_date"], var=var,
-            now_utc=datetime.combine(r["local_date"], datetime.min.time()).replace(tzinfo=timezone.utc),
+            now_utc=local_midnight.astimezone(timezone.utc),
         )
 
         def _fmt(x):

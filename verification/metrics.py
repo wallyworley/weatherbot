@@ -31,7 +31,7 @@ _trapezoid = getattr(np, "trapezoid", None) or np.trapz  # type: ignore[attr-def
 
 from weather_bot.config import ACTIVE_STATIONS
 from weather_bot.data import persistence
-from weather_bot.models.distribution import PiecewiseCDF, build_station_distribution
+from weather_bot.models.distribution import PiecewiseCDF, build_station_distribution, lead_day_for_station
 
 log = logging.getLogger(__name__)
 
@@ -90,14 +90,18 @@ def run(lookback_days: int = 14) -> None:
                 obs = obs_rows[0]["tmax_f"] if var == "TMAX_DAILY" else obs_rows[0]["tmin_f"]
                 if obs is None:
                     continue
-                # Re-build the distribution as it would have been at forecast time.
-                cdf = build_station_distribution(code, d, var=var,
-                                                 now_utc=datetime.combine(d, datetime.min.time()).replace(tzinfo=timezone.utc))
+                # Re-build the distribution as it would have been at station-local midnight.
+                from weather_bot.config import STATIONS
+                import pytz
+                tz = pytz.timezone(STATIONS[code].tz)
+                local_midnight = tz.localize(datetime.combine(d, datetime.min.time()))
+                now_utc = local_midnight.astimezone(timezone.utc)
+                cdf = build_station_distribution(code, d, var=var, now_utc=now_utc)
                 if cdf is None:
                     continue
                 probs = cdf_to_bucket_probs(cdf)
                 oi = _bucket_idx(obs)
-                lead_day = 0  # simplified — expand with lead tracking in v2
+                lead_day = lead_day_for_station(code, d, now_utc)
                 per_lead[lead_day].append(dict(
                     brier=brier_bucket(probs, oi),
                     crps=crps(cdf, obs),

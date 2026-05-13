@@ -22,7 +22,7 @@ def get_recent_calibration(hours: int = 24, lead_day: int | None = None) -> dict
     """Compute recent calibration errors by lead_day.
 
     For fills settled in the last N hours, compare:
-      actual_outcome vs forecast_fairness (derived from market price)
+      actual_outcome vs side-adjusted signal fair probability
     """
     sql = """
     WITH recent_fills AS (
@@ -33,29 +33,31 @@ def get_recent_calibration(hours: int = 24, lead_day: int | None = None) -> dict
             m.var,
             pf.side,
             pf.price,
+            s.fair_prob,
+            CASE WHEN pf.side='YES' THEN s.fair_prob ELSE 1.0 - s.fair_prob END AS p_side,
             pf.contracts,
             m.valid_date,
             COALESCE(pf.payout, 0) AS payout,
-            -- Lead day (from trade_ts, not settlement_ts)
-            (m.valid_date - (pf.ts AT TIME ZONE 'America/New_York')::date)::int AS lead_day
+            (m.valid_date - (pf.ts AT TIME ZONE st.tz)::date)::int AS lead_day
         FROM paper_fill pf
         JOIN kalshi_market m ON m.ticker = pf.ticker
+        JOIN signal s ON s.id = pf.signal_id
+        JOIN stations st ON st.code = m.station
         WHERE pf.settled = TRUE
-          AND pf.ts::date >= CURRENT_DATE - INTERVAL '%(hours)s hours'::interval
+          AND pf.ts >= now() - (%(hours)s || ' hours')::interval
+          AND s.fair_prob IS NOT NULL
     )
     SELECT
         lead_day,
         COUNT(*) as n_fills,
-        AVG(CASE WHEN side='YES' THEN payout ELSE 1-payout END) as actual_win_rate,
-        AVG(price) as avg_market_fair_prob,
-        COUNT(CASE WHEN side='YES' AND payout=1 THEN 1 END) +
-        COUNT(CASE WHEN side='NO' AND payout=0 THEN 1 END) as n_wins,
+        AVG(CASE WHEN payout > 0 THEN 1.0 ELSE 0.0 END) as actual_win_rate,
+        AVG(p_side) as avg_predicted_win_prob,
+        COUNT(CASE WHEN payout > 0 THEN 1 END) as n_wins,
         COUNT(*) - (
-          COUNT(CASE WHEN side='YES' AND payout=1 THEN 1 END) +
-          COUNT(CASE WHEN side='NO' AND payout=0 THEN 1 END)
+          COUNT(CASE WHEN payout > 0 THEN 1 END)
         ) as n_losses,
         ROUND(
-          (AVG(price) - AVG(CASE WHEN side='YES' THEN payout ELSE 1-payout END))::numeric,
+          (AVG(p_side) - AVG(CASE WHEN payout > 0 THEN 1.0 ELSE 0.0 END))::numeric,
           4
         ) as calibration_error
     FROM recent_fills
@@ -81,10 +83,10 @@ def show_edge_accuracy(hours: int = 24):
     print(f"EDGE ACCURACY MONITOR — Last {hours} hours")
     print("=" * 100 + "\n")
 
-    # Baseline from earlier in the day (before fix was deployed)
+    # Corrected side-adjusted baseline from Apr 1-May 6 settled fills.
     baseline_calibration = {
-        0: {"calibration_error": -0.0000, "label": "PERFECT (pre-fix baseline)"},
-        1: {"calibration_error": +0.4065, "label": "OVERCONFIDENT by 40.65 bps (pre-fix)"},
+        0: {"calibration_error": +0.1056, "label": "pre-fix side-adjusted baseline"},
+        1: {"calibration_error": +0.1588, "label": "pre-fix side-adjusted baseline"},
     }
 
     current = get_recent_calibration(hours=hours)
@@ -107,6 +109,8 @@ def show_edge_accuracy(hours: int = 24):
         if isinstance(baseline_error, float):
             if abs(error) < abs(baseline_error) * 0.7:  # 30% improvement
                 status = "✅ IMPROVED (fix working!)"
+            elif abs(error) <= abs(baseline_error) * 1.05:
+                status = "→ No significant change"
             elif error > baseline_error:
                 status = "⚠️  DEGRADED (fix backfire?)"
             else:
@@ -126,7 +130,7 @@ def show_edge_accuracy(hours: int = 24):
     print("\n" + "-" * 100)
     print("INTERPRETATION:")
     print("  • Calibration error = (forecast fair prob) - (actual win rate)")
-    print("  • Positive = overconfident (PRE-FIX baseline: L1 was +0.4065)")
+    print("  • Positive = overconfident (PRE-FIX side-adjusted baseline: L1 was +0.1588)")
     print("  • After fix, L1 should move toward zero (±0.05)")
     print("  • Target: L1 error < ±0.10 (shows variance inflation is working)")
 

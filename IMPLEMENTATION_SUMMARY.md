@@ -1,238 +1,160 @@
-# Weather Bot Calibration Fix — Complete Implementation Summary
+# Weather Bot Calibration Corrective Pass
 
-## Executive Summary
+Updated May 7, 2026.
 
-✅ **All Steps Completed**: Diagnosis, Root Cause Analysis, Implementation, and Validation Plan
+## Summary
 
-**Problem**: 7-day P&L is -$357.55 on $1,388 staked (-25.75%), despite 50.6% win rate. Expected edge was $675; realized was -$357 (-$1,032 miss).
+The first May 6 variance fix used a blanket `1.35x` spread inflation for all
+`lead_day >= 1` forecasts. That was directionally plausible but too blunt.
+The corrected implementation now uses side-adjusted calibration, station-local
+lead-day calculations, order-level Kalshi fees, and lead-aware spread widening.
 
-**Root Cause**: Lead_day >= 1 forecasts (1-day-ahead) are overconfident by **30–56 basis points**. Lead_day == 0 (same-day) is perfectly calibrated.
+## What Changed
 
-**Solution**: Inflate variance by 1.35x for lead >= 1 in `models/distribution.py` (2-line fix).
+### Lead-aware variance schedule
 
-**Status**: ✅ Deployed, committed, tested, and validated with monitoring tools.
+`models/distribution.py` now uses:
 
----
+| Lead day | Variance multiplier | Max widening cap |
+|---:|---:|---:|
+| 0 | 1.00 | 1.10 |
+| 1 | 1.25 | 1.35 |
+| 2 | 1.15 | 1.25 |
+| 3+ | 1.05 | 1.15 |
 
-## Work Completed
+Rationale:
 
-### Phase 1: Diagnosis (4 Recommendations)
+- Residual-vs-implied spread checks showed roughly L1=1.29, L2=1.22, L3=1.08.
+- KMIA L1 did not need blanket `1.35x` widening.
+- Same-day uncertainty is already handled by HRRR blending and intraday
+  floor/ceiling conditioning.
 
-| Recommendation | Finding | Status |
-|---|---|---|
-| **1. May Calibration Audit** | May data is thin (n=8-9) but expected; BIAS_GATE working correctly | ✅ Sound |
-| **2. HFMETAR Impact** | KMDW forecast improved 54%, KMIA P&L improved 113% | ✅ Success |
-| **3. Station-Specific Retraining** | Station switch is not the issue; created tool for future use | ✅ Future-proofed |
-| **4. Fee & Skip Analysis** | FEE_LOAD correct, DIVERGENCE may be too conservative | ✅ Healthy |
+### Station-local lead days
 
-### Phase 2: Root Cause Discovery
+Lead day now uses station-local date via:
 
-**Created `profile_calibration.py`** — Profiled 128 settled trades (April 1–May 6):
-
-| Station | Lead 0 Error | Lead 1 Error | Pattern |
-|---------|---|---|---|
-| **KNYC** | -0.0000 ✅ | +0.4065 ❌ | Perfect same-day; overconfident 1-day |
-| **KMIA** | -0.0120 ✅ | +0.3222 ❌ | Nearly perfect same-day; overconfident 1-day |
-| **KMDW** | +0.0208 ✅ | +0.5580 ❌ | Acceptable same-day; very overconfident 1-day |
-| **AVERAGE** | ~0 ✅ | **+0.3986 ❌** | **40 basis points too confident** |
-
-**Insight**: The problem is NOT general overconfidence—it's specifically 1-day-ahead forecasts being 32–56 bps too confident while same-day forecasts are perfectly calibrated.
-
-### Phase 3: Implementation
-
-**Commit `aadab2c`**: "fix: lead_day >= 1 forecast overconfidence — inflate variance by 1.35x"
-
-Changes to `models/distribution.py`:
 ```python
-# Line 226: NEW — Lead-day variance inflation
-if lead_day >= 1:
-    target_std *= 1.35
-
-# Line 271: MODIFIED — Raise width-scaling cap
-_MAX_WIDEN_FACTOR = 1.45 if lead_day >= 1 else 1.10  # was 1.10
+lead_day_for_station(station, target_date, now_utc)
 ```
 
-**Why 1.35x?**
-- Calibration shows L1 needs ~35% wider variance to match observed uncertainty
-- 1.35x is the minimum inflation needed to reduce +40 bps overconfidence toward zero
-- Capped at 1.45x to avoid extreme over-widening that broke distributions in Apr 20 incident
+This prevents UTC date boundaries from misclassifying KMDW/other stations.
 
-**Who benefits?**
-- KNYC L1: 73 fills (57% of all L1 trades) — biggest impact
-- KMIA L1: 18 fills
-- KMDW L1: 5 fills
-- L0: No change (already well-calibrated)
+### Order-level Kalshi fees
 
-**What we're NOT changing:**
-- Mean bias correction (station_bias table still used)
-- Same-day forecasts (already perfect)
-- Fee logic, sizing, Kelly calculation
-- Kalshi integration, market data
+Kalshi fees are now computed at order level:
 
-**Tests**: ✅ All 20/20 unit tests passing
-
-### Phase 4: Validation & Monitoring
-
-**Created 3 validation tools** (commit `c9448c9`):
-
-1. **`backtest_variance_fix.py`**
-   - Compares pre-fix vs post-fix P&L on April–May data
-   - Usage: `python research/backtest_variance_fix.py --start 2026-04-01 --end 2026-05-06`
-   - Shows expected improvement if fix had been in place
-
-2. **`monitor_edge_accuracy.py`**
-   - Tracks calibration error by lead_day on new trades
-   - Usage: `python research/monitor_edge_accuracy.py --hours 120`
-   - Monitors whether L1 error is improving toward ±0.05
-
-3. **`variance_fix_report.py`**
-   - Before/after comparison and validation checklist
-   - Usage: `python research/variance_fix_report.py`
-   - Shows expected results and red flags to watch
-
----
-
-## Expected Impact
-
-### Pre-Fix (April 1 – May 6)
-- Expected P&L from model: **+$675.26**
-- Actual realized P&L: **-$357.55**
-- **Calibration miss: -$1,032.81**
-- Root cause: Overconfident on L1 (+40 bps)
-
-### Post-Fix (Expected)
-- Model's expected P&L: **+$675.26** (unchanged)
-- Predicted realized P&L: **-$50 to -$100** (breakeven-ish)
-- **Estimated recovery: $300–400 of the $1,032 loss** (30–40% improvement)
-
-### Why Not 100%?
-- The +40 bps error translates to roughly $40 loss per 1,000 bps of edge
-- With 96 L1 fills at ~$10 notional each, 40 bps → ~$35 loss
-- Fixing 35% of it recovers ~$350 (matches $300-400 estimate)
-
-### Mechanism
-1. Wider L1 distributions → lower fair probabilities for extreme bets
-2. Lower fair prob vs market price → lower edge
-3. Some low-edge trades skip (correct behavior)
-4. Remaining trades are better-calibrated → fewer large losses
-
----
-
-## Monitoring Instructions (May 7–11)
-
-### Daily Check (Each Morning)
-```bash
-# Check if calibration error is improving
-python research/monitor_edge_accuracy.py --hours 24
-
-# Look for:
-# L1 calibration_error moving from +0.40 toward ±0.05
-# Status showing "✅ IMPROVED" instead of "⚠️ DEGRADED"
-```
-
-### End of Week (May 10)
-```bash
-# Profile full week of data
-python research/profile_calibration.py --start 2026-05-07 --end 2026-05-11
-
-# Compare to pre-fix baseline:
-# Pre:  L1 error = +0.4065 (overconfident)
-# Post: L1 error = ±0.05-0.10 (acceptable)
-```
-
-### Red Flags (Revert if Any Trigger)
-1. **L1 calibration error worsens** (> +0.40) → `git revert aadab2c`
-2. **Signal volume drops > 20%** (over-suppressed) → reduce multiplier to 1.25x
-3. **L1 P&L becomes -$100+** (fix backfired) → investigate edge calculation
-4. **Win rate changes** (shouldn't happen; variance doesn't affect directionality) → revert
-
-### Green Lights (Success Indicators)
-1. **L1 error → ±0.05-0.10** (target achieved)
-2. **L1 P&L → -$50 to +$50** (breakeven)
-3. **Win rate stable ~50%** (directional accuracy unchanged)
-4. **Signal volume within 10% of baseline** (minimal suppression)
-
----
-
-## Files Changed
-
-| File | Type | Change | Lines |
-|------|------|--------|-------|
-| `models/distribution.py` | 🔧 Fix | Lead-day variance inflation + cap adjustment | +10 |
-| `research/profile_calibration.py` | 📊 Tool | Calibration profiling | +185 |
-| `jobs/retrain_bias_station_aware.py` | 🛠️ Tool | Future-proofing | +175 |
-| `research/backtest_variance_fix.py` | 📊 Validation | Backtest simulation | +200 |
-| `research/monitor_edge_accuracy.py` | 📊 Validation | Real-time calibration monitor | +100 |
-| `research/variance_fix_report.py` | 📖 Docs | Before/after report | +150 |
-| `ANALYSIS_2026-05-06.md` | 📖 Docs | Diagnostic report | +240 |
-| `NEXT_STEPS.md` | 📖 Docs | Implementation guide | +250 |
-| `IMPLEMENTATION_SUMMARY.md` | 📖 Docs | This file | - |
-
-**Total**: 9 files changed, 1,310+ lines added
-
----
-
-## Commits
-
-| Hash | Message | Time |
-|------|---------|------|
-| `aadab2c` | fix: lead_day >= 1 forecast overconfidence — inflate variance by 1.35x | 2026-05-06 16:14 |
-| `c9448c9` | chore: add validation & monitoring tools for variance fix | 2026-05-06 16:15 |
-
----
-
-## Rollback Plan (If Needed)
-
-**Simple revert**:
-```bash
-git revert aadab2c
-# Then test and redeploy
-```
-
-**Adjust multiplier** (if 1.35x is too aggressive):
 ```python
-# In models/distribution.py, line 226:
-target_std *= 1.25  # instead of 1.35
+fee_for_order(price, contracts)
 ```
 
-**Raise cap** (if distribution becomes bimodal):
-```python
-# In models/distribution.py, line 271:
-_MAX_WIDEN_FACTOR = 1.35  # instead of 1.45
+`fee_per_contract(price, contracts)` now returns the effective per-contract fee
+for an order. This avoids overstating fees by multiplying a rounded one-contract
+fee by the contract count.
+
+### Side-adjusted calibration and P&L
+
+Calibration and expected P&L now use the side actually bought:
+
+```sql
+CASE WHEN pf.side='YES' THEN s.fair_prob ELSE 1.0 - s.fair_prob END
 ```
 
----
+`paper_fill.payout` is treated as side-relative: `payout > 0` means the fill
+won, regardless of YES/NO.
 
-## Key Learnings
+### Profitability controls
 
-1. **Lead-time-specific calibration is critical** — same-day vs 1-day-ahead forecasts have fundamentally different uncertainty. One model doesn't fit all.
+Future entries now pass through `strategy/profitability.py` after normal model
+and safety gates:
 
-2. **Small sample aggregation masks problems** — looking at overall 7-day P&L showed "general overconfidence." Profiling by lead_day revealed the real issue was confined to L1.
+- `PAUSED_TRADE_STATIONS=KMDW`
+- `KNYC_L1_SIZE_MULT=0.25`
+- `NO_UNDER_50C_SIZE_MULT=0.50`
+- `YES_25_50C_SIZE_MULT=0.50`
 
-3. **BIAS_GATE is a crucial safety mechanism** — it prevented even worse losses by blocking thin May data.
+The controls are simple on purpose: pause the worst thin-sample station, reduce
+the worst lead-time slice, and downsize weak side/price bands while more data
+accumulates.
 
-4. **HFMETAR works** — 54–56% forecast improvement on KMDW is real. Confirms data source matters.
+### Research report for unproven levers
 
-5. **Two lines of code can recover $300K in loss** — focused, surgical fixes are more valuable than broad refactors.
+`jobs/profitability_report.py` measures:
 
----
+- Maker/wait-for-one-cent-better entry replay
+- 70% max-gain early-exit replay
+- DIVERGENCE skip replay with corrected order-level fees
 
-## Next Priorities (After May 11)
+### Historical backtest repair
 
-1. **Validate calibration improvement** using the monitoring tools
-2. **Consider lead_2+ tuning** if the pattern continues into 2+ day forecasts
-3. **HFMETAR phase 4 decision** (loosen CLI requirement) once KMDW/KMIA have n≥50
-4. **Review DIVERGENCE threshold** (may be too conservative now that model is better calibrated)
+`research/backtest_variance_fix.py` now:
 
----
+- Uses historical `pf.ts` as the as-of timestamp.
+- Loads the latest NBM cycle available at that timestamp.
+- Uses station-local lead days.
+- Recomputes order-level Kalshi fees where historical stored fees may be stale.
 
-## Sign-Off
+## Corrected Baseline
 
-**Implementation**: ✅ Complete
-**Testing**: ✅ 20/20 unit tests passing
-**Documentation**: ✅ ANALYSIS_2026-05-06.md, NEXT_STEPS.md, IMPLEMENTATION_SUMMARY.md
-**Validation Tools**: ✅ 3 monitoring scripts created
-**Commits**: ✅ 2 commits (aadab2c, c9448c9)
-**Rollback Plan**: ✅ Simple revert available
+Apr 1-May 6 side-adjusted calibration:
 
-**Ready for monitoring** — May 7–11 will show if the fix works as expected.
+| Lead | Fills | Predicted win | Observed win | Error |
+|---|---:|---:|---:|---:|
+| L0 | 33 | 0.500 | 0.394 | +0.106 |
+| L1 | 96 | 0.700 | 0.542 | +0.159 |
+
+The original `+0.30` to `+0.56` diagnosis was overstated because it used trade
+price as a fair-probability proxy and mishandled NO payout semantics.
+
+## Validation Results
+
+Commands run:
+
+```bash
+.venv/bin/python -m pytest tests/ -q
+.venv/bin/python -m compileall -q main.py strategy models data dashboard jobs research verification tests
+.venv/bin/python research/profile_calibration.py --start-date 2026-04-01 --end-date 2026-05-06
+.venv/bin/python research/backtest_variance_fix.py --start 2026-04-01 --end 2026-05-06
+.venv/bin/python research/monitor_edge_accuracy.py --hours 1000
+git diff --check
+```
+
+Results:
+
+- Tests: `23 passed`
+- Compile check: clean
+- Whitespace check: clean
+- Backtest: lead-aware variance improves expected P&L by about `$13.96` on the
+  Apr 1-May 6 settled-fill window.
+- Corrected L1 calibration baseline: about `+0.159`.
+
+## Files Updated
+
+- `models/distribution.py`
+- `strategy/ev.py`
+- `strategy/profitability.py`
+- `main.py`
+- `dashboard/queries.py`
+- `dashboard/replay.py`
+- `jobs/analyze_edge_breakdown.py`
+- `jobs/diagnose.py`
+- `jobs/health_check.py`
+- `verification/metrics.py`
+- `research/profile_calibration.py`
+- `research/backtest_variance_fix.py`
+- `research/monitor_edge_accuracy.py`
+- `research/variance_fix_report.py`
+- `jobs/profitability_report.py`
+- `tests/test_distribution.py`
+- `tests/test_ev.py`
+- `tests/test_profitability.py`
+- `NEXT_STEPS.md`
+
+## Operating Guidance
+
+- Do not return to blanket all-lead widening unless a fresh replay proves it.
+- Tune by lead day first, then by station only after enough sample size.
+- Keep maker execution, early exits, and DIVERGENCE auto-trading research-only
+  until their reports show durable positive dollar impact.
+- Keep `PAPER_MODE=true` until side-adjusted calibration, expected-vs-realized
+  edge, and net P&L are stable for multiple weeks.
+- Use `NEXT_STEPS.md` as the current runbook.

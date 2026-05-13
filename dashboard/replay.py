@@ -7,7 +7,6 @@ manual scripting exercise.
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Optional
@@ -16,14 +15,21 @@ import numpy as np
 import pandas as pd
 import pytz
 
-from weather_bot.config import KALSHI_FEE_COEFF, MAX_POSITION_PCT, MIN_EDGE_BPS, STATIONS
+from weather_bot.config import MAX_POSITION_PCT, MIN_EDGE_BPS, STATIONS
 from weather_bot.data import persistence
-from weather_bot.models.distribution import build_cdf_from_percentiles, _intraday_bounds
+from weather_bot.models.distribution import (
+    build_cdf_from_percentiles,
+    _intraday_bounds,
+    lead_day_for_station,
+    lead_day_variance_multiplier,
+    max_widen_factor_for_lead,
+)
+from weather_bot.strategy.ev import fee_per_contract, kelly_fraction_with_fee
 
 
 @dataclass
 class ReplayParams:
-    max_widen: float = 1.10            # current production
+    max_widen: float | None = None     # None = current lead-aware production cap
     hrrr_weight_cap: float = 0.95      # current production peaks at 0.95
     divergence_max: float = 0.50       # current production
     min_edge_bps: int = MIN_EDGE_BPS
@@ -38,10 +44,6 @@ def _hrrr_weight(h: int, cap: float) -> float:
     elif h <= 18: w = 0.9 + 0.017*(h-15)
     else: w = 0.95
     return min(cap, w)
-
-
-def _fee_pc(price: float) -> float:
-    return math.ceil(KALSHI_FEE_COEFF * price * (1.0 - price) * 100) / 100.0
 
 
 def _kelly(p: float, b: float) -> float:
@@ -82,7 +84,7 @@ def _build_cdf(station, valid_date, var, ts, params: ReplayParams):
     rows = _latest_nbm(station, valid_date, var, ts)
     cdf = build_cdf_from_percentiles(rows)
     if cdf is None: return None
-    lead = (valid_date - ts.date()).days
+    lead = lead_day_for_station(station, valid_date, ts)
     month = valid_date.month
     bias = persistence.get_station_bias(station, "NBM_QMD", var, month, max(lead, 0))
     if bias:
@@ -98,12 +100,14 @@ def _build_cdf(station, valid_date, var, ts, params: ReplayParams):
             ah = (ts - rt).total_seconds() / 3600.0
             if ah > 8: st = max(0.0, 1 - (ah - 8) / 10)
         cdf.shift -= sh * rb * st
-        if rs > 0 and len(cdf.values) >= 2:
+        target_std = rs * lead_day_variance_multiplier(lead)
+        if target_std > 0 and len(cdf.values) >= 2:
             p90 = float(np.interp(0.9, cdf.probs, cdf.values))
             p10 = float(np.interp(0.1, cdf.probs, cdf.values))
             cs = (p90 - p10) / 2.56
-            if cs > 0 and rs > cs:
-                sc = min(rs / cs, params.max_widen)
+            if cs > 0 and target_std > cs:
+                cap = params.max_widen if params.max_widen is not None else max_widen_factor_for_lead(lead)
+                sc = min(target_std / cs, cap)
                 med = float(np.interp(0.5, cdf.probs, cdf.values))
                 cdf.values = med + sc * (cdf.values - med)
     if lead == 0 and var == "TMAX_DAILY":
@@ -165,12 +169,16 @@ def replay(start: date, end: date, params: ReplayParams,
             price = ya if side == "YES" else (None if yb is None else 1.0 - yb)
             wp = new_p_yes if side == "YES" else 1.0 - new_p_yes
             if price is None or price <= 0 or price >= 1: continue
-            fee = _fee_pc(price)
+            b = (1 - price) / price
+            rough_k = min(_kelly(wp, b) * 0.25, MAX_POSITION_PCT)
+            rough_size = max(0.0, rough_k * params.bankroll_usd)
+            est_contracts = max(1, int(rough_size / price)) if price > 0 else 1
+            fee = fee_per_contract(price, est_contracts)
+            k = min(kelly_fraction_with_fee(wp, price, fee) * 0.25, MAX_POSITION_PCT)
+            risk = max(0.0, k * params.bankroll_usd)
+            size = risk * (price / (price + fee)) if (price + fee) > 0 else 0.0
             ev_c = wp * (1 - price) - (1 - wp) * price - fee
             eb = int(ev_c * 10000 / max(price, 1e-6))
-            b = (1 - price) / price
-            k = min(_kelly(wp, b) * 0.25, MAX_POSITION_PCT)
-            size = max(0.0, k * params.bankroll_usd)
             fl = fee / price
             if div_skip: action = "SKIP_DIV"
             elif fl > 0.20: action = "SKIP_FEE"
@@ -187,7 +195,7 @@ def replay(start: date, end: date, params: ReplayParams,
         if best_action == "OPEN" and best_side == f["rec_side"]:
             new_price = float(f["price"])
             new_contracts = max(1, int(best_size / new_price))
-            new_fees = _fee_pc(new_price) * new_contracts
+            new_fees = fee_per_contract(new_price, new_contracts) * new_contracts
             new_pnl = (float(f["payout"] or 0) - new_price) * new_contracts - new_fees
         else:
             new_pnl = 0.0  # would have skipped or flipped → no fill

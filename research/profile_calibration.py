@@ -7,7 +7,7 @@ Key questions:
 4. Seasonal pattern? (March vs April vs May)
 
 Output: Bucket-level calibration check — for each bucket that settled,
-  actual_outcome ∈ {0,1} vs predicted_probability,
+  actual_outcome ∈ {0,1} vs side-adjusted signal fair probability,
   compute calibration error (pred - actual) per bucket.
 
 Calibration error > 0 = overconfident (predicted too high)
@@ -49,22 +49,23 @@ def profile_calibration(start_date: date = None, end_date: date = None):
             m.var,
             pf.side,
             pf.price,
+            s.fair_prob,
+            CASE WHEN pf.side='YES' THEN s.fair_prob ELSE 1.0 - s.fair_prob END AS p_side,
             pf.contracts,
             m.lower_f, m.upper_f,
             COALESCE(pf.payout, 0) AS payout,
-            -- Infer which bucket settled (0 or 1) from payout
-            -- payout=1 means we were right, payout=0 means we were wrong
-            CASE WHEN pf.side='YES' THEN COALESCE(pf.payout, 0)
-                 ELSE 1 - COALESCE(pf.payout, 0) END AS outcome,
+            CASE WHEN COALESCE(pf.payout, 0) > 0 THEN 1.0 ELSE 0.0 END AS outcome,
             -- Lead day calculation (local date)
             GREATEST(0,
               (m.valid_date - (pf.ts AT TIME ZONE st.tz)::date)::int
             ) AS lead_day
         FROM paper_fill pf
         JOIN kalshi_market m ON m.ticker = pf.ticker
+        JOIN signal s ON s.id = pf.signal_id
         JOIN stations st ON st.code = m.station
         WHERE pf.settled = TRUE
           AND pf.ts::date BETWEEN %(start_date)s AND %(end_date)s
+          AND s.fair_prob IS NOT NULL
     )
     SELECT
         trade_date,
@@ -72,10 +73,8 @@ def profile_calibration(start_date: date = None, end_date: date = None):
         COUNT(*) AS n_fills,
         COUNT(DISTINCT side) AS n_sides,
         ROUND(AVG(outcome)::numeric, 3) AS actual_win_rate,
-        -- Fair probability was roughly: price (for YES buys) or (1-price) for NO buys
-        -- This is a crude approximation; real fair prob might differ, but price is close.
-        ROUND(AVG(price)::numeric, 3) AS avg_price_as_proxy_fair_prob,
-        ROUND((AVG(price) - AVG(outcome))::numeric, 4) AS calibration_error,
+        ROUND(AVG(p_side)::numeric, 3) AS avg_predicted_win_prob,
+        ROUND((AVG(p_side) - AVG(outcome))::numeric, 4) AS calibration_error,
         ROUND(STDDEV_SAMP(outcome)::numeric, 3) AS outcome_stdev
     FROM fills_with_dist
     GROUP BY trade_date, station, var, lead_day
@@ -108,7 +107,7 @@ def print_by_date(results):
             f"{row['trade_date']} {row['station']:4s} {row['var']:12s} "
             f"L{row['lead_day']} n={row['n_fills']:2d} "
             f"outcome={row['actual_win_rate']:.3f} "
-            f"fair_proxy={row['avg_price_as_proxy_fair_prob']:.3f} "
+            f"pred={row['avg_predicted_win_prob']:.3f} "
             f"ERROR={row['calibration_error']:+.4f}"
         )
 

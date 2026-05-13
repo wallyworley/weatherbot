@@ -1,18 +1,19 @@
 # weatherbot
 
-Probabilistic trading bot for Kalshi daily-temperature contracts. Builds a calibrated forecast distribution from NOAA NBM (probabilistic), HRRR, and GFS inputs, applies station-level bias correction, and computes per-bucket fair probabilities for Kalshi range markets. Sizes positions with a fractional Kelly under fee-aware EV.
+Probabilistic trading bot for Kalshi daily-temperature contracts. Builds a calibrated forecast distribution from NOAA NBM (probabilistic), HRRR, and GFS inputs, benchmarks ECMWF/WeatherNext as challenger sources, applies station-level bias correction, and computes per-bucket fair probabilities for Kalshi range markets. Sizes positions with a fractional Kelly under fee-aware EV.
 
 Runs in paper mode by default. Current trade scope is KNYC, KMDW, and KMIA, with the pre-trade bias gate blocking any station whose calibration is missing, thin, or stale.
 
 ## How it works
 
 ```
-NOAA/Open-Meteo (NBM + HRRR + GFS)      METAR + NWS CLI
+NOAA/Open-Meteo (NBM + HRRR + GFS + ECMWF)      METAR + NWS CLI
         │                                    │
         ▼                                    ▼
   data/nbm_fetcher.py              data/metar_fetcher.py
   data/hrrr_fetcher.py                       │
-  data/gfs_fetcher.py                       ▼
+  data/gfs_fetcher.py
+  data/ecmwf_fetcher.py                    ▼
         │                         daily_obs / cli_obs (Postgres)
         ▼
   prob_forecast (Postgres)                   │
@@ -36,6 +37,61 @@ NOAA/Open-Meteo (NBM + HRRR + GFS)      METAR + NWS CLI
 
 Settled fills get reconciled each morning via `jobs/settle_paper_fills.py`, preferring NWS CLI settlement observations and falling back to METAR-derived daily observations when CLI is not captured yet.
 
+## Current calibration methodology
+
+The trading model uses a piecewise CDF built from NBM QMD percentiles, then
+applies station bias correction, deterministic-model blending, and intraday
+conditioning.
+
+Current spread inflation is lead-aware, not a blanket multiplier:
+
+| Lead day | Variance multiplier | Max widening cap |
+|---:|---:|---:|
+| 0 | 1.00 | 1.10 |
+| 1 | 1.25 | 1.35 |
+| 2 | 1.15 | 1.25 |
+| 3+ | 1.05 | 1.15 |
+
+Important rules:
+
+- Compute `lead_day` with `lead_day_for_station(...)` so station-local dates
+  are respected.
+- Evaluate calibration with side-adjusted fair probability:
+  `YES -> fair_prob`, `NO -> 1 - fair_prob`.
+- Treat `paper_fill.payout > 0` as a side-relative win.
+- Compute Kalshi fees with `fee_for_order(price, contracts)`, not by
+  multiplying a rounded one-contract fee.
+- Live probability calibration is signal-based and event-weighted. It uses
+  logged signals whose markets have known CLI/daily outcomes, then falls back
+  through `station+lead+bucket -> lead+bucket -> station+bucket -> global`.
+  Repeated scores for the same ticker/bin contribute one effective event.
+- Default empirical calibration is intentionally conservative:
+  `PROB_CALIBRATION_MIN_BUCKET_N=20`, `PROB_CALIBRATION_PRIOR_N=35`, and
+  `PROB_CALIBRATION_MAX_DELTA=0.15`.
+
+Current profitability controls are enabled by default and can be overridden in
+`.env`:
+
+```dotenv
+PROFIT_CONTROLS_ENABLED=true
+PAUSED_TRADE_STATIONS=KMDW
+KNYC_L1_SIZE_MULT=0.25
+NO_UNDER_50C_SIZE_MULT=0.50
+YES_25_50C_SIZE_MULT=0.50
+```
+
+These controls pause KMDW new entries, quarter-size KNYC day-ahead entries,
+and half-size weak side/price bands while more samples accumulate.
+
+Useful validation commands:
+
+```bash
+.venv/bin/python research/profile_calibration.py --start-date 2026-04-01 --end-date 2026-05-06
+.venv/bin/python research/backtest_variance_fix.py --start 2026-04-01 --end 2026-05-06
+.venv/bin/python research/monitor_edge_accuracy.py --hours 1000
+.venv/bin/python -m weather_bot.jobs.profitability_report --days-back 30
+```
+
 ## Repository layout
 
 ```
@@ -49,6 +105,8 @@ weather_bot/
 │   ├── grib_utils.py        # S3 byte-range + GRIB2 parsing
 │   ├── nbm_fetcher.py       # NBM QMD probabilistic
 │   ├── hrrr_fetcher.py      # HRRR hourly deterministic
+│   ├── gfs_fetcher.py       # GFS hourly deterministic via Open-Meteo
+│   ├── ecmwf_fetcher.py     # ECMWF hourly deterministic via Open-Meteo
 │   ├── metar_fetcher.py     # aviationweather.gov live
 │   ├── iem_fetcher.py       # Iowa Environmental Mesonet historical
 │   └── persistence.py       # psycopg3 DB layer
@@ -187,10 +245,11 @@ Add to your user crontab (`crontab -e`). Use absolute paths.
 
 ```cron
 # Pull Kalshi markets and snapshot prices
-*/15 * * * *  cd /path/to/weatherbot && .venv/bin/python -m weather_bot.jobs.pull_kalshi_markets
+*/5 * * * *  cd /path/to/weatherbot && .venv/bin/python -m weather_bot.jobs.pull_kalshi_markets
 
-# Pull METAR observations
-*/30 * * * *  cd /path/to/weatherbot && .venv/bin/python -m weather_bot.jobs.pull_metar
+# Pull observations. ASOS stations use 5-min HFMETAR; KNYC standard METAR
+# remains effectively hourly, but the fast poll keeps ASOS fresh.
+*/5 * * * *  cd /path/to/weatherbot && .venv/bin/python -m weather_bot.jobs.pull_metar
 
 # NBM QMD publishes 4× daily (00/06/12/18Z), ~3h after cycle time
 30 3,9,15,21 * * *  cd /path/to/weatherbot && .venv/bin/python -m weather_bot.jobs.pull_nbm
@@ -198,8 +257,12 @@ Add to your user crontab (`crontab -e`). Use absolute paths.
 # HRRR publishes hourly
 15 * * * *  cd /path/to/weatherbot && .venv/bin/python -m weather_bot.jobs.pull_hrrr
 
-# Signal generator: every 15 min during waking hours (NYC time)
-*/15 6-22 * * *  cd /path/to/weatherbot && ./tick.sh
+# Open-Meteo challengers: latest GFS/ECMWF cycle, stored in det_forecast
+20 * * * *  cd /path/to/weatherbot && .venv/bin/python -m weather_bot.jobs.pull_gfs
+25 * * * *  cd /path/to/weatherbot && .venv/bin/python -m weather_bot.jobs.pull_ecmwf
+
+# Signal generator: every 5 min during waking hours (NYC time)
+*/5 6-22 * * *  cd /path/to/weatherbot && ./tick.sh
 
 # Nightly: settle paper fills, retrain bias, P&L report
 0 2 * * *  cd /path/to/weatherbot && ./morning.sh
@@ -222,15 +285,20 @@ For each job above, create a `~/Library/LaunchAgents/com.weatherbot.<job>.plist`
 |---|---|---|
 | `jobs.pull_nbm` | Pull NBM QMD percentile forecasts | Every 6h, ~3h after cycle |
 | `jobs.pull_hrrr` | Pull HRRR deterministic forecasts | Hourly |
-| `jobs.pull_metar` | Pull observations: 5-min HFMETAR via IEM for ASOS stations, hourly METAR via aviationweather.gov for KNYC | Hourly |
-| `jobs.pull_kalshi_markets` | Refresh Kalshi market list + price snapshots | Every 15 min |
-| `main` (via `tick.sh`) | Score markets, generate paper fills | Every 15 min when markets are open |
+| `jobs.pull_gfs` | Pull GFS deterministic forecasts via Open-Meteo | Hourly |
+| `jobs.pull_ecmwf` | Pull ECMWF deterministic forecasts via Open-Meteo | Hourly |
+| `jobs.pull_metar` | Pull observations: 5-min HFMETAR via IEM for ASOS stations, hourly METAR via aviationweather.gov for KNYC | Every 5 min |
+| `jobs.pull_kalshi_markets` | Refresh Kalshi market list + price snapshots | Every 5 min |
+| `main` (via `tick.sh`) | Score markets, generate paper fills | Every 5 min when markets are open |
 | `jobs.settle_paper_fills` | Reconcile fills against observed temperatures | Once daily, after midnight |
 | `jobs.retrain_bias` | Recompute rolling 30-day station bias | Once daily, after settlement |
 | `jobs.paper_report` | P&L summary + expected-vs-realized edge | Once daily, after retrain |
 | `jobs.nightly_verify` | Brier / CRPS / reliability metrics | Once daily (slow) |
 | `jobs.health_check` | Hourly tripwire (DATA/MODEL/MARKETS/RISK/PNL → GREEN/AMBER/RED) | Every 30 min |
 | `jobs.bias_drift` | Snapshot bias + flag >2σ overnight moves | Once daily, after retrain |
+| `jobs.profitability_report` | Research maker/wait entry, early exits, and divergence skips | Ad hoc |
+| `jobs.forecast_benchmark_report` | Benchmark stored NBM/HRRR/GFS/ECMWF forecasts against CLI truth | Ad hoc |
+| `jobs.shadow_ensemble_report` | Replay shadow-only ensemble probabilities without affecting trading | Ad hoc |
 | `jobs.backfill_history` | One-off historical backfill | Once at setup, then ad hoc |
 
 ## Stations
@@ -254,8 +322,9 @@ rather than trading uncalibrated.
 
 ## Command center (Streamlit dashboard)
 
-A live read of bot health, calibration, trading state, and deep-dive tools
-runs at `http://127.0.0.1:8501` once the dashboard launchd agent is loaded.
+A live read of bot health, profitability, calibration, trading state, and
+deep-dive tools runs at `http://127.0.0.1:8501` once the dashboard launchd
+agent is loaded.
 
 ```bash
 # Start manually (foreground, for development)
@@ -265,11 +334,16 @@ runs at `http://127.0.0.1:8501` once the dashboard launchd agent is loaded.
 launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.walter.weatherbot-dashboard.plist
 ```
 
-Four tabs:
+Six views:
 
+- **Home** — daily command view: today/yesterday P&L, open-position watchlist,
+  signal open/skip counts, blocking alerts, skip reasons, and station snapshot.
 - **Status** — five-second health check. Six tiles (DATA, MODEL, MARKETS, RISK,
   P&L, ALERTS) green/amber/red. Click "Ack" to clear a RED alert and unblock
   the trade loop.
+- **Profitability** — current guardrail settings, corrected-fee P&L slices by
+  station/lead/side/price band, and the latest maker/early-exit/divergence
+  replay report.
 - **Calibration** — daily expected-vs-realized edge with threshold band,
   reliability diagram, and bias drift events. **This is the tab that would
   have caught the 2026-04-30 calibration collapse on 04-29.**
@@ -317,6 +391,8 @@ fire — without a human in the loop:
    MODEL/RISK/PNL, and no human has acked. Skip reason: `TRIPWIRE_RED`.
 3. **Divergence guardrail** — `|fair − market_mid| > 0.50`. Skip reason:
    `DIVERGENCE`.
+4. **Profitability gate** — blocks paused stations or entries reduced below
+   minimum size by profitability controls. Skip reason: `PROFIT_GATE`.
 
 The system will *never* graduate a station to trading or relax a safety rail
 on its own — those are explicit `config.py` commits.

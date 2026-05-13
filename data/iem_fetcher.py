@@ -27,6 +27,7 @@ from weather_bot.config import IEM_ASOS_HFMETAR_URL, IEM_ASOS_RECENT_URL, IEM_AS
 # This is present on routine METARs and on the 5-min MADIS HFMETAR rows where
 # the IEM CSV's tmpf/dwpf columns are null.
 _T_GROUP = re.compile(r"\bT([01])(\d{3})([01])(\d{3})\b")
+_TEMP_ONLY_T_GROUP = re.compile(r"\bT([01])(\d{3})\b")
 
 log = logging.getLogger(__name__)
 
@@ -122,7 +123,12 @@ def _parse_t_group(raw: str | None) -> tuple[float | None, float | None]:
         return None, None
     m = _T_GROUP.search(raw)
     if not m:
-        return None, None
+        temp_only = _TEMP_ONLY_T_GROUP.search(raw)
+        if not temp_only:
+            return None, None
+        t_sign, t_val = temp_only.groups()
+        t_c = int(t_val) / 10.0 * (-1 if t_sign == "1" else 1)
+        return _c_to_f(t_c), None
     t_sign, t_val, d_sign, d_val = m.groups()
     t_c = int(t_val) / 10.0 * (-1 if t_sign == "1" else 1)
     d_c = int(d_val) / 10.0 * (-1 if d_sign == "1" else 1)

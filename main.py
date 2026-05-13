@@ -22,9 +22,10 @@ from weather_bot.config import (
 from weather_bot.data import persistence
 from weather_bot.data.persistence import connect
 from weather_bot.models.bias_correction import is_station_calibrated
-from weather_bot.models.distribution import build_station_distribution
-from weather_bot.strategy import ev, reversal_risk
+from weather_bot.models.distribution import build_station_distribution, lead_day_for_station
+from weather_bot.strategy import ev, profitability, reversal_risk
 from weather_bot.strategy.kalshi_client import KalshiClient
+from weather_bot.strategy.probability_calibration import calibrate_fair_probability
 
 
 def _vote_for_bucket(point_est: float | None, lower_f: float | None, upper_f: float | None) -> str:
@@ -163,10 +164,15 @@ def run():
             log.debug("Skipping %s — no distribution", m["ticker"])
             continue
 
-        fair_prob = cdf.prob_between(m["lower_f"], m["upper_f"])
+        lead_day = max(0, lead_day_for_station(m["station"], m["valid_date"], now_utc))
+        raw_fair_prob = cdf.prob_between(m["lower_f"], m["upper_f"])
+        cal = calibrate_fair_probability(m["station"], raw_fair_prob, lead_day=lead_day)
+        fair_prob = cal.calibrated_prob
         yes_ask, yes_bid = _load_orderbook_top(client, m["ticker"])
 
         sig = ev.evaluate(m["ticker"], fair_prob, yes_ask, yes_bid, bankroll=BANKROLL_USD)
+        if cal.applied:
+            sig.notes = f"{cal.note()} {sig.notes}"
 
         # Multi-model directional vote — recorded on every signal regardless of
         # action, so the dashboard can show "what did each model think?" even
@@ -215,7 +221,7 @@ def run():
             sig.skip_reason = "TRIPWIRE_RED"
             sig.notes = f"TRIPWIRE_RED|station={m['station']} {sig.notes}"
         if sig.action == "OPEN":
-            lead_day = (m["valid_date"] - now_utc.date()).days
+            lead_day = lead_day_for_station(m["station"], m["valid_date"], now_utc)
             eligible, reason = is_station_calibrated(m["station"], m["var"], m["valid_date"], lead_day)
             if not eligible:
                 sig.action = "SKIP"
@@ -236,10 +242,18 @@ def run():
                 )
             cdf_nb = cache_no_bias[key]
             if cdf_nb is not None:
-                fair_nb = cdf_nb.prob_between(m["lower_f"], m["upper_f"])
+                raw_fair_nb = cdf_nb.prob_between(m["lower_f"], m["upper_f"])
+                cal_nb = calibrate_fair_probability(m["station"], raw_fair_nb, lead_day=lead_day)
+                fair_nb = cal_nb.calibrated_prob
                 sig_nb = ev.evaluate(m["ticker"], fair_nb, yes_ask, yes_bid, bankroll=BANKROLL_USD)
+                if cal_nb.applied:
+                    sig_nb.notes = f"{cal_nb.note()} {sig_nb.notes}"
                 if sig_nb.action == "OPEN":
-                    sig_nb.notes = f"BIAS_BLAMED|fair_biased={fair_prob:.3f}|fair_no_bias={fair_nb:.3f} {sig_nb.notes}"
+                    sig_nb.notes = (
+                        f"BIAS_BLAMED|fair_biased={fair_prob:.3f}|"
+                        f"fair_no_bias={fair_nb:.3f}|raw_no_bias={raw_fair_nb:.3f} "
+                        f"{sig_nb.notes}"
+                    )
                     log.warning(
                         "BIAS_BLAMED %s: bias-on fair=%.3f tripped divergence; bias-off fair=%.3f trades %s",
                         m["ticker"], fair_prob, fair_nb, sig_nb.side,
@@ -251,9 +265,13 @@ def run():
                     sig_nb.reversal_risk = sig.reversal_risk
                     sig, fair_prob = sig_nb, fair_nb
                 elif sig_nb.skip_reason == "DIVERGENCE":
-                    sig.notes = f"MODEL_BLAMED|fair_no_bias={fair_nb:.3f} {sig.notes}"
+                    sig.notes = f"MODEL_BLAMED|fair_no_bias={fair_nb:.3f}|raw_no_bias={raw_fair_nb:.3f} {sig.notes}"
                 else:
-                    sig.notes = f"BIAS_BLAMED_NO_EDGE|fair_no_bias={fair_nb:.3f}|nb_skip={sig_nb.skip_reason} {sig.notes}"
+                    sig.notes = f"BIAS_BLAMED_NO_EDGE|fair_no_bias={fair_nb:.3f}|raw_no_bias={raw_fair_nb:.3f}|nb_skip={sig_nb.skip_reason} {sig.notes}"
+
+        sig = profitability.apply_profitability_controls(
+            sig, m["station"], m["valid_date"], now_utc
+        )
 
         log.info(
             "%-32s %s fair=%.3f ask=%s bid=%s action=%s edge=%.4f size=$%.2f (%s)",
@@ -294,7 +312,7 @@ def run():
             if fill_price is None or fill_price <= 0 or fill_price >= 1:
                 continue
             contracts = max(1, int(sig.size_usd / fill_price))
-            fees = ev.fee_per_contract(fill_price) * contracts
+            fees = ev.fee_for_order(fill_price, contracts)
             persistence.insert_paper_fill(dict(
                 signal_id=signal_id,
                 ticker=sig.ticker,
