@@ -75,8 +75,14 @@ Default controls:
 PROFIT_CONTROLS_ENABLED=true
 PAUSED_TRADE_STATIONS=KMDW
 KNYC_L1_SIZE_MULT=0.25
-NO_UNDER_50C_SIZE_MULT=0.50
+NO_UNDER_50C_SIZE_MULT=0.0
+YES_UNDER_10C_SIZE_MULT=0.0
+YES_10_25C_SIZE_MULT=0.50
+YES_10_25C_MAX_USD=10.0
 YES_25_50C_SIZE_MULT=0.50
+PAPER_ORDER_MODE=true
+PAPER_ORDER_IMPROVEMENT_CENTS=1
+PAPER_ORDER_TTL_MIN=15
 ```
 
 These are intentionally simple:
@@ -141,7 +147,12 @@ Run after changes:
 .venv/bin/python research/monitor_edge_accuracy.py --hours 1000
 .venv/bin/python -m weather_bot.jobs.profitability_report --days-back 30
 .venv/bin/python -m weather_bot.jobs.forecast_benchmark_report --days-back 30
+.venv/bin/python -m weather_bot.jobs.pull_ensemble
+.venv/bin/python -m weather_bot.jobs.backfill_weathernext --days-back 7 --stations KNYC,KMDW,KMIA --horizon-days 3
 .venv/bin/python -m weather_bot.jobs.shadow_ensemble_report --days-back 30
+.venv/bin/python -m weather_bot.jobs.ensemble_calibration_report --days-back 30
+.venv/bin/python -m weather_bot.jobs.forecast_update_lag_report --days-back 30 --limit 2500
+.venv/bin/python -m weather_bot.jobs.ai_context_brief --station KNYC --valid-date 2026-05-16
 ```
 
 Expected current smoke results:
@@ -176,21 +187,136 @@ forecast sources, settlement mechanics, and Kalshi price-formation behavior.
 
 Priority questions:
 
-1. **WeatherNext 2 access and value** — when Google grants access, set
-   `WEATHERNEXT_BQ_TABLE`, run `jobs.forecast_benchmark_report` and
-   `jobs.shadow_ensemble_report`, and compare WeatherNext p50/p10/p90 against
-   NBM/GFS/ECMWF before changing production weights.
-2. **Kalshi price formation** — treat Kalshi prices as central-limit-order-book
+1. **True ensemble value** — collect Open-Meteo GFS/ECMWF ensemble member rows
+   in `ensemble_forecast`, run `jobs.shadow_ensemble_report`, and compare strict
+   as-of member probabilities against the current calibrated signal
+   probabilities before changing production weights.
+2. **WeatherNext 2 access and value** — Google access is available; set
+   `WEATHERNEXT_BQ_TABLE` plus Google application credentials on the VPS, run
+   `jobs.pull_weathernext`, and compare WeatherNext member probabilities
+   against NBM/GFS/ECMWF before changing production weights.
+3. **Kalshi price formation** — treat Kalshi prices as central-limit-order-book
    prices, not bookmaker odds. Research whether active weather-market makers
    appear to anchor to NWS/NBM/GFS/ECMWF, commercial forecast APIs, live ASOS
    observations, or simple settlement-source arbitrage.
-3. **Weather settlement mechanics** — keep verifying each city/station's source,
+4. **Weather settlement mechanics** — keep verifying each city/station's source,
    NWS CLI timing, local standard time window, 6h/24h high consistency checks,
    and revision/delay rules. These mechanics can create edge independent of
    raw forecast accuracy.
-4. **Market microstructure** — watch spread, depth, snapshot age, orderbook
+5. **Market microstructure** — watch spread, depth, snapshot age, orderbook
    imbalance, and late-day two-bracket markets. Compare model edge to what can
    actually be filled after fees and missed-fill risk.
+6. **Cross-platform weather gaps** — log Polymarket KLGA/KORD daily-temperature
+   buckets in `external_market_snapshot` and compare their market-implied
+   distribution against Kalshi KNYC/KMDW plus station-adjusted forecasts.
+
+## WeatherNext 2 Calibration Check — 2026-05-16
+
+The VPS now has WeatherNext credentials configured and
+`weatherbot-weathernext.timer` enabled. A bounded historical backfill was run:
+
+```bash
+.venv/bin/python -m weather_bot.jobs.backfill_weathernext \
+  --days-back 7 --stations KNYC,KMDW,KMIA --horizon-days 3
+```
+
+Result: 28 cycles attempted, 27 published cycles, 62,208 rows added/upserted
+for the active trading stations. 2026-05-16 18Z was not published yet; the
+latest usable WeatherNext run was 2026-05-16 12Z.
+
+True ensemble source counts after the pass:
+
+| model | rows | stations | runs | first run | last run |
+|---|---:|---:|---:|---|---|
+| GFS_ENS | 127,782 | 5 | 5 | 2026-05-15 18Z | 2026-05-16 18Z |
+| ECMWF_IFS_ENS | 210,222 | 5 | 5 | 2026-05-15 18Z | 2026-05-16 18Z |
+| ECMWF_AIFS_ENS | 210,222 | 5 | 5 | 2026-05-15 18Z | 2026-05-16 18Z |
+| WEATHERNEXT2 | 68,864 | 5 | 27 | 2026-05-10 00Z | 2026-05-16 12Z |
+
+Strict shadow replay verdict: do not promote WeatherNext wholesale. On 1,200
+settled signal rows, original Brier was 0.0947 and true-ensemble shadow Brier
+was 0.1925 (`+0.0978`, worse). Only KMDW lead-1 improved
+(`0.1558 -> 0.1445`); KNYC/KMIA and same-day slices got worse.
+
+The existing empirical probability calibrator still helps modestly:
+walk-forward YES/side Brier improved from 0.1978 to 0.1924 over 1,007 signals
+from 2026-04-16 through 2026-05-16.
+
+## Logical Next Step
+
+Keep WeatherNext shadow-only and add a station/lead-gated challenger report
+instead of changing production weights. The first candidate slice is KMDW
+lead-1; require more settled examples and reliability bins before considering
+any live blend. In parallel, keep the empirical probability calibrator enabled,
+because it is the only calibration change that currently improves Brier.
+
+## PolymarketWeather-Inspired Backtests — 2026-05-17
+
+Added three research-only pieces:
+
+- `jobs.ensemble_calibration_report`: EMOS-lite bias/spread calibration for true
+  ensemble member probabilities.
+- `jobs.forecast_update_lag_report`: probability-edge z buckets plus 15/30/60m
+  signed market movement after signals.
+- `jobs.ai_context_brief`: deterministic context pack for a future advisory AI
+  skill. Skill spec lives at `skills/weather-prediction-context/SKILL.md`.
+
+Findings:
+
+- Ensemble calibration improved raw member counting but still lost to current
+  bot probabilities. Holdout Brier: original `0.0386`, raw members `0.1725`,
+  calibrated members `0.1503`. Do not promote.
+- Forecast-update lag has a small positive signal in all rows, especially
+  15-60m after a fresh forecast update (`+0.0111` signed 30m movement), but
+  OPEN-only rows moved against us (`-0.0114` signed 60m). This points to better
+  timing/cancel-reprice, not larger sizing.
+- Low-price sleeve: YES 10-25c was positive (`+$59.13` over 30 fills), while
+  YES <10c was negative (`-$178.06` over 34 fills). NO low-price sleeves were
+  negative in this sample.
+- Book depth was adequate for sampled paper fills, but snapshot age averaged
+  864 seconds. Stale executable-price assumptions are the bigger issue.
+
+New logical next step: use the pending-order data to compare immediate paper
+fills versus maker-style fills and expirations. After that, test whether TTL
+extension/reprice improves realized PnL without increasing stale adverse
+selection.
+
+## Execution Controls Implemented — 2026-05-17
+
+Implemented the first defensive controls from the PDF/replay review:
+
+- Block YES `<10c` by default (`YES_UNDER_10C_SIZE_MULT=0.0`).
+- Block NO `<50c` by default (`NO_UNDER_50C_SIZE_MULT=0.0`).
+- Keep YES `10-25c` as the only convexity sleeve, half-sized and capped at
+  `$10` (`YES_10_25C_SIZE_MULT=0.50`, `YES_10_25C_MAX_USD=10.0`).
+- Cap paper fills to available top-of-book size from the fresh Kalshi orderbook
+  call (`REQUIRE_TOP_BOOK_SIZE=true`).
+- Add `jobs.exit_recommendations --threshold 0.70` to surface open paper
+  positions whose mark-to-market reaches 70% of max gain.
+
+Manual paper-mode run after deploy: no new paper fills opened because the
+health tripwire correctly blocked KNYC/KMDW/KMIA (`TRIPWIRE_RED`). Current
+latest health has KNYC `MODEL=RED`; KMDW/KMIA model status is AMBER/insufficient
+recent settled fills, and HFMETAR is lagging RED for KMDW/KMIA.
+
+Immediate operating posture: keep the tripwire active. Do not acknowledge model
+RED merely to get more trades. The pending-order table is now the source for
+execution-quality learning; the next productive change is measuring fill rate,
+missed winners, and adverse selection by TTL/price band.
+
+## Pending Paper Orders Implemented — 2026-05-17
+
+Paper mode now defaults to maker-style pending orders instead of immediate
+fills:
+
+- `PAPER_ORDER_MODE=true` creates a `paper_order` at one cent better than the
+  executable entry price (`PAPER_ORDER_IMPROVEMENT_CENTS=1`).
+- `PAPER_ORDER_TTL_MIN=15` expires the order unless later `market_snapshot`
+  rows prove executable price and sufficient top-of-book size.
+- `jobs.process_paper_orders` processes pending orders directly, and `main.py`
+  processes existing pending orders at startup before evaluating new signals.
+- Filled orders write the same `paper_fill` rows used by existing settlement
+  and PnL reports, preserving downstream reporting.
 
 Current working assumption from source review:
 

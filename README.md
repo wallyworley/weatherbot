@@ -1,22 +1,23 @@
 # weatherbot
 
-Probabilistic trading bot for Kalshi daily-temperature contracts. Builds a calibrated forecast distribution from NOAA NBM (probabilistic), HRRR, and GFS inputs, benchmarks ECMWF/WeatherNext as challenger sources, applies station-level bias correction, and computes per-bucket fair probabilities for Kalshi range markets. Sizes positions with a fractional Kelly under fee-aware EV.
+Probabilistic trading bot for Kalshi daily-temperature contracts. Builds a calibrated forecast distribution from NOAA NBM (probabilistic), HRRR, and GFS inputs, captures ECMWF/Open-Meteo true ensemble members as a shadow challenger lane, applies station-level bias correction, and computes per-bucket fair probabilities for Kalshi range markets. Sizes positions with a fractional Kelly under fee-aware EV.
 
 Runs in paper mode by default. Current trade scope is KNYC, KMDW, and KMIA, with the pre-trade bias gate blocking any station whose calibration is missing, thin, or stale.
 
 ## How it works
 
 ```
-NOAA/Open-Meteo (NBM + HRRR + GFS + ECMWF)      METAR + NWS CLI
+NOAA/Open-Meteo (NBM + HRRR + GFS + ECMWF + ensemble members)      METAR + NWS CLI
         │                                    │
         ▼                                    ▼
   data/nbm_fetcher.py              data/metar_fetcher.py
   data/hrrr_fetcher.py                       │
   data/gfs_fetcher.py
   data/ecmwf_fetcher.py                    ▼
+  data/openmeteo_ensemble_fetcher.py
         │                         daily_obs / cli_obs (Postgres)
         ▼
-  prob_forecast (Postgres)                   │
+  prob_forecast / det_forecast / ensemble_forecast (Postgres)
         │                                    │
         └──────────┬─────────────────────────┘
                    ▼
@@ -32,7 +33,7 @@ NOAA/Open-Meteo (NBM + HRRR + GFS + ECMWF)      METAR + NWS CLI
         strategy/ev.py              (Kalshi fees, edge, Kelly sizing, divergence guardrail)
                    │
                    ▼
-                main.py             (signal orchestrator → paper_fill)
+                main.py             (signal orchestrator → paper_order → paper_fill)
 ```
 
 Settled fills get reconciled each morning via `jobs/settle_paper_fills.py`, preferring NWS CLI settlement observations and falling back to METAR-derived daily observations when CLI is not captured yet.
@@ -76,12 +77,21 @@ Current profitability controls are enabled by default and can be overridden in
 PROFIT_CONTROLS_ENABLED=true
 PAUSED_TRADE_STATIONS=KMDW
 KNYC_L1_SIZE_MULT=0.25
-NO_UNDER_50C_SIZE_MULT=0.50
+NO_UNDER_50C_SIZE_MULT=0.0
+YES_UNDER_10C_SIZE_MULT=0.0
+YES_10_25C_SIZE_MULT=0.50
+YES_10_25C_MAX_USD=10.0
 YES_25_50C_SIZE_MULT=0.50
+REQUIRE_TOP_BOOK_SIZE=true
+PAPER_ORDER_MODE=true
+PAPER_ORDER_IMPROVEMENT_CENTS=1
+PAPER_ORDER_TTL_MIN=15
 ```
 
 These controls pause KMDW new entries, quarter-size KNYC day-ahead entries,
-and half-size weak side/price bands while more samples accumulate.
+block the weakest low-price bands, keep only a capped YES 10-25c convexity
+sleeve, and make paper mode wait for a one-cent-better executable order before
+writing a fill.
 
 Useful validation commands:
 
@@ -90,7 +100,38 @@ Useful validation commands:
 .venv/bin/python research/backtest_variance_fix.py --start 2026-04-01 --end 2026-05-06
 .venv/bin/python research/monitor_edge_accuracy.py --hours 1000
 .venv/bin/python -m weather_bot.jobs.profitability_report --days-back 30
+.venv/bin/python -m weather_bot.jobs.shadow_ensemble_report --days-back 30
 ```
+
+## True ensemble modeling
+
+The production trading path still uses the calibrated NBM-derived distribution.
+True ensemble members are captured separately in `ensemble_forecast` and are
+research-only until they beat the current signal probabilities on settled
+signals.
+
+Current sources:
+
+- `GFS_ENS` via Open-Meteo `gfs025` (control + perturbed GEFS members)
+- `ECMWF_IFS_ENS` via Open-Meteo `ecmwf_ifs025`
+- `ECMWF_AIFS_ENS` via Open-Meteo `ecmwf_aifs025`
+- `WEATHERNEXT2` via Google WeatherNext 2 BigQuery / Analytics Hub once
+  `WEATHERNEXT_BQ_TABLE` and Google application credentials are configured
+- Polymarket read-only daily-temp snapshots for KLGA/KORD comparison markets
+  are stored in `external_market_snapshot`; they do not affect trading.
+
+Run once or schedule on the VPS:
+
+```bash
+.venv/bin/python -m weather_bot.jobs.pull_ensemble
+.venv/bin/python -m weather_bot.jobs.pull_weathernext --stations KNYC --horizon-days 1
+.venv/bin/python -m weather_bot.jobs.shadow_ensemble_report --days-back 30
+```
+
+`jobs.shadow_ensemble_report` uses strict as-of ensemble rows when available and
+falls back to the older point-forecast blend for older signals. Promotion rule:
+keep this shadow-only until it improves Brier/reliability on at least 50 settled
+signals, then replay fixed-size P&L before touching `models/distribution.py`.
 
 ## Repository layout
 
@@ -107,6 +148,7 @@ weather_bot/
 │   ├── hrrr_fetcher.py      # HRRR hourly deterministic
 │   ├── gfs_fetcher.py       # GFS hourly deterministic via Open-Meteo
 │   ├── ecmwf_fetcher.py     # ECMWF hourly deterministic via Open-Meteo
+│   ├── openmeteo_ensemble_fetcher.py # GFS/ECMWF true ensemble members
 │   ├── metar_fetcher.py     # aviationweather.gov live
 │   ├── iem_fetcher.py       # Iowa Environmental Mesonet historical
 │   └── persistence.py       # psycopg3 DB layer
@@ -190,6 +232,9 @@ KALSHI_BASE_URL=https://api.elections.kalshi.com/trade-api/v2
 
 # Paper mode is the default and intended state until calibration is proven
 PAPER_MODE=true
+PAPER_ORDER_MODE=true
+PAPER_ORDER_IMPROVEMENT_CENTS=1
+PAPER_ORDER_TTL_MIN=15
 
 # Risk and sizing
 BANKROLL_USD=1000           # nominal bankroll for paper trading
@@ -261,6 +306,9 @@ Add to your user crontab (`crontab -e`). Use absolute paths.
 20 * * * *  cd /path/to/weatherbot && .venv/bin/python -m weather_bot.jobs.pull_gfs
 25 * * * *  cd /path/to/weatherbot && .venv/bin/python -m weather_bot.jobs.pull_ecmwf
 
+# True ensemble members for shadow modeling, stored in ensemble_forecast
+35 */6 * * *  cd /path/to/weatherbot && .venv/bin/python -m weather_bot.jobs.pull_ensemble
+
 # Signal generator: every 5 min during waking hours (NYC time)
 */5 6-22 * * *  cd /path/to/weatherbot && ./tick.sh
 
@@ -287,8 +335,11 @@ For each job above, create a `~/Library/LaunchAgents/com.weatherbot.<job>.plist`
 | `jobs.pull_hrrr` | Pull HRRR deterministic forecasts | Hourly |
 | `jobs.pull_gfs` | Pull GFS deterministic forecasts via Open-Meteo | Hourly |
 | `jobs.pull_ecmwf` | Pull ECMWF deterministic forecasts via Open-Meteo | Hourly |
+| `jobs.pull_ensemble` | Pull Open-Meteo GFS/ECMWF ensemble member forecasts for shadow modeling | Every 6h |
+| `jobs.pull_weathernext` | Pull WeatherNext 2 member forecasts into `ensemble_forecast` | Every 6h once configured |
 | `jobs.pull_metar` | Pull observations: 5-min HFMETAR via IEM for ASOS stations, hourly METAR via aviationweather.gov for KNYC | Every 5 min |
 | `jobs.pull_kalshi_markets` | Refresh Kalshi market list + price snapshots | Every 5 min |
+| `jobs.pull_polymarket` | Read-only Polymarket KLGA/KORD daily-temp snapshots for cross-platform research | Every 5 min |
 | `main` (via `tick.sh`) | Score markets, generate paper fills | Every 5 min when markets are open |
 | `jobs.settle_paper_fills` | Reconcile fills against observed temperatures | Once daily, after midnight |
 | `jobs.retrain_bias` | Recompute rolling 30-day station bias | Once daily, after settlement |
@@ -298,7 +349,7 @@ For each job above, create a `~/Library/LaunchAgents/com.weatherbot.<job>.plist`
 | `jobs.bias_drift` | Snapshot bias + flag >2σ overnight moves | Once daily, after retrain |
 | `jobs.profitability_report` | Research maker/wait entry, early exits, and divergence skips | Ad hoc |
 | `jobs.forecast_benchmark_report` | Benchmark stored NBM/HRRR/GFS/ECMWF forecasts against CLI truth | Ad hoc |
-| `jobs.shadow_ensemble_report` | Replay shadow-only ensemble probabilities without affecting trading | Ad hoc |
+| `jobs.shadow_ensemble_report` | Replay true-ensemble probabilities when available, otherwise point-blend shadow probabilities | Ad hoc |
 | `jobs.backfill_history` | One-off historical backfill | Once at setup, then ad hoc |
 
 ## Stations

@@ -37,15 +37,15 @@ def test_downsizes_knyc_lead_one():
         datetime(2026, 5, 7, 14, tzinfo=timezone.utc),
     )
     assert sig.action == "OPEN"
-    assert sig.size_usd == 5.0
+    assert sig.size_usd == 2.5
 
 
-def test_downsizes_weak_price_band():
+def test_blocks_weak_no_price_band():
     sig = apply_profitability_controls(
         _signal(side="NO", price=0.40, size=20.0),
         "KMIA",
         date(2026, 5, 7),
         datetime(2026, 5, 7, 14, tzinfo=timezone.utc),
     )
-    assert sig.action == "OPEN"
-    assert sig.size_usd == 10.0
+    assert sig.action == "SKIP"
+    assert sig.skip_reason == "PROFIT_GATE"

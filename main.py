@@ -14,16 +14,24 @@ are producing fresh data.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from weather_bot.config import (
-    ACTIVE_TRADE_STATIONS, BANKROLL_USD, PAPER_MODE, REQUIRE_AGREEMENT_N,
+    ACTIVE_TRADE_STATIONS,
+    BANKROLL_USD,
+    PAPER_ORDER_IMPROVEMENT_CENTS,
+    PAPER_ORDER_MODE,
+    PAPER_ORDER_TTL_MIN,
+    PAPER_MODE,
+    REQUIRE_AGREEMENT_N,
+    REQUIRE_TOP_BOOK_SIZE,
 )
 from weather_bot.data import persistence
 from weather_bot.data.persistence import connect
 from weather_bot.models.bias_correction import is_station_calibrated
 from weather_bot.models.distribution import build_station_distribution, lead_day_for_station
-from weather_bot.strategy import ev, profitability, reversal_risk
+from weather_bot.strategy import ev, paper_orders, profitability, reversal_risk
 from weather_bot.strategy.kalshi_client import KalshiClient
 from weather_bot.strategy.probability_calibration import calibrate_fair_probability
 
@@ -82,6 +90,14 @@ def _tripwire_red_stations() -> set[str]:
 log = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class OrderbookTop:
+    yes_ask: float | None
+    yes_bid: float | None
+    yes_ask_size: int | None
+    yes_bid_size: int | None
+
+
 def _load_open_markets() -> list[dict]:
     sql = """
     SELECT ticker, station, var, valid_date, lower_f, upper_f
@@ -95,28 +111,31 @@ def _load_open_markets() -> list[dict]:
         return cur.fetchall()
 
 
-def _best_price(entries, cents: bool) -> float | None:
-    """Return the highest (best) bid price in dollars from a list of [price, qty] rows.
+def _best_bid(entries, cents: bool) -> tuple[float | None, int | None]:
+    """Return highest bid price and size from a list of [price, qty] rows.
 
     `cents=True`  → legacy shape: integer cents (e.g. [[97, 100], ...])
     `cents=False` → modern shape: dollar strings  (e.g. [["0.9700", "100.00"], ...])
     Always scans all entries — we don't trust the sort order across API versions.
     """
     best: float | None = None
+    best_size: int | None = None
     for e in entries or []:
         try:
             p = float(e[0])
+            size = int(float(e[1])) if len(e) > 1 and e[1] is not None else None
         except (IndexError, ValueError, TypeError):
             continue
         if cents:
             p = p / 100.0
         if best is None or p > best:
             best = p
-    return best
+            best_size = size
+    return best, best_size
 
 
-def _load_orderbook_top(client: KalshiClient, ticker: str) -> tuple[float | None, float | None]:
-    """Return (yes_ask, yes_bid) in dollars.
+def _load_orderbook_top(client: KalshiClient, ticker: str) -> OrderbookTop:
+    """Return top-of-book prices and executable sizes in dollars/contracts.
 
     Kalshi payload evolved — modern response carries `orderbook_fp` with
     `yes_dollars` / `no_dollars` as [[price_str, qty_str], ...]. Legacy
@@ -126,24 +145,40 @@ def _load_orderbook_top(client: KalshiClient, ticker: str) -> tuple[float | None
         ob = client.get_orderbook(ticker)
     except Exception as exc:
         log.warning("orderbook failed for %s: %s", ticker, exc)
-        return (None, None)
+        return OrderbookTop(None, None, None, None)
 
     fp = ob.get("orderbook_fp") or {}
     if fp:
-        yes_bid = _best_price(fp.get("yes_dollars"), cents=False)
-        no_bid = _best_price(fp.get("no_dollars"), cents=False)
+        yes_bid, yes_bid_size = _best_bid(fp.get("yes_dollars"), cents=False)
+        no_bid, no_bid_size = _best_bid(fp.get("no_dollars"), cents=False)
     else:
         legacy = ob.get("orderbook") or {}
-        yes_bid = _best_price(legacy.get("yes"), cents=True)
-        no_bid = _best_price(legacy.get("no"), cents=True)
+        yes_bid, yes_bid_size = _best_bid(legacy.get("yes"), cents=True)
+        no_bid, no_bid_size = _best_bid(legacy.get("no"), cents=True)
 
     # YES ask = 1 - best NO bid (selling NO is equivalent to buying YES).
     yes_ask = (1.0 - no_bid) if no_bid is not None else None
-    return yes_ask, yes_bid
+    # YES ask size is limited by the best NO bid size.
+    return OrderbookTop(yes_ask, yes_bid, no_bid_size, yes_bid_size)
+
+
+def _ask_size_for_side(sig, top: OrderbookTop) -> int | None:
+    if sig.side == "YES":
+        return top.yes_ask_size
+    return top.yes_bid_size
 
 
 def run():
     persistence.bootstrap_stations()
+    if PAPER_MODE and PAPER_ORDER_MODE:
+        summary = paper_orders.process_pending_orders()
+        if summary.checked or summary.filled or summary.expired:
+            log.info(
+                "Processed pending paper orders: checked=%d filled=%d expired=%d",
+                summary.checked,
+                summary.filled,
+                summary.expired,
+            )
     client = KalshiClient()
     markets = _load_open_markets()
     red_stations = _tripwire_red_stations()
@@ -168,7 +203,8 @@ def run():
         raw_fair_prob = cdf.prob_between(m["lower_f"], m["upper_f"])
         cal = calibrate_fair_probability(m["station"], raw_fair_prob, lead_day=lead_day)
         fair_prob = cal.calibrated_prob
-        yes_ask, yes_bid = _load_orderbook_top(client, m["ticker"])
+        top = _load_orderbook_top(client, m["ticker"])
+        yes_ask, yes_bid = top.yes_ask, top.yes_bid
 
         sig = ev.evaluate(m["ticker"], fair_prob, yes_ask, yes_bid, bankroll=BANKROLL_USD)
         if cal.applied:
@@ -298,33 +334,77 @@ def run():
             reversal_risk=sig.reversal_risk,
         ))
 
-        # Paper-fill writer — only when action=OPEN and no existing open fill.
+        # Paper execution writer — maker-style pending orders by default, with
+        # immediate fills still available behind PAPER_ORDER_MODE=false.
         if (
             PAPER_MODE
             and sig.action == "OPEN"
             and sig.size_usd >= 1.0
             and not persistence.has_open_paper_fill(sig.ticker, sig.side)
+            and not persistence.has_pending_paper_order(sig.ticker, sig.side)
         ):
-            # Fill price: for YES side, pay yes_ask; for NO side, pay (1 - yes_bid).
-            fill_price = (
-                sig.market_ask if sig.side == "YES" else (1.0 - sig.market_bid)
-            )
-            if fill_price is None or fill_price <= 0 or fill_price >= 1:
+            entry_price = paper_orders.entry_price_from_signal(sig)
+            if entry_price is None or entry_price <= 0 or entry_price >= 1:
                 continue
-            contracts = max(1, int(sig.size_usd / fill_price))
-            fees = ev.fee_for_order(fill_price, contracts)
-            persistence.insert_paper_fill(dict(
-                signal_id=signal_id,
-                ticker=sig.ticker,
-                side=sig.side,
-                price=float(fill_price),
-                contracts=int(contracts),
-                fees=float(fees),
-            ))
-            log.info(
-                "  PAPER FILL %s %s @%.3f x%d (fees=$%.2f, notional=$%.2f)",
-                sig.ticker, sig.side, fill_price, contracts, fees, contracts * fill_price,
-            )
+
+            if PAPER_ORDER_MODE:
+                limit_price = paper_orders.maker_limit_price(entry_price, PAPER_ORDER_IMPROVEMENT_CENTS)
+                if limit_price <= 0 or limit_price >= 1:
+                    log.info("  PAPER ORDER SKIP %s %s — invalid limit %.3f", sig.ticker, sig.side, limit_price)
+                    continue
+                contracts = max(1, int(sig.size_usd / limit_price))
+                fees_est = ev.fee_for_order(limit_price, contracts)
+                expires_at = now_utc + timedelta(minutes=PAPER_ORDER_TTL_MIN)
+                order_id = persistence.insert_paper_order(dict(
+                    signal_id=signal_id,
+                    ticker=sig.ticker,
+                    side=sig.side,
+                    limit_price=float(limit_price),
+                    contracts=int(contracts),
+                    fees_est=float(fees_est),
+                    expires_at=expires_at,
+                    notes=(
+                        f"PAPER_MAKER|from={entry_price:.2f}|improve_c={PAPER_ORDER_IMPROVEMENT_CENTS}|"
+                        f"ttl_min={PAPER_ORDER_TTL_MIN}"
+                    ),
+                ))
+                log.info(
+                    "  PAPER ORDER %s %s limit=%.2f x%d ttl=%dm (fees_est=$%.2f, id=%d)",
+                    sig.ticker, sig.side, limit_price, contracts, PAPER_ORDER_TTL_MIN, fees_est, order_id,
+                )
+            else:
+                fill_price = entry_price
+                contracts = max(1, int(sig.size_usd / fill_price))
+                fees = ev.fee_for_order(fill_price, contracts)
+                ask_size = _ask_size_for_side(sig, top)
+                if REQUIRE_TOP_BOOK_SIZE and ask_size is None:
+                    log.info("  PAPER FILL SKIP %s %s — no top-book size", sig.ticker, sig.side)
+                    continue
+                if ask_size is not None and contracts > ask_size:
+                    if REQUIRE_TOP_BOOK_SIZE:
+                        contracts = int(ask_size)
+                        if contracts <= 0:
+                            log.info("  PAPER FILL SKIP %s %s — top-book size is zero", sig.ticker, sig.side)
+                            continue
+                        fees = ev.fee_for_order(fill_price, contracts)
+                        sig.notes = f"EXEC_SIZE_CAP|top_book={ask_size} {sig.notes}"
+                    else:
+                        log.info(
+                            "  PAPER FILL %s %s requested x%d exceeds top-book x%d",
+                            sig.ticker, sig.side, contracts, ask_size,
+                        )
+                persistence.insert_paper_fill(dict(
+                    signal_id=signal_id,
+                    ticker=sig.ticker,
+                    side=sig.side,
+                    price=float(fill_price),
+                    contracts=int(contracts),
+                    fees=float(fees),
+                ))
+                log.info(
+                    "  PAPER FILL %s %s @%.3f x%d (fees=$%.2f, notional=$%.2f)",
+                    sig.ticker, sig.side, fill_price, contracts, fees, contracts * fill_price,
+                )
 
 
 if __name__ == "__main__":

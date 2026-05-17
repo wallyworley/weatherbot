@@ -75,6 +75,19 @@ def upsert_prob_forecast(rows: Iterable[dict]):
         conn.commit()
 
 
+def upsert_ensemble_forecast(rows: Iterable[dict]):
+    sql = """
+    INSERT INTO ensemble_forecast(station, model, run_time, valid_time, lead_hr, var, member, value)
+    VALUES (%(station)s, %(model)s, %(run_time)s, %(valid_time)s, %(lead_hr)s,
+            %(var)s, %(member)s, %(value)s)
+    ON CONFLICT (station, model, run_time, valid_time, var, member)
+    DO NOTHING
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.executemany(sql, list(rows))
+        conn.commit()
+
+
 def latest_nbm_percentiles(station: str, valid_date: date, var: str = "TMAX_DAILY") -> list[dict]:
     sql = """
     SELECT percentile, value, run_time
@@ -338,6 +351,99 @@ def insert_paper_fill(row: dict) -> int:
         return new_id
 
 
+def has_pending_paper_order(ticker: str, side: str) -> bool:
+    sql = """SELECT 1 FROM paper_order
+             WHERE ticker=%s AND side=%s AND status='PENDING' LIMIT 1"""
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, (ticker, side))
+        return cur.fetchone() is not None
+
+
+def insert_paper_order(row: dict) -> int:
+    sql = """
+    INSERT INTO paper_order(signal_id, ticker, side, limit_price, contracts,
+                            fees_est, expires_at, notes)
+    VALUES (%(signal_id)s, %(ticker)s, %(side)s, %(limit_price)s, %(contracts)s,
+            %(fees_est)s, %(expires_at)s, %(notes)s)
+    RETURNING id
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, row)
+        new_id = cur.fetchone()["id"]
+        conn.commit()
+        return new_id
+
+
+def list_pending_paper_orders() -> list[dict]:
+    sql = """
+    SELECT id, signal_id, ticker, side, limit_price, contracts, fees_est,
+           created_at, expires_at, notes
+      FROM paper_order
+     WHERE status = 'PENDING'
+     ORDER BY created_at ASC
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(sql)
+        return cur.fetchall()
+
+
+def list_market_snapshots_for_order(ticker: str, created_at: datetime, expires_at: datetime) -> list[dict]:
+    sql = """
+    SELECT ts,
+           yes_ask::float AS yes_ask,
+           yes_bid::float AS yes_bid,
+           yes_ask_size,
+           yes_bid_size,
+           no_ask::float AS no_ask,
+           no_bid::float AS no_bid,
+           no_ask_size,
+           no_bid_size
+      FROM market_snapshot
+     WHERE ticker = %s
+       AND ts > %s
+       AND ts <= %s
+     ORDER BY ts ASC
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, (ticker, created_at, expires_at))
+        return cur.fetchall()
+
+
+def mark_paper_order_filled(
+    order_id: int,
+    paper_fill_id: int,
+    fill_price: float,
+    fill_snapshot_ts: datetime,
+) -> None:
+    sql = """
+    UPDATE paper_order
+       SET status='FILLED',
+           filled_at=now(),
+           paper_fill_id=%s,
+           fill_price=%s,
+           fill_snapshot_ts=%s
+     WHERE id=%s AND status='PENDING'
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, (paper_fill_id, fill_price, fill_snapshot_ts, order_id))
+        conn.commit()
+
+
+def expire_pending_paper_orders() -> int:
+    sql = """
+    UPDATE paper_order
+       SET status='EXPIRED'
+     WHERE status='PENDING'
+       AND expires_at <= now()
+    RETURNING id
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(sql)
+        expired = cur.fetchall()
+        conn.commit()
+        return len(expired)
+
+
 def list_unsettled_paper_fills() -> list[dict]:
     """Return unsettled fills joined with their market metadata (for settlement)."""
     sql = """
@@ -391,4 +497,29 @@ def insert_market_snapshots(rows: Iterable[dict]) -> None:
                  for r in rows]
     with connect() as conn, conn.cursor() as cur:
         cur.executemany(sql, rows_norm)
+        conn.commit()
+
+
+def insert_external_market_snapshots(rows: Iterable[dict]) -> None:
+    sql = """
+    INSERT INTO external_market_snapshot
+        (venue, event_slug, market_slug, question, station, valid_date,
+         lower_f, upper_f, resolution_source, yes_token_id, no_token_id,
+         yes_bid, yes_ask, yes_ask_size, no_bid, no_ask, no_ask_size,
+         volume_24h, liquidity, payload)
+    VALUES
+        (%(venue)s, %(event_slug)s, %(market_slug)s, %(question)s, %(station)s, %(valid_date)s,
+         %(lower_f)s, %(upper_f)s, %(resolution_source)s, %(yes_token_id)s, %(no_token_id)s,
+         %(yes_bid)s, %(yes_ask)s, %(yes_ask_size)s, %(no_bid)s, %(no_ask)s, %(no_ask_size)s,
+         %(volume_24h)s, %(liquidity)s, %(payload)s::jsonb)
+    ON CONFLICT (venue, market_slug, ts) DO NOTHING
+    """
+    prepared = []
+    for row in rows:
+        r = dict(row)
+        if isinstance(r.get("payload"), (dict, list)):
+            r["payload"] = json.dumps(r["payload"])
+        prepared.append(r)
+    with connect() as conn, conn.cursor() as cur:
+        cur.executemany(sql, prepared)
         conn.commit()

@@ -3,6 +3,8 @@
 
 # Local Claude Code / agent state (per-machine; never commit)
 .claude/
+.sfdx/
+weathernext-*.json
 
 # Python
 .venv/

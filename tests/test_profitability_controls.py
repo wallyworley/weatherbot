@@ -1,0 +1,58 @@
+from datetime import date, datetime, timezone
+
+from weather_bot.strategy.ev import Signal
+from weather_bot.strategy.profitability import apply_profitability_controls
+
+
+def _signal(side="YES", yes_ask=0.20, yes_bid=0.19, size_usd=20.0):
+    return Signal(
+        ticker="KXTEST",
+        side=side,
+        fair_prob=0.5,
+        market_ask=yes_ask,
+        market_bid=yes_bid,
+        edge=0.1,
+        ev_per_dollar=0.5,
+        kelly_fraction=0.02,
+        size_usd=size_usd,
+        action="OPEN",
+    )
+
+
+def test_yes_under_10c_is_blocked_by_default():
+    sig = apply_profitability_controls(
+        _signal(side="YES", yes_ask=0.05, size_usd=20.0),
+        "KNYC",
+        date(2026, 5, 17),
+        datetime(2026, 5, 17, 14, tzinfo=timezone.utc),
+    )
+
+    assert sig.action == "SKIP"
+    assert sig.skip_reason == "PROFIT_GATE"
+    assert "YES_under_10c" in sig.notes
+
+
+def test_yes_10_25c_is_capped():
+    sig = apply_profitability_controls(
+        _signal(side="YES", yes_ask=0.20, size_usd=30.0),
+        "KNYC",
+        date(2026, 5, 17),
+        datetime(2026, 5, 17, 14, tzinfo=timezone.utc),
+    )
+
+    assert sig.action == "OPEN"
+    assert sig.size_usd == 10.0
+    assert "PROFIT_CAP" in sig.notes
+
+
+def test_no_under_50c_is_blocked_by_default():
+    sig = apply_profitability_controls(
+        _signal(side="NO", yes_bid=0.80, size_usd=20.0),
+        "KNYC",
+        date(2026, 5, 17),
+        datetime(2026, 5, 17, 14, tzinfo=timezone.utc),
+    )
+
+    assert sig.action == "SKIP"
+    assert sig.skip_reason == "PROFIT_GATE"
+    assert "NO_under_50c" in sig.notes

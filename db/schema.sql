@@ -36,6 +36,23 @@ CREATE TABLE IF NOT EXISTS prob_forecast (
     PRIMARY KEY (station, model, run_time, valid_date, var, percentile)
 );
 
+-- True ensemble member forecasts (GEFS / ECMWF IFS / ECMWF AIFS via Open-Meteo).
+-- Unlike det_forecast, each row preserves one perturbed member so research can
+-- compute empirical bucket probabilities instead of fitting a normal curve to
+-- point forecasts.
+CREATE TABLE IF NOT EXISTS ensemble_forecast (
+    station       TEXT NOT NULL REFERENCES stations(code),
+    model         TEXT NOT NULL,             -- 'GFS_ENS', 'ECMWF_IFS_ENS', 'ECMWF_AIFS_ENS'
+    run_time      TIMESTAMPTZ NOT NULL,
+    valid_time    TIMESTAMPTZ NOT NULL,
+    lead_hr       INT NOT NULL,
+    var           TEXT NOT NULL,             -- 'TMP_2M'
+    member        TEXT NOT NULL,             -- 'control', 'member01', ...
+    value         DOUBLE PRECISION NOT NULL, -- degrees F
+    ingested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (station, model, run_time, valid_time, var, member)
+);
+
 -- Surface observations (settlement + bias training data).
 CREATE TABLE IF NOT EXISTS metar_obs (
     station    TEXT NOT NULL REFERENCES stations(code),
@@ -170,6 +187,29 @@ CREATE TABLE IF NOT EXISTS paper_fill (
     payout      DOUBLE PRECISION
 );
 
+-- Pending paper orders model a maker-first workflow instead of assuming every
+-- qualifying signal immediately crosses the spread. The processor fills them
+-- only when later snapshots show executable price and size before expiry.
+CREATE TABLE IF NOT EXISTS paper_order (
+    id               BIGSERIAL PRIMARY KEY,
+    signal_id        BIGINT REFERENCES signal(id),
+    ticker           TEXT NOT NULL REFERENCES kalshi_market(ticker),
+    side             TEXT NOT NULL,
+    limit_price      DOUBLE PRECISION NOT NULL,
+    contracts        INT NOT NULL,
+    fees_est         DOUBLE PRECISION NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'PENDING',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at       TIMESTAMPTZ NOT NULL,
+    filled_at        TIMESTAMPTZ,
+    fill_price       DOUBLE PRECISION,
+    fill_snapshot_ts TIMESTAMPTZ,
+    paper_fill_id    BIGINT REFERENCES paper_fill(id),
+    notes            TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_paper_order_pending ON paper_order (status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_paper_order_ticker ON paper_order (ticker, created_at DESC);
+
 -- Verification metrics snapshots (one row per nightly run).
 CREATE TABLE IF NOT EXISTS verification (
     run_date    DATE NOT NULL,
@@ -212,6 +252,8 @@ ALTER TABLE market_snapshot ADD COLUMN IF NOT EXISTS status TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_det_valid       ON det_forecast (station, valid_time);
 CREATE INDEX IF NOT EXISTS idx_prob_valid      ON prob_forecast (station, valid_date);
+CREATE INDEX IF NOT EXISTS idx_ensemble_valid  ON ensemble_forecast (station, model, valid_time);
+CREATE INDEX IF NOT EXISTS idx_ensemble_run    ON ensemble_forecast (station, model, run_time DESC);
 CREATE INDEX IF NOT EXISTS idx_metar_time      ON metar_obs (station, obs_time DESC);
 CREATE INDEX IF NOT EXISTS idx_market_date     ON kalshi_market (station, valid_date);
 CREATE INDEX IF NOT EXISTS idx_signal_ticker   ON signal (ticker, ts DESC);
@@ -221,6 +263,36 @@ ALTER TABLE market_snapshot ADD COLUMN IF NOT EXISTS no_ask      NUMERIC;
 ALTER TABLE market_snapshot ADD COLUMN IF NOT EXISTS no_bid      NUMERIC;
 ALTER TABLE market_snapshot ADD COLUMN IF NOT EXISTS no_ask_size INT;
 ALTER TABLE market_snapshot ADD COLUMN IF NOT EXISTS no_bid_size INT;
+
+-- External prediction-market snapshots. Initial use is read-only Polymarket
+-- weather buckets, kept separate from Kalshi so cross-platform gap research
+-- cannot alter trading-path data.
+CREATE TABLE IF NOT EXISTS external_market_snapshot (
+    venue             TEXT NOT NULL,             -- 'POLYMARKET'
+    event_slug        TEXT NOT NULL,
+    market_slug       TEXT NOT NULL,
+    ts                TIMESTAMPTZ NOT NULL DEFAULT now(),
+    question          TEXT NOT NULL,
+    station           TEXT,
+    valid_date        DATE,
+    lower_f           DOUBLE PRECISION,
+    upper_f           DOUBLE PRECISION,
+    resolution_source TEXT,
+    yes_token_id      TEXT,
+    no_token_id       TEXT,
+    yes_bid           NUMERIC,
+    yes_ask           NUMERIC,
+    yes_ask_size      NUMERIC,
+    no_bid            NUMERIC,
+    no_ask            NUMERIC,
+    no_ask_size       NUMERIC,
+    volume_24h        NUMERIC,
+    liquidity         NUMERIC,
+    payload           JSONB,
+    PRIMARY KEY (venue, market_slug, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_external_snapshot_ts ON external_market_snapshot (venue, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_external_snapshot_station ON external_market_snapshot (venue, station, valid_date, ts DESC);
 
 -- ---------------------------------------------------------------------------
 -- Health & autonomy tables

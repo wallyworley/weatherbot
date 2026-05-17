@@ -84,7 +84,7 @@ NEIGHBOR_STATIONS: dict[str, list[Station]] = {
 # but only TRADE stations actually have markets scored and paper-filled.
 # A station graduates from fetch-only to trade-eligible once its bias table
 # has sample_size >= 10 for the current month at lead_day in {0,1,2}.
-ACTIVE_FETCH_STATIONS: list[str] = ["KNYC", "KMDW", "KMIA"]
+ACTIVE_FETCH_STATIONS: list[str] = ["KNYC", "KMDW", "KMIA", "KLGA", "KORD"]
 # 2026-05-02: graduated KMDW + KMIA to active trading. All stations pass
 # bias gate at lead 0/1/2 per is_station_calibrated check. The pre-trade
 # BIAS_GATE remains the safety net.
@@ -181,6 +181,9 @@ KALSHI_BASE_URL = os.getenv("KALSHI_BASE_URL", "https://api.elections.kalshi.com
 KALSHI_API_KEY_ID = os.getenv("KALSHI_API_KEY_ID", "")
 KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH", "")
 PAPER_MODE = os.getenv("PAPER_MODE", "true").lower() == "true"
+PAPER_ORDER_MODE = os.getenv("PAPER_ORDER_MODE", "true").lower() == "true"
+PAPER_ORDER_IMPROVEMENT_CENTS = int(os.getenv("PAPER_ORDER_IMPROVEMENT_CENTS", "1"))
+PAPER_ORDER_TTL_MIN = int(os.getenv("PAPER_ORDER_TTL_MIN", "15"))
 
 # Kalshi fee model (as of 2026-04). Formula: round_up(0.07 * C * P * (1 - P))
 KALSHI_FEE_COEFF = 0.07
@@ -233,8 +236,18 @@ PAUSED_TRADE_STATIONS = [
 # KNYC same-day has carried the historical edge; KNYC day-ahead has not.
 KNYC_L1_SIZE_MULT = float(os.getenv("KNYC_L1_SIZE_MULT", "0.25"))
 
-# Side/price-band size multipliers from corrected-fee slices:
-#   - NO below 50c has been poor
-#   - YES 25-50c has been poor
-NO_UNDER_50C_SIZE_MULT = float(os.getenv("NO_UNDER_50C_SIZE_MULT", "0.50"))
+# Side/price-band controls from corrected-fee slices:
+#   - NO below 50c has been poor: default is now block, not half-size.
+#   - YES below 10c has been poor.
+#   - YES 10-25c is the only low-price convexity sleeve with positive history;
+#     keep it capped until it proves itself out of sample.
+#   - YES 25-50c has been poor.
+NO_UNDER_50C_SIZE_MULT = float(os.getenv("NO_UNDER_50C_SIZE_MULT", "0.0"))
+YES_UNDER_10C_SIZE_MULT = float(os.getenv("YES_UNDER_10C_SIZE_MULT", "0.0"))
+YES_10_25C_SIZE_MULT = float(os.getenv("YES_10_25C_SIZE_MULT", "0.50"))
+YES_10_25C_MAX_USD = float(os.getenv("YES_10_25C_MAX_USD", "10.0"))
 YES_25_50C_SIZE_MULT = float(os.getenv("YES_25_50C_SIZE_MULT", "0.50"))
+
+# Paper/live execution quality controls. The main loop fetches a fresh book
+# directly, then refuses to write a paper fill larger than top-of-book size.
+REQUIRE_TOP_BOOK_SIZE = os.getenv("REQUIRE_TOP_BOOK_SIZE", "true").lower() == "true"

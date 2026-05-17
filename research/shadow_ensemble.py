@@ -1,8 +1,8 @@
-"""Shadow-only point-ensemble replay.
+"""Shadow-only ensemble replay.
 
-This does not alter trading. It asks: if NBM/HRRR/GFS/ECMWF point forecasts
-were blended into a simple temperature distribution, would the resulting bucket
-probabilities have been better calibrated than the current signal probabilities?
+This does not alter trading. If true ensemble member forecasts are available
+strictly as of a signal timestamp, it uses the empirical member distribution.
+Otherwise it falls back to the NBM/HRRR/GFS/ECMWF point-forecast blend.
 """
 from __future__ import annotations
 
@@ -26,6 +26,13 @@ from weather_bot.strategy import ev
 MODEL_DEFAULT_WEIGHTS = {
     "lead0": {"NBM": 0.30, "HRRR": 0.40, "GFS": 0.15, "ECMWF": 0.15},
     "lead1p": {"NBM": 0.35, "GFS": 0.30, "ECMWF": 0.35},
+}
+TRUE_ENSEMBLE_MIN_MEMBERS = 20
+TRUE_ENSEMBLE_COLUMNS = {
+    "GFS_ENS": "gfs_ens_members",
+    "ECMWF_IFS_ENS": "ecmwf_ifs_ens_members",
+    "ECMWF_AIFS_ENS": "ecmwf_aifs_ens_members",
+    "WEATHERNEXT2": "weathernext2_members",
 }
 
 
@@ -61,6 +68,19 @@ def normal_prob_between(mean: float, sigma: float, lo: float | None, hi: float |
     lo_cdf = 0.0 if lo is None else normal_cdf(lo, mean, sigma)
     hi_cdf = 1.0 if hi is None else normal_cdf(hi, mean, sigma)
     return max(0.0, min(1.0, hi_cdf - lo_cdf))
+
+
+def ensemble_prob_between(values: list[float], lo: float | None, hi: float | None) -> float | None:
+    if not values:
+        return None
+    wins = 0
+    for value in values:
+        if lo is not None and value < float(lo):
+            continue
+        if hi is not None and value >= float(hi):
+            continue
+        wins += 1
+    return wins / len(values)
 
 
 def normalize_weights(base: dict[str, float], points: dict[str, float | None]) -> dict[str, float]:
@@ -102,7 +122,11 @@ def _signal_rows(days_back: int, limit: int | None = None, per_group_limit: int 
            nbm.p25 AS nbm_p25, nbm.p50 AS nbm_p50, nbm.p75 AS nbm_p75,
            hrrr.pred AS hrrr_tmax,
            gfs.pred AS gfs_tmax,
-           ecmwf.pred AS ecmwf_tmax
+           ecmwf.pred AS ecmwf_tmax,
+           gfs_ens.members AS gfs_ens_members,
+           ecmwf_ifs_ens.members AS ecmwf_ifs_ens_members,
+           ecmwf_aifs_ens.members AS ecmwf_aifs_ens_members,
+           weathernext2.members AS weathernext2_members
       FROM ranked b
       LEFT JOIN LATERAL (
           SELECT MAX(value) FILTER (WHERE percentile=25) AS p25,
@@ -178,6 +202,98 @@ def _signal_rows(days_back: int, limit: int | None = None, per_group_limit: int 
                     AND df2.run_time <= b.ts
              )
       ) ecmwf ON true
+      LEFT JOIN LATERAL (
+          SELECT ARRAY_AGG(member_tmax ORDER BY member) AS members
+            FROM (
+                SELECT ef.member, MAX(ef.value)::float AS member_tmax
+                  FROM ensemble_forecast ef
+                  JOIN stations st2 ON st2.code = ef.station
+                 WHERE ef.station = b.station
+                   AND ef.model = 'GFS_ENS'
+                   AND ef.var = 'TMP_2M'
+                   AND (ef.valid_time AT TIME ZONE st2.tz)::date = b.valid_date
+                   AND ef.run_time = (
+                       SELECT MAX(ef2.run_time)
+                         FROM ensemble_forecast ef2
+                         JOIN stations st3 ON st3.code = ef2.station
+                        WHERE ef2.station = b.station
+                          AND ef2.model = 'GFS_ENS'
+                          AND ef2.var = 'TMP_2M'
+                          AND (ef2.valid_time AT TIME ZONE st3.tz)::date = b.valid_date
+                          AND ef2.run_time <= b.ts
+                   )
+                 GROUP BY ef.member
+            ) member_daily
+      ) gfs_ens ON true
+      LEFT JOIN LATERAL (
+          SELECT ARRAY_AGG(member_tmax ORDER BY member) AS members
+            FROM (
+                SELECT ef.member, MAX(ef.value)::float AS member_tmax
+                  FROM ensemble_forecast ef
+                  JOIN stations st2 ON st2.code = ef.station
+                 WHERE ef.station = b.station
+                   AND ef.model = 'ECMWF_IFS_ENS'
+                   AND ef.var = 'TMP_2M'
+                   AND (ef.valid_time AT TIME ZONE st2.tz)::date = b.valid_date
+                   AND ef.run_time = (
+                       SELECT MAX(ef2.run_time)
+                         FROM ensemble_forecast ef2
+                         JOIN stations st3 ON st3.code = ef2.station
+                        WHERE ef2.station = b.station
+                          AND ef2.model = 'ECMWF_IFS_ENS'
+                          AND ef2.var = 'TMP_2M'
+                          AND (ef2.valid_time AT TIME ZONE st3.tz)::date = b.valid_date
+                          AND ef2.run_time <= b.ts
+                   )
+                 GROUP BY ef.member
+            ) member_daily
+      ) ecmwf_ifs_ens ON true
+      LEFT JOIN LATERAL (
+          SELECT ARRAY_AGG(member_tmax ORDER BY member) AS members
+            FROM (
+                SELECT ef.member, MAX(ef.value)::float AS member_tmax
+                  FROM ensemble_forecast ef
+                  JOIN stations st2 ON st2.code = ef.station
+                 WHERE ef.station = b.station
+                   AND ef.model = 'ECMWF_AIFS_ENS'
+                   AND ef.var = 'TMP_2M'
+                   AND (ef.valid_time AT TIME ZONE st2.tz)::date = b.valid_date
+                   AND ef.run_time = (
+                       SELECT MAX(ef2.run_time)
+                         FROM ensemble_forecast ef2
+                         JOIN stations st3 ON st3.code = ef2.station
+                        WHERE ef2.station = b.station
+                          AND ef2.model = 'ECMWF_AIFS_ENS'
+                          AND ef2.var = 'TMP_2M'
+                          AND (ef2.valid_time AT TIME ZONE st3.tz)::date = b.valid_date
+                          AND ef2.run_time <= b.ts
+                   )
+                 GROUP BY ef.member
+            ) member_daily
+      ) ecmwf_aifs_ens ON true
+      LEFT JOIN LATERAL (
+          SELECT ARRAY_AGG(member_tmax ORDER BY member) AS members
+            FROM (
+                SELECT ef.member, MAX(ef.value)::float AS member_tmax
+                  FROM ensemble_forecast ef
+                  JOIN stations st2 ON st2.code = ef.station
+                 WHERE ef.station = b.station
+                   AND ef.model = 'WEATHERNEXT2'
+                   AND ef.var = 'TMP_2M'
+                   AND (ef.valid_time AT TIME ZONE st2.tz)::date = b.valid_date
+                   AND ef.run_time = (
+                       SELECT MAX(ef2.run_time)
+                         FROM ensemble_forecast ef2
+                         JOIN stations st3 ON st3.code = ef2.station
+                        WHERE ef2.station = b.station
+                          AND ef2.model = 'WEATHERNEXT2'
+                          AND ef2.var = 'TMP_2M'
+                          AND (ef2.valid_time AT TIME ZONE st3.tz)::date = b.valid_date
+                          AND ef2.run_time <= b.ts
+                   )
+                 GROUP BY ef.member
+            ) member_daily
+      ) weathernext2 ON true
      WHERE b.rn <= %(per_group_limit)s
      ORDER BY b.station, b.lead_day, b.ts DESC
     """
@@ -189,7 +305,29 @@ def _signal_rows(days_back: int, limit: int | None = None, per_group_limit: int 
         return [dict(r) for r in cur.fetchall()]
 
 
+def _true_ensemble_distribution(row: dict) -> tuple[float | None, float | None, float | None, dict[str, float]]:
+    by_model: dict[str, list[float]] = {}
+    all_members: list[float] = []
+    for model, column in TRUE_ENSEMBLE_COLUMNS.items():
+        values = [float(v) for v in row.get(column) or [] if v is not None]
+        if values:
+            by_model[model] = values
+            all_members.extend(values)
+    if len(all_members) < TRUE_ENSEMBLE_MIN_MEMBERS:
+        return None, None, None, {}
+
+    p_yes = ensemble_prob_between(all_members, row.get("lower_f"), row.get("upper_f"))
+    mean = statistics.fmean(all_members)
+    sigma = max(0.25, statistics.pstdev(all_members) if len(all_members) >= 2 else 0.0)
+    weights = {f"TRUE_{model}": len(values) / len(all_members) for model, values in by_model.items()}
+    return p_yes, mean, sigma, weights
+
+
 def _shadow_distribution(row: dict) -> tuple[float | None, float | None, float | None, dict[str, float]]:
+    true_p, true_mean, true_sigma, true_weights = _true_ensemble_distribution(row)
+    if true_p is not None:
+        return true_p, true_mean, true_sigma, true_weights
+
     points = {
         "NBM": float(row["nbm_p50"]) if row.get("nbm_p50") is not None else None,
         "HRRR": float(row["hrrr_tmax"]) if row.get("hrrr_tmax") is not None else None,
@@ -285,8 +423,11 @@ def replay(days_back: int = 30, limit: int | None = None, per_group_limit: int =
 def _metrics(rows: list[ShadowRow]) -> dict:
     usable = [r for r in rows if r.shadow_brier is not None]
     shadow_opens = [r for r in usable if r.shadow_action == "OPEN" and r.shadow_pnl is not None]
+    true_ensemble = [r for r in usable if r.weights.startswith("TRUE_")]
     return {
         "n": len(usable),
+        "true_ensemble_n": len(true_ensemble),
+        "point_blend_n": len(usable) - len(true_ensemble),
         "original_brier": statistics.fmean(r.original_brier for r in usable) if usable else None,
         "shadow_brier": statistics.fmean(r.shadow_brier for r in usable) if usable else None,
         "shadow_open_n": len(shadow_opens),
@@ -314,6 +455,7 @@ def render_markdown(rows: list[ShadowRow], days_back: int) -> str:
         "",
         f"Window: last {days_back} completed valid dates. This is research-only; it does not affect trading.",
         "Shadow P&L is an unconstrained replay of every eligible signal, so use Brier/calibration first and dollars only as a rough stress test.",
+        f"True ensemble rows: {m['true_ensemble_n']}; point-blend fallback rows: {m['point_blend_n']}.",
         "",
         "## Overall",
         "",
