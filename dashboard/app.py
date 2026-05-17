@@ -23,22 +23,22 @@ from weather_bot import config
 from weather_bot.dashboard import help_text, queries, replay as replay_engine
 from weather_bot.data import persistence
 
-st.set_page_config(page_title="weather_bot · Command Center", layout="wide", page_icon="🌡️")
+st.set_page_config(page_title="weather_bot · Dashboard", layout="wide", page_icon="🌡️")
 
 # Tab dispatch lives in the sidebar (st.radio) instead of st.tabs because
 # tabs eagerly evaluate every panel on every refresh — visible cost on a
 # 15s auto-refresh. Radio renders only the selected tab.
-TAB_ORDER = ["Simple", "Home", "Trading", "Profitability", "Status", "Calibration", "Deep Dive"]
+TAB_ORDER = ["Overview", "Trading", "Profitability", "Health", "Calibration", "Deep Dive"]
 
 st.markdown("""
 <style>
-  .block-container { padding-top: 1.2rem; }
+  .block-container { padding-top: 0.8rem; }
   .wb-card {
     border: 1px solid rgba(128, 128, 128, 0.25);
     border-radius: 8px;
-    padding: 0.85rem 1rem;
+    padding: 0.65rem 0.8rem;
     background: rgba(128, 128, 128, 0.05);
-    min-height: 102px;
+    min-height: 78px;
   }
   .wb-label {
     font-size: 0.75rem;
@@ -46,23 +46,23 @@ st.markdown("""
     color: rgba(128, 128, 128, 0.95);
     letter-spacing: 0;
   }
-  .wb-value { font-size: 1.55rem; font-weight: 700; margin-top: 0.2rem; }
-  .wb-sub { font-size: 0.84rem; color: rgba(128, 128, 128, 0.95); margin-top: 0.2rem; }
+  .wb-value { font-size: 1.32rem; font-weight: 700; margin-top: 0.12rem; }
+  .wb-sub { font-size: 0.8rem; color: rgba(128, 128, 128, 0.95); margin-top: 0.12rem; }
   .wb-callout {
     border-left: 6px solid var(--wb-color);
     border-radius: 8px;
-    padding: 1rem 1.1rem;
+    padding: 0.75rem 0.9rem;
     background: rgba(128, 128, 128, 0.06);
-    margin: 0.4rem 0 1rem 0;
+    margin: 0.25rem 0 0.8rem 0;
   }
-  .wb-callout-title { font-size: 1.3rem; font-weight: 700; margin-bottom: 0.25rem; }
-  .wb-callout-body { font-size: 0.98rem; line-height: 1.45; color: rgba(128, 128, 128, 0.98); }
+  .wb-callout-title { font-size: 1.12rem; font-weight: 700; margin-bottom: 0.2rem; }
+  .wb-callout-body { font-size: 0.92rem; line-height: 1.35; color: rgba(128, 128, 128, 0.98); }
 </style>
 """, unsafe_allow_html=True)
 
 with st.sidebar:
-    st.title("Controls")
-    selected_tab = st.radio("View", TAB_ORDER, key="selected_tab",
+    st.title("View")
+    selected_tab = st.radio("View", TAB_ORDER, key="selected_view",
                               label_visibility="collapsed")
     st.divider()
     auto_refresh = st.toggle("Auto-refresh (15s)", value=True,
@@ -199,9 +199,10 @@ def _model_trust_summary() -> tuple[str, str, str]:
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-def tab_simple():
+def tab_overview():
     health = queries.latest_health()
     positions = queries.open_positions_with_obs()
+    pending_orders = queries.pending_paper_orders()
     signals = queries.signals_today()
     skip = queries.skip_breakdown(days_back=7)
     today = queries.pnl_today()
@@ -219,6 +220,9 @@ def tab_simple():
     open_cost = 0.0
     if not positions.empty:
         open_cost = float((positions["price"].astype(float) * positions["contracts"].astype(int)).sum())
+    pending_cost = 0.0
+    if not pending_orders.empty:
+        pending_cost = float((pending_orders["limit_price"].astype(float) * pending_orders["contracts"].astype(int)).sum())
 
     trust_label, trust_detail, trust_color = _model_trust_summary()
     pnl_7d = 0.0 if slices.empty else float(slices["net_pnl"].sum())
@@ -240,80 +244,91 @@ def tab_simple():
         verdict_body = "Feeds and safety checks look normal. Still paper trading, so this is observation mode."
         verdict_color = COLOR["GREEN"]
 
-    st.subheader("Simple View", help="Plain-English summary first; detailed diagnostics stay in the other tabs.")
+    st.subheader("Overview", help="Plain-English summary first; detailed diagnostics stay in the other tabs.")
     callout(verdict, verdict_body, verdict_color)
 
     cols = st.columns(4)
     with cols[0]:
-        metric_card("Mode", "Paper only" if config.PAPER_MODE else "Live trading",
-                    "no real orders" if config.PAPER_MODE else "real orders enabled",
-                    COLOR["GREEN"] if config.PAPER_MODE else COLOR["RED"])
+        metric_card("Safety", f"{red_alerts} red", f"{amber_alerts} amber · {'paper' if config.PAPER_MODE else 'live'}",
+                    COLOR["RED"] if red_alerts else COLOR["GREEN"])
     with cols[1]:
-        trade_text = f"{opens_today} opened" if opens_today else "No new trades"
-        metric_card("Today", trade_text, f"{skips_today} skipped")
+        color = COLOR["GREEN"] if today["net"] >= 0 else COLOR["RED"]
+        metric_card("Today P&L", f"${today['net']:+,.2f}",
+                    f"7d ${pnl_7d:+,.2f}", color)
     with cols[2]:
-        metric_card("Open Risk", f"${open_cost:,.0f}", f"{len(positions)} open paper positions")
+        metric_card("Exposure", f"${open_cost + pending_cost:,.0f}",
+                    f"{len(positions)} open · {len(pending_orders)} pending")
     with cols[3]:
-        metric_card("Model Trust", trust_label, trust_detail, trust_color)
+        metric_card("Signals", f"{opens_today} open", f"{skips_today} skipped · trust {trust_label}", trust_color)
 
     st.divider()
 
-    left, right = st.columns([1, 1])
-    with left:
-        st.subheader("What The Bot Is Doing")
-        if signals.empty:
-            st.info("No signals have been logged today.")
-        elif opens_today == 0:
-            if not skip.empty:
-                top = skip.iloc[0]
-                reason = str(top["skip_reason"])
-                simple_reason = SKIP_REASON_LABELS.get(reason, reason.lower())
-                callout(
-                    "Mostly waiting",
-                    f"The main reason is: <strong>{simple_reason}</strong>. Raw code: <code>{reason}</code>.",
-                    COLOR["AMBER"],
-                )
-            else:
-                callout("Mostly waiting", "The bot has not found a trade worth opening today.", COLOR["AMBER"])
-        else:
-            callout("Taking paper trades", f"The bot opened {opens_today} paper trade(s) today.", COLOR["GREEN"])
+    attention: list[dict[str, str]] = []
+    if red_alerts and not health.empty:
+        red = health[(health.status == "RED") & (health.acknowledged_at.isna())].head(5)
+        for _, row in red.iterrows():
+            attention.append({
+                "Priority": "Blocker",
+                "What": f"{row['station']} {row['component']}",
+                "Why": "red health check is blocking new trades",
+            })
+    if not pending_orders.empty:
+        attention.append({
+            "Priority": "Watch",
+            "What": f"{len(pending_orders)} pending paper order(s)",
+            "Why": "waiting for price and depth before paper fill",
+        })
+    if opens_today == 0 and not skip.empty:
+        reason = str(skip.iloc[0]["skip_reason"])
+        attention.append({
+            "Priority": "Context",
+            "What": "No new opens today",
+            "Why": SKIP_REASON_LABELS.get(reason, reason),
+        })
+    if trust_label == "Low":
+        attention.append({
+            "Priority": "Caution",
+            "What": "Model trust is low",
+            "Why": trust_detail,
+        })
 
+    left, right = st.columns([1.05, 1])
+    with left:
+        st.subheader("Attention")
+        if attention:
+            st.dataframe(pd.DataFrame(attention), use_container_width=True, hide_index=True, height=180)
+        else:
+            st.success("Nothing urgent. Keep watching paper results and calibration.")
+    with right:
+        st.subheader("Why Trades Are Skipping")
         if not skip.empty:
             easy_skip = skip.head(5).copy()
-            easy_skip["plain_english"] = easy_skip["skip_reason"].map(SKIP_REASON_LABELS).fillna(easy_skip["skip_reason"])
+            easy_skip["reason"] = easy_skip["skip_reason"].map(SKIP_REASON_LABELS).fillna(easy_skip["skip_reason"])
             st.dataframe(
-                easy_skip[["plain_english", "n", "n_tickers"]],
+                easy_skip[["reason", "n", "n_tickers"]],
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "plain_english": "Why it skipped",
+                    "reason": "Reason",
                     "n": "Signals",
                     "n_tickers": "Markets",
                 },
+                height=180,
             )
-
-    with right:
-        st.subheader("Money Snapshot")
-        money_cols = st.columns(3)
-        money_cols[0].metric("Today", f"${today['net']:+,.2f}")
-        money_cols[1].metric("Last 7 days", f"${pnl_7d:+,.2f}")
-        if yest["net"] is None:
-            money_cols[2].metric("Yesterday", "n/a")
         else:
-            money_cols[2].metric("Yesterday", f"${yest['net']:+,.2f}", f"{yest['n_wins']}/{yest['n_fills']} wins")
-        st.caption("These are paper-trading dollars. Negative numbers are useful feedback while calibration is being fixed.")
+            st.caption("No skip signals in the last 7 days.")
 
     st.divider()
-    st.subheader("Open Positions")
+    st.subheader("Positions & Orders")
     if positions.empty:
-        st.info("No open paper positions.")
+        st.caption("No open paper positions.")
     else:
         simple_pos = positions.copy()
         simple_pos["bucket"] = simple_pos.apply(lambda r: _bucket_label(r.get("lower_f"), r.get("upper_f")), axis=1)
         simple_pos["cost"] = simple_pos["price"].astype(float) * simple_pos["contracts"].astype(int)
         simple_pos["day"] = simple_pos["valid_date"].astype(str)
         st.dataframe(
-            simple_pos[["station", "day", "bucket", "side", "contracts", "cost"]],
+            simple_pos[["station", "day", "bucket", "side", "contracts", "cost"]].head(8),
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -324,11 +339,32 @@ def tab_simple():
                 "contracts": "Contracts",
                 "cost": st.column_config.NumberColumn("Cost", format="$%.2f"),
             },
+            height=260,
         )
 
-    st.divider()
-    with st.expander("Advanced detail charts"):
-        tab_home()
+    if not pending_orders.empty:
+        pend = pending_orders.copy()
+        pend["bucket"] = pend.apply(lambda r: _bucket_label(r.get("lower_f"), r.get("upper_f")), axis=1)
+        pend["expires_in"] = pend["ttl_min"].astype(float).map(lambda v: f"{max(v, 0):.0f}m")
+        st.caption("Pending maker paper orders")
+        st.dataframe(
+            pend[["station", "valid_date", "bucket", "side", "limit_price", "contracts", "expires_in"]].head(8),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "station": "City",
+                "valid_date": "Weather day",
+                "bucket": "Range",
+                "side": "Bet",
+                "limit_price": st.column_config.NumberColumn("Limit", format="%.2f"),
+                "contracts": "Contracts",
+                "expires_in": "TTL",
+            },
+            height=260,
+        )
+
+    if yest["net"] is not None:
+        st.caption(f"Yesterday settled: ${yest['net']:+,.2f} across {yest['n_fills']} fills ({yest['n_wins']} wins).")
 
 
 def tab_home():
@@ -431,19 +467,19 @@ def tab_home():
 
 def tab_profitability():
     st.subheader("Profitability Guardrails", help="Production controls currently shaping paper/live entries.")
-    guard_cols = st.columns(5)
+    guard_cols = st.columns(4)
     with guard_cols[0]:
         metric_card("Controls", "on" if config.PROFIT_CONTROLS_ENABLED else "off",
-                    "PROFIT_CONTROLS_ENABLED")
+                    "paper maker orders on" if config.PAPER_ORDER_MODE else "immediate paper fills")
     with guard_cols[1]:
         paused = ", ".join(config.PAUSED_TRADE_STATIONS) or "none"
-        metric_card("Paused Stations", paused, "skip reason PROFIT_GATE")
+        metric_card("Paused", paused, "skip reason PROFIT_GATE")
     with guard_cols[2]:
-        metric_card("KNYC Lead 1+", f"{config.KNYC_L1_SIZE_MULT:.0%}", "size multiplier")
+        metric_card("Low YES Sleeve", f"{config.YES_10_25C_SIZE_MULT:.0%}",
+                    f"10-25c capped at ${config.YES_10_25C_MAX_USD:.0f}")
     with guard_cols[3]:
-        metric_card("NO Under 50c", f"{config.NO_UNDER_50C_SIZE_MULT:.0%}", "size multiplier")
-    with guard_cols[4]:
-        metric_card("YES 25-50c", f"{config.YES_25_50C_SIZE_MULT:.0%}", "size multiplier")
+        metric_card("Blocked Bands", "YES <10c · NO <50c",
+                    "default multipliers are 0%")
 
     st.divider()
     days_back = st.slider("Profitability window", min_value=7, max_value=90, value=30, step=7)
@@ -1324,18 +1360,17 @@ def tab_deep_dive():
 # ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
-st.title("weather_bot Command Center")
+st.title("weather_bot Dashboard")
 if show_help:
     with st.expander("ℹ️ How to Use This Dashboard", expanded=False):
         st.markdown(help_text.OVERVIEW)
 
 # Single-tab render based on sidebar radio selection (no st.tabs eager eval).
 TAB_DISPATCH = {
-    "Simple":        tab_simple,
-    "Home":          tab_home,
+    "Overview":      tab_overview,
     "Trading":       tab_trading,
     "Profitability": tab_profitability,
-    "Status":        tab_status,
+    "Health":        tab_status,
     "Calibration":   tab_calibration,
     "Deep Dive":     tab_deep_dive,
 }

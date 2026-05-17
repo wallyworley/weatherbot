@@ -87,6 +87,29 @@ def open_positions() -> pd.DataFrame:
     """)
 
 
+def pending_paper_orders() -> pd.DataFrame:
+    return _df("""
+        SELECT po.id, po.created_at, po.expires_at, po.ticker, po.side,
+               po.limit_price, po.contracts, po.fees_est, po.notes,
+               km.station, km.var, km.valid_date, km.lower_f, km.upper_f,
+               EXTRACT(EPOCH FROM (po.expires_at - now())) / 60.0 AS ttl_min
+          FROM paper_order po
+          JOIN kalshi_market km ON km.ticker = po.ticker
+         WHERE po.status = 'PENDING'
+         ORDER BY po.expires_at ASC, po.created_at ASC
+    """)
+
+
+def paper_order_counts(days_back: int = 7) -> pd.DataFrame:
+    return _df("""
+        SELECT status, COUNT(*) AS n
+          FROM paper_order
+         WHERE created_at >= now() - (%s || ' days')::interval
+         GROUP BY status
+         ORDER BY status
+    """, (days_back,))
+
+
 def signals_today() -> pd.DataFrame:
     return _df("""
         SELECT s.ts, s.ticker, s.side, s.fair_prob, s.market_ask, s.market_bid,
