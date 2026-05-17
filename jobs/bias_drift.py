@@ -31,12 +31,12 @@ def _snapshot_today(snapshot_date: date) -> int:
     """
     sql = """
     INSERT INTO station_bias_history
-        (snapshot_date, station, model, var, month, lead_day,
+        (snapshot_date, station, model, var, month, lead_day, cycle_hour,
          mean_bias_f, stddev_f, sample_size)
-    SELECT %s, station, model, var, month, lead_day,
+    SELECT %s, station, model, var, month, lead_day, cycle_hour,
            mean_bias_f, stddev_f, sample_size
       FROM station_bias
-    ON CONFLICT (snapshot_date, station, model, var, month, lead_day)
+    ON CONFLICT (snapshot_date, station, model, var, month, lead_day, cycle_hour)
     DO UPDATE SET mean_bias_f = EXCLUDED.mean_bias_f,
                   stddev_f    = EXCLUDED.stddev_f,
                   sample_size = EXCLUDED.sample_size
@@ -74,9 +74,10 @@ def _detect_drift(snapshot_date: date, lookback_days: int = 1,
            cur.sample_size  AS sample_size,
            ABS(cur.mean_bias_f - prev.mean_bias_f) /
                 NULLIF(prev.stddev_f, 0) AS delta_sigma
-      FROM cur JOIN prev USING (station, model, var, month, lead_day)
+      FROM cur JOIN prev USING (station, model, var, month, lead_day, cycle_hour)
      WHERE prev.stddev_f > 0
        AND ABS(cur.mean_bias_f - prev.mean_bias_f) / NULLIF(prev.stddev_f, 0) >= %s
+       AND cur.cycle_hour = -1
      ORDER BY delta_sigma DESC
     """
     with persistence.connect() as conn, conn.cursor() as cur:

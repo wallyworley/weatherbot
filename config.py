@@ -182,6 +182,15 @@ KALSHI_API_KEY_ID = os.getenv("KALSHI_API_KEY_ID", "")
 KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH", "")
 PAPER_MODE = os.getenv("PAPER_MODE", "true").lower() == "true"
 PAPER_ORDER_MODE = os.getenv("PAPER_ORDER_MODE", "true").lower() == "true"
+
+# In paper mode the point of running is to generate settled fills that
+# validate (or invalidate) the model. TRIPWIRE_RED and PAUSED_TRADE_STATIONS
+# exist to protect *live* capital — applying them in paper starves the
+# feedback loop. Default: bypass these two gates when PAPER_MODE=true.
+# BIAS_GATE and DIVERGENCE remain on in paper because they prevent
+# meaningless or upstream-broken signals from polluting the calibration set.
+PAPER_BYPASS_TRIPWIRE = os.getenv("PAPER_BYPASS_TRIPWIRE", "true").lower() == "true"
+PAPER_BYPASS_STATION_PAUSE = os.getenv("PAPER_BYPASS_STATION_PAUSE", "true").lower() == "true"
 PAPER_ORDER_IMPROVEMENT_CENTS = int(os.getenv("PAPER_ORDER_IMPROVEMENT_CENTS", "1"))
 PAPER_ORDER_TTL_MIN = int(os.getenv("PAPER_ORDER_TTL_MIN", "15"))
 
@@ -245,7 +254,7 @@ KNYC_L1_SIZE_MULT = float(os.getenv("KNYC_L1_SIZE_MULT", "0.25"))
 NO_UNDER_50C_SIZE_MULT = float(os.getenv("NO_UNDER_50C_SIZE_MULT", "0.0"))
 YES_UNDER_10C_SIZE_MULT = float(os.getenv("YES_UNDER_10C_SIZE_MULT", "0.0"))
 YES_10_25C_SIZE_MULT = float(os.getenv("YES_10_25C_SIZE_MULT", "0.50"))
-YES_10_25C_MAX_USD = float(os.getenv("YES_10_25C_MAX_USD", "10.0"))
+YES_10_25C_MAX_USD = float(os.getenv("YES_10_25C_MAX_USD", "25.0"))
 YES_25_50C_SIZE_MULT = float(os.getenv("YES_25_50C_SIZE_MULT", "0.50"))
 
 # Paper/live execution quality controls. The main loop fetches a fresh book

@@ -1,0 +1,14 @@
+[Unit]
+Description=weather_bot point-in-time replay harness (weekly)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/weather_bot
+EnvironmentFile=/opt/weather_bot/.env
+ExecStart=/opt/weather_bot/.venv/bin/python -m weather_bot.research.replay_harness --days-back 45 --apply-calibrator
+StandardOutput=append:/var/log/weather_bot/replay_harness.log
+StandardError=append:/var/log/weather_bot/replay_harness.log

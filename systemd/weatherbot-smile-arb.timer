@@ -1,0 +1,14 @@
+[Unit]
+Description=Timer for weatherbot smile-arbitrage scan
+
+[Timer]
+# Scan every 5 minutes from 06:00–22:00 UTC (covers NYC waking hours).
+# Active markets close around 07:00 ET; this catches the morning bid/ask
+# rebalance and the afternoon mispricings that often persist.
+OnCalendar=*-*-* 06,07,08,09,10,11,12,13,14,15,16,17,18,19,20,21,22:00/5:00
+OnBootSec=3min
+Persistent=true
+Unit=weatherbot-job@smile_arbitrage_scan.service
+
+[Install]
+WantedBy=timers.target

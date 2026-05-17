@@ -10,6 +10,8 @@ from datetime import date, datetime
 from weather_bot.config import (
     KNYC_L1_SIZE_MULT,
     NO_UNDER_50C_SIZE_MULT,
+    PAPER_BYPASS_STATION_PAUSE,
+    PAPER_MODE,
     PAUSED_TRADE_STATIONS,
     PROFIT_CONTROLS_ENABLED,
     YES_10_25C_MAX_USD,
@@ -46,10 +48,13 @@ def apply_profitability_controls(
 
     reasons: list[str] = []
     if station_u in PAUSED_TRADE_STATIONS:
-        sig.action = "SKIP"
-        sig.skip_reason = "PROFIT_GATE"
-        sig.notes = f"PROFIT_GATE|station_paused={station_u} {sig.notes}"
-        return sig
+        if PAPER_MODE and PAPER_BYPASS_STATION_PAUSE:
+            sig.notes = f"PAUSE_BYPASS_PAPER|station={station_u} {sig.notes}"
+        else:
+            sig.action = "SKIP"
+            sig.skip_reason = "PROFIT_GATE"
+            sig.notes = f"PROFIT_GATE|station_paused={station_u} {sig.notes}"
+            return sig
 
     multiplier = 1.0
     if station_u == "KNYC" and lead_day >= 1:

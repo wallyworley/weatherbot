@@ -21,12 +21,27 @@ def _signal(side="YES", price=0.40, size=20.0):
     )
 
 
-def test_pauses_kmdw_by_default():
+def test_pauses_kmdw_when_live_mode(monkeypatch):
+    # Paper-mode default now bypasses station pause for sample velocity.
+    # Live mode (or paper with bypass disabled) still enforces the pause.
+    import weather_bot.strategy.profitability as prof
+    monkeypatch.setattr(prof, "PAPER_MODE", False)
     sig = apply_profitability_controls(
         _signal(), "KMDW", date(2026, 5, 7), datetime(2026, 5, 7, 14, tzinfo=timezone.utc)
     )
     assert sig.action == "SKIP"
     assert sig.skip_reason == "PROFIT_GATE"
+
+
+def test_paper_mode_bypasses_station_pause(monkeypatch):
+    import weather_bot.strategy.profitability as prof
+    monkeypatch.setattr(prof, "PAPER_MODE", True)
+    monkeypatch.setattr(prof, "PAPER_BYPASS_STATION_PAUSE", True)
+    sig = apply_profitability_controls(
+        _signal(), "KMDW", date(2026, 5, 7), datetime(2026, 5, 7, 14, tzinfo=timezone.utc)
+    )
+    assert sig.action == "OPEN"
+    assert "PAUSE_BYPASS_PAPER" in sig.notes
 
 
 def test_downsizes_knyc_lead_one():

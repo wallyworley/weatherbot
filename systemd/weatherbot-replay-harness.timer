@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer for weatherbot replay harness (weekly)
+
+[Timer]
+# Sundays at 03:00 UTC — after Saturday's overnight retrain + bias snapshot.
+OnCalendar=Sun *-*-* 03:00:00
+Persistent=true
+Unit=weatherbot-replay-harness.service
+
+[Install]
+WantedBy=timers.target

@@ -143,6 +143,93 @@ def latest_det_tmax(station: str, valid_date: date, model: str) -> float | None:
 
 
 # ---------------------------------------------------------------------------
+# Point-in-time helpers for the replay harness.
+# These mirror the latest_* helpers but constrain run_time <= as_of so the
+# harness only uses forecasts available at the historical signal timestamp.
+# ---------------------------------------------------------------------------
+def nbm_percentiles_as_of(
+    station: str, valid_date: date, as_of: datetime, var: str = "TMAX_DAILY"
+) -> list[dict]:
+    sql = """
+    SELECT percentile, value, run_time
+      FROM prob_forecast
+     WHERE station = %s AND valid_date = %s AND var = %s
+       AND run_time <= %s
+       AND run_time = (
+           SELECT MAX(run_time) FROM prob_forecast
+            WHERE station = %s AND valid_date = %s AND var = %s
+              AND run_time <= %s
+       )
+     ORDER BY percentile
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, (station, valid_date, var, as_of, station, valid_date, var, as_of))
+        return cur.fetchall()
+
+
+def det_tmax_as_of(
+    station: str, valid_date: date, model: str, as_of: datetime
+) -> float | None:
+    tz = STATIONS[station].tz
+    sql = """
+    SELECT MAX(value) AS tmax
+      FROM det_forecast
+     WHERE station = %s AND model = %s AND var = 'TMP_2M'
+       AND (valid_time AT TIME ZONE %s)::date = %s
+       AND run_time <= %s
+       AND run_time = (
+           SELECT MAX(run_time) FROM det_forecast
+            WHERE station = %s AND model = %s AND var = 'TMP_2M'
+              AND (valid_time AT TIME ZONE %s)::date = %s
+              AND run_time <= %s
+       )
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, (station, model, tz, valid_date, as_of,
+                          station, model, tz, valid_date, as_of))
+        row = cur.fetchone()
+        return row["tmax"] if row else None
+
+
+def hrrr_tmax_as_of(station: str, valid_date: date, as_of: datetime) -> float | None:
+    return det_tmax_as_of(station, valid_date, "HRRR", as_of)
+
+
+def gfs_tmax_as_of(station: str, valid_date: date, as_of: datetime) -> float | None:
+    return det_tmax_as_of(station, valid_date, "GFS", as_of)
+
+
+def station_bias_as_of(
+    station: str, model: str, var: str, month: int, lead_day: int,
+    as_of: datetime, cycle_hour: int | None = None,
+) -> dict | None:
+    """Return the most recent station_bias_history snapshot at or before
+    `as_of.date()`. Falls back through cycle_hour → cycle-agnostic → None.
+    Used by the PIT replay harness so historical signals are scored against
+    the bias table that was actually live at the signal timestamp."""
+    snap_date = as_of.date()
+
+    def _q(cycle: int) -> dict | None:
+        sql = """
+        SELECT * FROM station_bias_history
+         WHERE station=%s AND model=%s AND var=%s
+           AND month=%s AND lead_day=%s AND cycle_hour=%s
+           AND snapshot_date <= %s
+         ORDER BY snapshot_date DESC
+         LIMIT 1
+        """
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute(sql, (station, model, var, month, lead_day, cycle, snap_date))
+            return cur.fetchone()
+
+    if cycle_hour is not None and cycle_hour >= 0:
+        row = _q(cycle_hour)
+        if row is not None and int(row.get("sample_size") or 0) >= 8:
+            return row
+    return _q(-1)
+
+
+# ---------------------------------------------------------------------------
 # Observations
 # ---------------------------------------------------------------------------
 def upsert_metar(rows: Iterable[dict]):
@@ -188,33 +275,59 @@ def get_daily_obs(station: str, start: date, end: date) -> list[dict]:
 # Bias / markets / signals
 # ---------------------------------------------------------------------------
 def upsert_station_bias(rows: Iterable[dict]):
+    """Upsert bias rows. `cycle_hour` defaults to -1 (cycle-agnostic legacy lane)
+    when callers omit it; retrain writes both lanes explicitly."""
     sql = """
-    INSERT INTO station_bias(station, model, var, month, lead_day, mean_bias_f, stddev_f, sample_size)
+    INSERT INTO station_bias(station, model, var, month, lead_day, cycle_hour,
+                             mean_bias_f, stddev_f, sample_size)
     VALUES (%(station)s, %(model)s, %(var)s, %(month)s, %(lead_day)s,
-            %(mean_bias_f)s, %(stddev_f)s, %(sample_size)s)
-    ON CONFLICT (station, model, var, month, lead_day) DO UPDATE
+            %(cycle_hour)s, %(mean_bias_f)s, %(stddev_f)s, %(sample_size)s)
+    ON CONFLICT (station, model, var, month, lead_day, cycle_hour) DO UPDATE
        SET mean_bias_f = EXCLUDED.mean_bias_f,
            stddev_f    = EXCLUDED.stddev_f,
            sample_size = EXCLUDED.sample_size,
            updated_at  = now()
     """
+    materialized = [dict(r) for r in rows]
+    for r in materialized:
+        r.setdefault("cycle_hour", -1)
     with connect() as conn, conn.cursor() as cur:
-        cur.executemany(sql, list(rows))
+        cur.executemany(sql, materialized)
         conn.commit()
 
 
-def get_station_bias_exact(station: str, model: str, var: str, month: int, lead_day: int) -> dict | None:
-    """Return bias row only if the exact (month, lead_day) cell exists — no fallback."""
+def get_station_bias_exact(
+    station: str, model: str, var: str, month: int, lead_day: int,
+    cycle_hour: int = -1,
+) -> dict | None:
+    """Return bias row only if the exact (month, lead_day, cycle_hour) cell
+    exists — no fallback. Defaults to cycle-agnostic lane (-1) for
+    backwards compatibility with the calibration gate."""
     sql = """SELECT * FROM station_bias
-              WHERE station=%s AND model=%s AND var=%s AND month=%s AND lead_day=%s"""
+              WHERE station=%s AND model=%s AND var=%s
+                AND month=%s AND lead_day=%s AND cycle_hour=%s"""
     with connect() as conn, conn.cursor() as cur:
-        cur.execute(sql, (station, model, var, month, lead_day))
+        cur.execute(sql, (station, model, var, month, lead_day, cycle_hour))
         return cur.fetchone()
 
 
-def get_station_bias(station: str, model: str, var: str, month: int, lead_day: int) -> dict | None:
+_MIN_CYCLE_SPECIFIC_N = 8
+
+
+def get_station_bias(
+    station: str, model: str, var: str, month: int, lead_day: int,
+    cycle_hour: int | None = None,
+    min_cycle_specific_n: int = _MIN_CYCLE_SPECIFIC_N,
+) -> dict | None:
     """Return bias row for the requested (month, lead_day), or fall back to
     the nearest available lead_day within the same regime.
+
+    When `cycle_hour` is provided (0/6/12/18), the lookup first tries the
+    cycle-specific row (cycle_hour=<n>). If absent or thin (sample_size <
+    min_cycle_specific_n), it falls back to the cycle-agnostic row
+    (cycle_hour=-1), then to the existing month/lead fallback chain. The
+    cycle-agnostic fallback preserves pre-2026-05-17 behavior for callers
+    that don't pass `cycle_hour`.
 
     Lead-0 boundary: lead_day=0 (same-day) MUST NOT fall back to lead>=1.
     Same-day forecasts are a distinct regime (current obs available, HRRR blend
@@ -225,11 +338,19 @@ def get_station_bias(station: str, model: str, var: str, month: int, lead_day: i
 
     For lead>=1 queries, fallback is restricted to lead>=1 rows.
     """
+    if cycle_hour is not None and cycle_hour >= 0:
+        cycle_row = get_station_bias_exact(station, model, var, month, lead_day, cycle_hour)
+        if cycle_row and int(cycle_row.get("sample_size") or 0) >= min_cycle_specific_n:
+            return cycle_row
+        # Fall through to cycle-agnostic / month / lead fallbacks below.
+
     sql_exact = """SELECT * FROM station_bias
-                   WHERE station=%s AND model=%s AND var=%s AND month=%s AND lead_day=%s"""
+                   WHERE station=%s AND model=%s AND var=%s
+                     AND month=%s AND lead_day=%s AND cycle_hour=-1"""
     sql_nearest_lead = """
         SELECT * FROM station_bias
          WHERE station=%s AND model=%s AND var=%s AND month=%s AND lead_day >= 1
+           AND cycle_hour=-1
          ORDER BY ABS(lead_day - %s) ASC, lead_day ASC
          LIMIT 1
     """
@@ -242,6 +363,7 @@ def get_station_bias(station: str, model: str, var: str, month: int, lead_day: i
                LEAST(ABS(month - %s), 12 - ABS(month - %s)) AS month_dist
           FROM station_bias
          WHERE station=%s AND model=%s AND var=%s AND lead_day=%s
+           AND cycle_hour=-1
          ORDER BY month_dist ASC, sample_size DESC
          LIMIT 1
     """
@@ -250,6 +372,7 @@ def get_station_bias(station: str, model: str, var: str, month: int, lead_day: i
                LEAST(ABS(month - %s), 12 - ABS(month - %s)) AS month_dist
           FROM station_bias
          WHERE station=%s AND model=%s AND var=%s AND lead_day >= 1
+           AND cycle_hour=-1
          ORDER BY month_dist ASC, ABS(lead_day - %s) ASC, lead_day ASC
          LIMIT 1
     """

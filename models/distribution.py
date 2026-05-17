@@ -230,14 +230,23 @@ def build_station_distribution(
     var: str = "TMAX_DAILY",
     now_utc: datetime | None = None,
     apply_bias: bool = True,
+    as_of: datetime | None = None,
 ) -> PiecewiseCDF | None:
     """Assemble NBM CDF + bias correction + optional HRRR blend for a station-day.
 
     `apply_bias=False` skips the station_bias shift and width inflation entirely.
     Used by the divergence-bypass path in main.py to diagnose whether the bias
     correction is the source of fair-vs-market disagreement.
+
+    `as_of` constrains forecast queries to `run_time <= as_of`. Used by the
+    point-in-time replay harness so historical signals are scored against the
+    same forecasts available when the signal originally fired. Station bias
+    rows have no history in the current schema; replay uses the current
+    bias table and the harness flags this as a known approximation.
     """
-    rows = persistence.latest_nbm_percentiles(station, target_date, var=var)
+    rows = (persistence.nbm_percentiles_as_of(station, target_date, as_of, var=var)
+            if as_of is not None else
+            persistence.latest_nbm_percentiles(station, target_date, var=var))
     cdf = build_cdf_from_percentiles(rows)
     if cdf is None:
         log.warning("No NBM percentiles for %s %s %s", station, target_date, var)
@@ -247,8 +256,29 @@ def build_station_distribution(
     lead_day = lead_day_for_station(station, target_date, now)
     month = target_date.month
 
+    # Cycle-hour from the NBM run we're using; lookup prefers the
+    # cycle-specific bias row when sample size allows (12Z is materially
+    # worse-calibrated than 00Z per the 2026-05-17 PIT replay).
+    nbm_cycle_hour: int | None = None
+    if rows:
+        rt = rows[0].get("run_time")
+        if rt is not None:
+            nbm_cycle_hour = rt.astimezone(timezone.utc).hour
+
     # Apply station bias correction: shift mean AND inflate distribution width.
-    bias_row = persistence.get_station_bias(station, "NBM_QMD", var, month, max(lead_day, 0)) if apply_bias else None
+    # When `as_of` is set (PIT replay), look up the historical snapshot of the
+    # bias table that was live at `as_of.date()`; otherwise use the current table.
+    if not apply_bias:
+        bias_row = None
+    elif as_of is not None:
+        bias_row = persistence.station_bias_as_of(
+            station, "NBM_QMD", var, month, max(lead_day, 0), as_of,
+            cycle_hour=nbm_cycle_hour,
+        )
+    else:
+        bias_row = persistence.get_station_bias(
+            station, "NBM_QMD", var, month, max(lead_day, 0), cycle_hour=nbm_cycle_hour,
+        )
     if bias_row:
         # Bias shrinkage: the station_bias table's mean_bias_f comes from small
         # samples (often n<30). Applying raw bias at full strength pushed the
@@ -327,7 +357,9 @@ def build_station_distribution(
     # Same-day HRRR blend.
     hrrr_used = False
     if lead_day == 0 and var == "TMAX_DAILY":
-        hrrr_val = persistence.latest_hrrr_tmax(station, target_date)
+        hrrr_val = (persistence.hrrr_tmax_as_of(station, target_date, as_of)
+                    if as_of is not None else
+                    persistence.latest_hrrr_tmax(station, target_date))
         if hrrr_val is not None:
             hrrr_bias = persistence.get_station_bias(station, "HRRR", var, month, 0)
             if hrrr_bias:
@@ -346,7 +378,9 @@ def build_station_distribution(
     # boundary-layer obs that make same-day HRRR so accurate.
     _GFS_WEIGHT = 0.30
     if var == "TMAX_DAILY" and (lead_day >= 1 or (lead_day == 0 and not hrrr_used)):
-        gfs_val = persistence.latest_gfs_tmax(station, target_date)
+        gfs_val = (persistence.gfs_tmax_as_of(station, target_date, as_of)
+                   if as_of is not None else
+                   persistence.latest_gfs_tmax(station, target_date))
         if gfs_val is not None:
             gfs_bias = persistence.get_station_bias(station, "GFS", var, month, max(lead_day, 0))
             if gfs_bias:

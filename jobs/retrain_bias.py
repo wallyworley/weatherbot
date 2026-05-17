@@ -24,7 +24,10 @@ log = logging.getLogger(__name__)
 _BIAS_PERCENTILE = 50
 _DEFAULT_TZ = "America/New_York"
 
-_RETRAIN_SQL = """
+# `cycle_hour_expr` is interpolated below: either -1 for the cycle-agnostic
+# lane or `EXTRACT(HOUR FROM pf.run_time AT TIME ZONE 'UTC')::int` for the
+# cycle-specific lane. Both lanes share the same paired CTE.
+_RETRAIN_SQL_TEMPLATE = """
 WITH paired AS (
     SELECT
         pf.station, pf.model, pf.var,
@@ -34,6 +37,7 @@ WITH paired AS (
             0,
             (pf.valid_date - (pf.run_time AT TIME ZONE %(tz)s)::date)::int
         ) AS lead_day,
+        {cycle_hour_expr} AS cycle_hour,
         CASE pf.var
             WHEN 'TMAX_DAILY' THEN obs.tmax_f
             WHEN 'TMIN_DAILY' THEN obs.tmin_f
@@ -47,7 +51,7 @@ WITH paired AS (
       AND (%(station)s::text IS NULL OR pf.station = %(station)s)
 )
 SELECT
-    station, model, var, month, lead_day,
+    station, model, var, month, lead_day, cycle_hour,
     AVG(fcst_f - obs_f)::double precision                       AS mean_bias_f,
     COALESCE(STDDEV_SAMP(fcst_f - obs_f), 0)::double precision  AS stddev_f,
     COUNT(*)::int                                               AS sample_size
@@ -55,16 +59,17 @@ FROM paired
 WHERE lead_day BETWEEN 0 AND %(max_lead)s
   AND obs_f  IS NOT NULL
   AND fcst_f IS NOT NULL
-GROUP BY station, model, var, month, lead_day
+GROUP BY station, model, var, month, lead_day, cycle_hour
 HAVING COUNT(*) >= %(min_n)s
-ORDER BY station, model, var, month, lead_day
+ORDER BY station, model, var, month, lead_day, cycle_hour
 """
 
 _UPSERT_SQL = """
 INSERT INTO station_bias
-    (station, model, var, month, lead_day, mean_bias_f, stddev_f, sample_size, updated_at)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
-ON CONFLICT (station, model, var, month, lead_day) DO UPDATE SET
+    (station, model, var, month, lead_day, cycle_hour,
+     mean_bias_f, stddev_f, sample_size, updated_at)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+ON CONFLICT (station, model, var, month, lead_day, cycle_hour) DO UPDATE SET
     mean_bias_f = EXCLUDED.mean_bias_f,
     stddev_f    = EXCLUDED.stddev_f,
     sample_size = EXCLUDED.sample_size,
@@ -72,30 +77,49 @@ ON CONFLICT (station, model, var, month, lead_day) DO UPDATE SET
 """
 
 
-def retrain(station=None, min_n=5, max_lead=7, tz=_DEFAULT_TZ, dry_run=False):
-    params = {"pct": _BIAS_PERCENTILE, "station": station,
-              "min_n": min_n, "max_lead": max_lead, "tz": tz}
+_CYCLE_AGNOSTIC_EXPR = "-1"
+_CYCLE_SPECIFIC_EXPR = "EXTRACT(HOUR FROM pf.run_time AT TIME ZONE 'UTC')::int"
+
+
+def retrain(station=None, min_n=5, max_lead=7, tz=_DEFAULT_TZ, dry_run=False,
+            cycle_specific_min_n: int = 8):
+    """Retrain both lanes: cycle-agnostic (cycle_hour=-1) and cycle-specific
+    (cycle_hour in 0/6/12/18). The cycle-specific lane uses a higher min_n
+    because the data is partitioned 4x; thin cycles fall back to the
+    agnostic row at lookup time via `get_station_bias`.
+    """
+    base_params = {"pct": _BIAS_PERCENTILE, "station": station,
+                   "max_lead": max_lead, "tz": tz}
+    total = 0
     with connect() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(_RETRAIN_SQL, params)
-            rows = cur.fetchall()
-        log.info("Computed %d bias rows (station=%s min_n=%d max_lead=%d tz=%s)",
-                 len(rows), station or "*", min_n, max_lead, tz)
-        for r in rows:
-            log.info("  %s/%s/%s m=%02d l=%d n=%d mean=%+.2f std=%.2f",
-                     r["station"], r["model"], r["var"], r["month"], r["lead_day"],
-                     r["sample_size"], float(r["mean_bias_f"]), float(r["stddev_f"]))
-        if dry_run:
-            log.info("dry-run: no writes")
-            return len(rows)
-        with conn.cursor() as cur:
+        for lane, cycle_expr, lane_min_n in (
+            ("cycle-agnostic", _CYCLE_AGNOSTIC_EXPR, min_n),
+            ("cycle-specific", _CYCLE_SPECIFIC_EXPR, cycle_specific_min_n),
+        ):
+            params = {**base_params, "min_n": lane_min_n}
+            sql = _RETRAIN_SQL_TEMPLATE.format(cycle_hour_expr=cycle_expr)
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+            log.info("[%s] computed %d rows (min_n=%d)", lane, len(rows), lane_min_n)
             for r in rows:
-                cur.execute(_UPSERT_SQL,
-                    (r["station"], r["model"], r["var"], r["month"], r["lead_day"],
-                     r["mean_bias_f"], r["stddev_f"], r["sample_size"]))
-        conn.commit()
-    log.info("Upserted %d rows into station_bias", len(rows))
-    return len(rows)
+                log.info("  %s/%s/%s m=%02d l=%d c=%+d n=%d mean=%+.2f std=%.2f",
+                         r["station"], r["model"], r["var"], r["month"], r["lead_day"],
+                         r["cycle_hour"], r["sample_size"],
+                         float(r["mean_bias_f"]), float(r["stddev_f"]))
+            if dry_run:
+                log.info("[%s] dry-run: no writes", lane)
+                total += len(rows)
+                continue
+            with conn.cursor() as cur:
+                for r in rows:
+                    cur.execute(_UPSERT_SQL,
+                        (r["station"], r["model"], r["var"], r["month"], r["lead_day"],
+                         r["cycle_hour"], r["mean_bias_f"], r["stddev_f"], r["sample_size"]))
+            conn.commit()
+            total += len(rows)
+    log.info("Upserted %d total rows into station_bias", total)
+    return total
 
 
 def main(argv=None):

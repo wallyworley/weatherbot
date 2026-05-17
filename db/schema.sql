@@ -123,12 +123,31 @@ CREATE TABLE IF NOT EXISTS station_bias (
     var            TEXT NOT NULL,      -- 'TMAX_DAILY' | 'TMIN_DAILY'
     month          INT NOT NULL,       -- 1..12
     lead_day       INT NOT NULL,       -- 0 = today, 1 = tomorrow, etc.
+    -- 2026-05-17: cycle_hour added so NBM 12Z (the worst-calibrated cycle per
+    -- the PIT replay) gets its own bias cell. -1 = cycle-agnostic legacy/fallback
+    -- row; 0/6/12/18 = NBM cycle-specific row. Retrain writes both lanes so
+    -- lookups can prefer the cycle-specific cell when sample size allows and
+    -- fall back to the agnostic cell otherwise.
+    cycle_hour     SMALLINT NOT NULL DEFAULT -1,
     mean_bias_f    DOUBLE PRECISION NOT NULL,   -- forecast - obs
     stddev_f       DOUBLE PRECISION NOT NULL,
     sample_size    INT NOT NULL,
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (station, model, var, month, lead_day)
+    PRIMARY KEY (station, model, var, month, lead_day, cycle_hour)
 );
+-- Migration for pre-2026-05-17 databases:
+ALTER TABLE station_bias ADD COLUMN IF NOT EXISTS cycle_hour SMALLINT NOT NULL DEFAULT -1;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'station_bias_pkey'
+           AND pg_get_constraintdef(oid) NOT LIKE '%cycle_hour%'
+    ) THEN
+        ALTER TABLE station_bias DROP CONSTRAINT station_bias_pkey;
+        ALTER TABLE station_bias ADD PRIMARY KEY (station, model, var, month, lead_day, cycle_hour);
+    END IF;
+END $$;
 
 -- Kalshi markets and bucket structure.
 CREATE TABLE IF NOT EXISTS kalshi_market (
@@ -335,11 +354,26 @@ CREATE TABLE IF NOT EXISTS station_bias_history (
     var            TEXT NOT NULL,
     month          INT NOT NULL,
     lead_day       INT NOT NULL,
+    cycle_hour     SMALLINT NOT NULL DEFAULT -1,
     mean_bias_f    DOUBLE PRECISION NOT NULL,
     stddev_f       DOUBLE PRECISION NOT NULL,
     sample_size    INT NOT NULL,
-    PRIMARY KEY (snapshot_date, station, model, var, month, lead_day)
+    PRIMARY KEY (snapshot_date, station, model, var, month, lead_day, cycle_hour)
 );
+-- Migration for pre-2026-05-17 databases:
+ALTER TABLE station_bias_history ADD COLUMN IF NOT EXISTS cycle_hour SMALLINT NOT NULL DEFAULT -1;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'station_bias_history_pkey'
+           AND pg_get_constraintdef(oid) NOT LIKE '%cycle_hour%'
+    ) THEN
+        ALTER TABLE station_bias_history DROP CONSTRAINT station_bias_history_pkey;
+        ALTER TABLE station_bias_history ADD PRIMARY KEY
+            (snapshot_date, station, model, var, month, lead_day, cycle_hour);
+    END IF;
+END $$;
 
 -- Bias drift events — one row per detected anomaly. Dashboard reads these
 -- to surface "did our fetcher break again?" type incidents.

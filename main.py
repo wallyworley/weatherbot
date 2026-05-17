@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from weather_bot.config import (
     ACTIVE_TRADE_STATIONS,
     BANKROLL_USD,
+    PAPER_BYPASS_TRIPWIRE,
     PAPER_ORDER_IMPROVEMENT_CENTS,
     PAPER_ORDER_MODE,
     PAPER_ORDER_TTL_MIN,
@@ -181,8 +182,11 @@ def run():
             )
     client = KalshiClient()
     markets = _load_open_markets()
-    red_stations = _tripwire_red_stations()
-    if red_stations:
+    tripwire_bypassed = PAPER_MODE and PAPER_BYPASS_TRIPWIRE
+    red_stations: set[str] = set() if tripwire_bypassed else _tripwire_red_stations()
+    if tripwire_bypassed:
+        log.info("TRIPWIRE bypass active (paper mode); RED stations will still trade for sample velocity")
+    elif red_stations:
         log.warning("TRIPWIRE: stations flagged RED — refusing new positions: %s", sorted(red_stations))
     log.info("Evaluating %d open markets (paper_mode=%s)", len(markets), PAPER_MODE)
 

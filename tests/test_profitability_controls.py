@@ -41,8 +41,10 @@ def test_yes_10_25c_is_capped():
     )
 
     assert sig.action == "OPEN"
-    assert sig.size_usd == 10.0
-    assert "PROFIT_CAP" in sig.notes
+    # YES 10-25c cap was widened from $10 to $25 on 2026-05-17 to lift the
+    # sample-velocity throttle on the only positive low-price sleeve. 30*0.5=15.
+    assert sig.size_usd == 15.0
+    assert "PROFIT_CAP" not in sig.notes  # 15 is now under the 25 cap
 
 
 def test_no_under_50c_is_blocked_by_default():
