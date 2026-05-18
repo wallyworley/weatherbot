@@ -132,9 +132,12 @@ def _format_alert(row: dict) -> tuple[str, str]:
         msg = f"{station}: only {detail.get('n_open',0)} open Kalshi markets — "\
               "Kalshi may be down."
     elif component.startswith("DATA_"):
-        msg = (f"{plain_component}: last update {detail.get('lag_min','?')} min ago "
-               f"(normal cadence {detail.get('cadence_min','?')} min). "
-               "Check launchd logs.")
+        # The polling timer firing != the upstream source having fresh data.
+        # Word the alert so it does not mis-blame our scheduler when the lag
+        # is really just slow publication from IEM / NOAA / Kalshi upstream.
+        msg = (f"{plain_component}: feed {detail.get('lag_min','?')} min behind "
+               f"(threshold {detail.get('cadence_min','?')} min). "
+               "Likely upstream publication lag; check the dashboard.")
     else:
         msg = f"{station}/{component}: metric {row.get('metric_value','?')}. "\
               "Open the dashboard for detail."

@@ -75,8 +75,11 @@ FEED_CADENCE_MIN = {
     # AMBER to fire just because we're approaching the next observation.
     "METAR": 60,
     # ASOS stations produce 5-min HFMETAR and the VPS timer polls every 5min,
-    # but source publication lag is usually larger than the observation cadence.
-    "HFMETAR": 10,
+    # but IEM Iowa Mesonet's actual publication lag for KMDW/KMIA runs 25-35min
+    # most days. Setting cadence=15 (red threshold 45min) reflects that reality
+    # so transient IEM delays don't trip RED. If the bot's polling timer ever
+    # actually fails, lag would climb well past 45min and still trip.
+    "HFMETAR": 15,
     "KALSHI": 5,
 }
 
