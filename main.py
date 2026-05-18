@@ -171,6 +171,15 @@ def _ask_size_for_side(sig, top: OrderbookTop) -> int | None:
 
 def run():
     persistence.bootstrap_stations()
+    if PAPER_MODE:
+        from weather_bot.strategy import early_exits
+        exit_summary = early_exits.process_early_exits(threshold=0.85)
+        if exit_summary.checked or exit_summary.exited:
+            log.info(
+                "Processed early exits: checked=%d exited=%d",
+                exit_summary.checked,
+                exit_summary.exited,
+            )
     if PAPER_MODE and PAPER_ORDER_MODE:
         summary = paper_orders.process_pending_orders()
         if summary.checked or summary.filled or summary.expired:

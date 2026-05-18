@@ -191,7 +191,7 @@ PAPER_ORDER_MODE = os.getenv("PAPER_ORDER_MODE", "true").lower() == "true"
 # meaningless or upstream-broken signals from polluting the calibration set.
 PAPER_BYPASS_TRIPWIRE = os.getenv("PAPER_BYPASS_TRIPWIRE", "true").lower() == "true"
 PAPER_BYPASS_STATION_PAUSE = os.getenv("PAPER_BYPASS_STATION_PAUSE", "true").lower() == "true"
-PAPER_ORDER_IMPROVEMENT_CENTS = int(os.getenv("PAPER_ORDER_IMPROVEMENT_CENTS", "1"))
+PAPER_ORDER_IMPROVEMENT_CENTS = int(os.getenv("PAPER_ORDER_IMPROVEMENT_CENTS", "3"))
 PAPER_ORDER_TTL_MIN = int(os.getenv("PAPER_ORDER_TTL_MIN", "15"))
 
 # Kalshi fee model (as of 2026-04). Formula: round_up(0.07 * C * P * (1 - P))
