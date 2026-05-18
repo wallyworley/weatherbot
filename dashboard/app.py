@@ -482,8 +482,36 @@ def tab_profitability():
                     "default multipliers are 0%")
 
     st.divider()
-    days_back = st.slider("Profitability window", min_value=7, max_value=90, value=30, step=7)
-    slices = queries.profitability_slices(days_back=days_back)
+    col1, col2 = st.columns([1, 1.2])
+    with col1:
+        days_back = st.slider("Profitability window", min_value=7, max_value=90, value=30, step=7)
+    
+    raw_slices = queries.profitability_slices(days_back=days_back)
+    
+    # Detect stations currently flagged RED
+    health = queries.latest_health()
+    red_stations = []
+    if not health.empty:
+        red_stations = sorted(health[(health.status == "RED") & (health.station != "GLOBAL")]["station"].unique().tolist())
+    
+    with col2:
+        all_stations = sorted(raw_slices["station"].unique().tolist()) if not raw_slices.empty else []
+        selected_stations = st.multiselect("Filter by Station", options=all_stations, default=all_stations)
+        
+        filter_red_only = False
+        if red_stations:
+            # Highlight red stations with an emoji for ease of use
+            btn_label = f"🔴 Show only RED/Alerted stations ({', '.join(red_stations)})"
+            filter_red_only = st.checkbox(btn_label, value=False, help="Quickly zoom into paper trading stats for bypassed stations.")
+            
+    if not raw_slices.empty:
+        slices = raw_slices.copy()
+        if filter_red_only:
+            slices = slices[slices["station"].isin(red_stations)]
+        else:
+            slices = slices[slices["station"].isin(selected_stations)]
+    else:
+        slices = raw_slices
 
     if slices.empty:
         st.info("No settled fills in this window yet.")
