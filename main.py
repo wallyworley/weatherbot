@@ -309,6 +309,33 @@ def run():
                 else:
                     sig.notes = f"BIAS_BLAMED_NO_EDGE|fair_no_bias={fair_nb:.3f}|raw_no_bias={raw_fair_nb:.3f}|nb_skip={sig_nb.skip_reason} {sig.notes}"
 
+        # Intraday-squeeze guardrail: same-day TMAX/TMIN markets where the
+        # intraday floor/ceiling already sits inside the bucket. For YES the
+        # win window has been squeezed to (upper - floor) or (ceiling - lower).
+        # When that window is smaller than a normal remaining-day move, the
+        # bot's renormalized fair probability is fragile and tends to disagree
+        # with the market (which prices in the obvious "temp will keep climbing"
+        # path). Symmetric block for TMIN ceiling.
+        # The check is YES-only; NO benefits from a tight remaining window
+        # because just a small further move past the bucket edge resolves NO.
+        _INTRADAY_SQUEEZE_MIN_F = 1.5
+        if sig.action == "OPEN" and sig.side == "YES" and lead_day == 0:
+            squeeze_room: float | None = None
+            squeeze_label: str | None = None
+            if m["var"] == "TMAX_DAILY" and cdf.floor is not None and m["upper_f"] is not None:
+                squeeze_room = float(m["upper_f"]) - float(cdf.floor)
+                squeeze_label = f"TMAX|floor={cdf.floor:.1f}|upper={m['upper_f']:.1f}"
+            elif m["var"] == "TMIN_DAILY" and cdf.ceiling is not None and m["lower_f"] is not None:
+                squeeze_room = float(cdf.ceiling) - float(m["lower_f"])
+                squeeze_label = f"TMIN|ceiling={cdf.ceiling:.1f}|lower={m['lower_f']:.1f}"
+            if squeeze_room is not None and squeeze_room < _INTRADAY_SQUEEZE_MIN_F:
+                sig.action = "SKIP"
+                sig.skip_reason = "INTRADAY_SQUEEZE"
+                sig.notes = (
+                    f"INTRADAY_SQUEEZE|room={squeeze_room:.2f}F<{_INTRADAY_SQUEEZE_MIN_F:.1f}F|"
+                    f"{squeeze_label} {sig.notes}"
+                )
+
         sig = profitability.apply_profitability_controls(
             sig, m["station"], m["valid_date"], now_utc
         )

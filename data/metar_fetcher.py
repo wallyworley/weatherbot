@@ -192,8 +192,17 @@ def filter_implausible_swings(rows: list[dict],
 def compute_daily(station: Station, metars: Iterable[dict], day: date) -> dict | None:
     """Compute Tmax/Tmin for `day` in the station's local timezone.
 
-    Returns None if the local day is not yet complete — partial obs would
-    give a wrong daily tmax/tmin and pollute bias training / verification.
+    Returns None if:
+      - the local day is not yet complete (partial obs would give a wrong
+        daily tmax/tmin and pollute bias training / verification), OR
+      - the input `metars` do not cover the full local day (early-morning-only
+        slivers would mis-report the cold morning low as the daily high).
+
+    2026-05-18: the coverage gate was added after a bug where the live
+    `run(hours=36, days_back=2)` path wrote the day-before-yesterday's
+    early-morning samples as a "daily tmax", clobbering the correct backfill
+    values via the upsert. That contaminated KMIA's bias table by +7F over
+    11 consecutive days and drove a bad paper trade on KXHIGHMIA-26MAY18.
     """
     tz = pytz.timezone(station.tz)
     local_start = tz.localize(datetime.combine(day, datetime.min.time()))
@@ -202,18 +211,32 @@ def compute_daily(station: Station, metars: Iterable[dict], day: date) -> dict |
     now_utc = datetime.now(tz=timezone.utc)
     if local_end > now_utc:
         return None
-    samples: list[float] = []
+    samples: list[tuple[datetime, float]] = []
     for m in metars:
         t_local = m["obs_time"].astimezone(tz)
         if local_start <= t_local < local_end and m.get("temp_f") is not None:
-            samples.append(m["temp_f"])
+            samples.append((t_local, m["temp_f"]))
     if not samples:
         return None
+    # Coverage gate: refuse to compute when the input doesn't span the full
+    # local day. We require the earliest sample at or before 02:00 local
+    # (catches the overnight low window) AND the latest at or after 20:00
+    # local (catches the late-afternoon peak window). This is conservative;
+    # ASOS stations produce 5-min HFMETAR with very high density, so a
+    # complete day has both bounds easily. Partial days fall through to
+    # backfill or the next live run.
+    first_local = min(t for t, _ in samples)
+    last_local = max(t for t, _ in samples)
+    morning_cutoff = local_start + timedelta(hours=2)
+    evening_cutoff = local_start + timedelta(hours=20)
+    if first_local > morning_cutoff or last_local < evening_cutoff:
+        return None
+    temps = [t for _, t in samples]
     return dict(
         station=station.code,
         local_date=day,
-        tmax_f=max(samples),
-        tmin_f=min(samples),
+        tmax_f=max(temps),
+        tmin_f=min(temps),
         source="METAR",
     )
 

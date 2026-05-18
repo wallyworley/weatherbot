@@ -49,7 +49,7 @@ class Signal:
     notes: str = ""
     skip_reason: str | None = None  # 'DIVERGENCE' | 'NO_EDGE' | 'FEE_LOAD' | 'NO_BOOK' |
                                      # 'TRIPWIRE_RED' | 'BIAS_GATE' | 'AGREEMENT' |
-                                     # 'PROFIT_GATE' | None
+                                     # 'PROFIT_GATE' | 'INTRADAY_SQUEEZE' | None
     model_votes: dict | None = None  # {"NBM":"YES","HRRR":"YES","GFS":"NO","n_yes":2,"n_no":1,...}
     reversal_risk: dict | None = None  # {"score":0.42,"label":"MEDIUM","components":{...}}
 

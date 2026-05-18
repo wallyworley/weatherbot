@@ -321,6 +321,25 @@ def build_station_distribution(
                 staleness = max(0.0, 1.0 - (age_h - _STALE_FULL_H) / (_STALE_ZERO_H - _STALE_FULL_H))
 
         effective_bias = shrink * raw_bias * staleness
+        # Magnitude guardrail: an effective bias above this magnitude is a
+        # symptom of upstream data corruption, not real model error. The KMIA
+        # 2026-05-17 incident saw a learned +7.25F bias driven by daily_obs
+        # values that were the overnight LOW mislabeled as daily TMAX (live
+        # cron coverage bug). Applying that bias inverted the forecast and
+        # produced a fair=0.53 trade against a market at 0.26. Zero out and
+        # log loudly so the dashboard surfaces the upstream problem.
+        _SANE_BIAS_MAGNITUDE_F = 4.0
+        bias_clamped = False
+        if abs(effective_bias) > _SANE_BIAS_MAGNITUDE_F:
+            log.error(
+                "Bias guardrail tripped: %s/%s lead=%d cycle=%s effective=%+.2fF "
+                "exceeds +-%.1fF cap. Likely daily_obs corruption upstream. "
+                "Zeroing bias for this query; investigate station_bias + daily_obs.",
+                station, var, lead_day, nbm_cycle_hour,
+                effective_bias, _SANE_BIAS_MAGNITUDE_F,
+            )
+            effective_bias = 0.0
+            bias_clamped = True
         cdf.shift -= effective_bias
         log.info(
             "Bias shrink %s/NBM_QMD/%s/m%d/l%d: n=%d raw=%+.2f se=%.2f shrink=%.2f stale=%.2f applied=%+.2f",
@@ -336,6 +355,10 @@ def build_station_distribution(
         # that lost 7-of-8. Tightening to 1.10x improved Brier 0.139→0.133 and
         # replay P&L by ~$20 while preserving high-divergence (>=0.40) home runs.
         _MAX_WIDEN_FACTOR = max_widen_factor_for_lead(lead_day)
+        if bias_clamped:
+            # Same row that produced the implausible mean also produced the
+            # stddev; don't trust either. Fall back to the unmodified NBM CDF.
+            target_std = 0
         if target_std > 0 and len(cdf.values) >= 2:
             cur_p90 = float(np.interp(0.90, cdf.probs, cdf.values))
             cur_p10 = float(np.interp(0.10, cdf.probs, cdf.values))
