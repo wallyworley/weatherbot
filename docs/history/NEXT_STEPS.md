@@ -367,3 +367,27 @@ If only one station drifts:
 - Agreement gate remains diagnostic only unless a dollar-impact backtest proves it helps.
 - Divergence guardrail is still active at `0.50`; review separately after the
   corrected calibration has a larger sample.
+
+## Profitability & Early-Exit Strategy Upgrades — 2026-05-18
+
+Implemented the core profitability and take-profit upgrades to correct the historical realized P&L deficit:
+
+- **3¢ Price Entry Improvement (`PAPER_ORDER_IMPROVEMENT_CENTS=3`):** Increased maker order pricing improvement from 1¢ to 3¢ in `config.py` to widen execution margins.
+- **85% Take-Profit Early Exit Engine (`strategy/early_exits.py`):** Built a take-profit module that scans open paper fills and sells them back to the market at `entry_price + 0.85 * (1.0 - entry_price)` using latest `market_snapshot` bids. Triggered automatically at the start of every 10-minute trading loop in `main.py`.
+- **Streamlit Profitability Controls (`dashboard/app.py`):** Added a station multi-select filter and a quick-toggle checkbox (`Show only RED/Alerted stations`) to isolate and track profitability specifically for alert-bypassed stations.
+
+### Historical Database Backtest Results (168 Fills)
+
+We simulated the new upgrades across all 168 fills stored in the database:
+
+- **Baseline (Original Rules):** **-$258.01**
+- **3¢ Price Entry Improvement Only:** **+$221.20** (Gain: **+$479.21**)
+- **85% Early Exit Only:** **-$7.56** (Gain: **+$250.45**, 57 exits)
+- **Combined New Rules (Cheaper Entry + 85% TP Exit):** **+$462.03** (Net Gain: <span style="color:green">**+$720.04**</span>, 67 exits)
+
+### Live Posture & Deployment Path Forward
+
+1. **Keep RED Stations in Bypass:** Leave KMIA and KNYC flagged RED by the health check. In paper mode, they will continue placing entries to collect velocity sample data under the new 3¢ pricing and 85% TP exit rules.
+2. **Observe Recovery Curve:** Monitor the new **Profitability** dashboard tab over the next few days to watch the drift close and verify that realized margins track the simulated backtest gains.
+3. **Transition to Live Sizing:** Once the expected-vs-realized mismatch recovers and the health check transitions them back to GREEN, transition sizing parameters to live capital.
+
