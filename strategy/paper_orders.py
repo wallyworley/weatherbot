@@ -66,9 +66,7 @@ def fill_price_if_executable(order: dict, snapshot: dict, require_size: bool = T
         return None
     if executable.price > float(order["limit_price"]):
         return None
-    if require_size and executable.size is None:
-        return None
-    if executable.size is not None and executable.size < int(order["contracts"]):
+    if require_size and executable.size is not None and executable.size < int(order["contracts"]):
         return None
     # A resting maker bid is credited at its limit, not a later lower ask, to
     # avoid over-crediting paper fills with price improvement we did not prove.
