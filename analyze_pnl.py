@@ -16,6 +16,12 @@ from weather_bot.data.persistence import connect
 def analyze_pnl():
     """Query settled trades and calculate statistics."""
 
+    # paper_fill.payout is the *per-contract* gross win ($1 on a win, $0 on a
+    # loss), written by jobs.settle_paper_fills. Net PnL is therefore
+    # (payout - price) * contracts - fees -- the same formula as
+    # jobs.paper_report. An earlier version of this file treated payout as
+    # the total dollar receipt, which under-reported every winning trade by
+    # ~$(contracts - 1) dollars.
     sql = """
     SELECT
       pf.id,
@@ -27,7 +33,7 @@ def analyze_pnl():
       pf.payout,
       pf.settled,
       pf.ts,
-      ROUND(COALESCE(pf.payout - (pf.contracts::numeric * pf.price + pf.fees), 0)::numeric, 2) as realized_pnl
+      ROUND(COALESCE((pf.payout - pf.price) * pf.contracts - pf.fees, 0)::numeric, 2) as realized_pnl
     FROM paper_fill pf
     WHERE pf.settled = true OR pf.payout IS NOT NULL
     ORDER BY pf.ts DESC;
