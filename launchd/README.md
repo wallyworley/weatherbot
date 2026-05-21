@@ -9,6 +9,7 @@ shell script to `~/Library/Scripts/`, then `launchctl bootstrap` it.
 | Template | Purpose | Cadence |
 |---|---|---|
 | `com.walter.weatherbot-gfs.plist` + `weatherbot-gfs.sh` | Pull GFS forecasts via Open-Meteo into `det_forecast` | Hourly at :17 |
+| `com.walter.weatherbot-ecmwf.plist` + `weatherbot-ecmwf.sh` | Pull ECMWF forecasts via Open-Meteo into `det_forecast` | Hourly at :27 |
 | `com.walter.weatherbot-cli.plist` + `weatherbot-cli.sh` | Pull NWS CLI (Daily Climate Report) into `cli_obs` — Kalshi NHIGH settlement source | Daily at 9:23 AM ET |
 | `com.walter.weatherbot-calibration-drift.plist` + `weatherbot-calibration-drift.sh` | Weekly per-bucket calibration snapshot + drift detector | Sundays at 8:23 AM |
 | `com.walter.weatherbot-atmos.plist` + `weatherbot-atmos.sh` | Pull atmospheric signals (BL height, 850/925mb temps, cloud, solar) into `atmosphere_signals` | Hourly at :11 |
@@ -55,6 +56,6 @@ Off-minutes spread the load and reduce timeout chance.
 
 ## Cadence rationale
 
-- **GFS hourly**: Open-Meteo serves the latest GFS run with ~1h lag. Hourly catches each new run within ~1.3h of the model cycle. Adequate for daily-temperature markets (we don't need sub-hourly forecast freshness).
+- **GFS/ECMWF hourly**: Open-Meteo serves the latest deterministic runs with lag. Hourly catches each new run promptly even though the model cycles themselves are 6-hourly. Adequate for daily-temperature markets (we don't need sub-hourly forecast freshness).
 - **CLI daily 9:23 AM ET**: Morning CLI (the YESTERDAY-data, settlement-grade issuance) is published ~6–8 AM ET depending on the WFO. 9:23 ET gives the latest east-coast WFO time to publish, well before the afternoon intraday CLI starts confusing things.
 - **Calibration weekly**: aggregate Brier shifts on the order of 0.005–0.01/week with normal trade volume. Weekly cadence catches meaningful drift while avoiding noisy daily fluctuations.
