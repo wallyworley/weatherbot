@@ -57,6 +57,8 @@ def _load_settled_fills(days_back: int) -> list[dict]:
       FROM paper_fill pf
       JOIN kalshi_market km ON km.ticker = pf.ticker
      WHERE pf.settled = TRUE
+       AND pf.exit_price IS NULL
+       AND pf.payout IS NOT NULL
        AND km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
        AND km.var = 'TMAX_DAILY'
      ORDER BY km.valid_date, pf.id

@@ -159,6 +159,8 @@ def _model_calibration(thresholds: dict) -> list[dict]:
           JOIN kalshi_market km ON km.ticker = pf.ticker
           JOIN signal s ON s.id = pf.signal_id
          WHERE pf.settled = TRUE
+           AND pf.exit_price IS NULL
+           AND pf.payout IS NOT NULL
            AND km.valid_date >= CURRENT_DATE - INTERVAL '7 days'
            AND s.fair_prob IS NOT NULL
     )
@@ -270,7 +272,13 @@ def _risk_exposure(thresholds: dict) -> list[dict]:
 def _pnl_7d(thresholds: dict) -> list[dict]:
     rows: list[dict] = []
     sql = """SELECT km.station,
-                    SUM((pf.payout - pf.price) * pf.contracts - pf.fees) AS net
+                    SUM(CASE
+                        WHEN pf.exit_price IS NOT NULL
+                            THEN (pf.exit_price - pf.price) * pf.contracts - pf.fees - COALESCE(pf.exit_fees, 0)
+                        WHEN pf.payout IS NOT NULL
+                            THEN (pf.payout - pf.price) * pf.contracts - pf.fees
+                        ELSE 0
+                    END) AS net
                FROM paper_fill pf
                JOIN kalshi_market km ON km.ticker = pf.ticker
               WHERE pf.settled = TRUE

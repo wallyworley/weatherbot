@@ -45,9 +45,11 @@ def _maker_wait_replay(days_back: int, improvement_cents: int = 1) -> list[dict]
                pf.payout,
                km.valid_date,
                GREATEST(0.01, pf.price - (%(improvement_cents)s / 100.0)) AS target_price
-          FROM paper_fill pf
+         FROM paper_fill pf
           JOIN kalshi_market km ON km.ticker = pf.ticker
          WHERE pf.settled = TRUE
+           AND pf.exit_price IS NULL
+           AND pf.payout IS NOT NULL
            AND km.valid_date >= CURRENT_DATE - (%(days_back)s || ' days')::interval
     ), first_better AS (
         SELECT f.id, MIN(ms.ts) AS fill_ts
@@ -81,9 +83,11 @@ def _early_exit_replay(days_back: int, gain_fraction: float = 0.70) -> list[dict
                CEIL((0.07 * pf.contracts * pf.price * (1.0 - pf.price)) * 100) / 100.0 AS fees,
                pf.payout, km.valid_date,
                pf.price + %(gain_fraction)s * (1.0 - pf.price) AS target_exit
-          FROM paper_fill pf
+         FROM paper_fill pf
           JOIN kalshi_market km ON km.ticker = pf.ticker
          WHERE pf.settled = TRUE
+           AND pf.exit_price IS NULL
+           AND pf.payout IS NOT NULL
            AND km.valid_date >= CURRENT_DATE - (%(days_back)s || ' days')::interval
     ), first_exit AS (
         SELECT f.id, MIN(ms.ts) AS exit_ts

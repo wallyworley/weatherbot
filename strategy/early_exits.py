@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from psycopg.rows import dict_row
 
 from weather_bot.data import persistence
+from weather_bot.strategy import ev
 
 log = logging.getLogger(__name__)
 
@@ -79,23 +80,33 @@ def process_early_exits(threshold: float = 0.85) -> ExitSummary:
         # Progress toward max gain
         progress = gain / max_gain if max_gain > 0 else 0.0
         if progress >= threshold:
-            # Settle the paper fill at the exit_bid price
-            persistence.settle_paper_fill(int(r["id"]), payout=exit_bid)
+            contracts = int(r["contracts"])
+            entry_fees = float(r["fees"])
+            exit_fees = ev.fee_for_order(exit_bid, contracts)
+            persistence.close_paper_fill_early(
+                int(r["id"]),
+                exit_price=exit_bid,
+                exit_fees=exit_fees,
+                exit_snapshot_ts=r["snapshot_ts"],
+                exit_reason=f"TAKE_PROFIT_{threshold:.2f}",
+            )
             exited += 1
 
             # Log transaction details
-            gross_pnl = (exit_bid - entry_price) * int(r["contracts"])
-            net_pnl = gross_pnl - float(r["fees"])
+            gross_pnl = (exit_bid - entry_price) * contracts
+            net_pnl = gross_pnl - entry_fees - exit_fees
             log.info(
-                "TAKE PROFIT TRIGGERED: Fill %d %s %s early-exited @%.2f (entry %.2f) progress=%.1f%% contracts=%d | Gross=$%+.2f Net=$%+.2f",
+                "TAKE PROFIT TRIGGERED: Fill %d %s %s early-exited @%.2f (entry %.2f) progress=%.1f%% contracts=%d | Gross=$%+.2f EntryFees=$%.2f ExitFees=$%.2f Net=$%+.2f",
                 r["id"],
                 r["ticker"],
                 r["side"],
                 exit_bid,
                 entry_price,
                 progress * 100.0,
-                r["contracts"],
+                contracts,
                 gross_pnl,
+                entry_fees,
+                exit_fees,
                 net_pnl,
             )
 

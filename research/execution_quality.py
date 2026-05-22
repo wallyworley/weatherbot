@@ -61,6 +61,7 @@ def _fetch_rows(days_back: int) -> list[FillExecutionRow]:
     WITH fills AS (
         SELECT pf.id AS fill_id, pf.ticker, km.station, km.valid_date, pf.side,
                pf.ts, pf.price, pf.contracts, pf.fees, pf.settled, pf.payout,
+               pf.exit_price, pf.exit_fees,
                s.fair_prob, s.edge, s.size_usd
           FROM paper_fill pf
           JOIN signal s ON s.id = pf.signal_id
@@ -68,7 +69,13 @@ def _fetch_rows(days_back: int) -> list[FillExecutionRow]:
          WHERE pf.ts >= now() - (%(days_back)s || ' days')::interval
     )
     SELECT f.*,
-           CASE WHEN f.settled THEN (COALESCE(f.payout, 0) - f.price) * f.contracts - f.fees END AS net_pnl,
+           CASE
+             WHEN f.exit_price IS NOT NULL
+               THEN (f.exit_price - f.price) * f.contracts - f.fees - COALESCE(f.exit_fees, 0)
+             WHEN f.payout IS NOT NULL
+               THEN (f.payout - f.price) * f.contracts - f.fees
+             ELSE NULL
+           END AS net_pnl,
            EXTRACT(EPOCH FROM (f.ts - snap.ts)) AS snapshot_age_sec,
            CASE WHEN f.side = 'YES' THEN snap.yes_ask ELSE snap.no_ask END::float AS book_ask,
            CASE WHEN f.side = 'YES' THEN snap.yes_bid ELSE snap.no_bid END::float AS book_bid,

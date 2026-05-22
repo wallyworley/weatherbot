@@ -583,9 +583,48 @@ def list_unsettled_paper_fills() -> list[dict]:
 
 
 def settle_paper_fill(fill_id: int, payout: float) -> None:
-    sql = "UPDATE paper_fill SET settled=TRUE, payout=%s WHERE id=%s"
+    sql = """
+    UPDATE paper_fill
+       SET settled=TRUE,
+           payout=%s,
+           exit_price=NULL,
+           exit_fees=0.0,
+           exit_ts=NULL,
+           exit_snapshot_ts=NULL,
+           exit_reason=NULL
+     WHERE id=%s
+       AND exit_price IS NULL
+    """
     with connect() as conn, conn.cursor() as cur:
         cur.execute(sql, (payout, fill_id))
+        conn.commit()
+
+
+def close_paper_fill_early(
+    fill_id: int,
+    exit_price: float,
+    exit_fees: float,
+    exit_snapshot_ts: datetime | None,
+    exit_reason: str = "TAKE_PROFIT",
+) -> None:
+    """Close a paper fill by selling it before settlement.
+
+    `payout` remains NULL because it is reserved for final settlement outcome.
+    """
+    sql = """
+    UPDATE paper_fill
+       SET settled=TRUE,
+           payout=NULL,
+           exit_price=%s,
+           exit_fees=%s,
+           exit_ts=now(),
+           exit_snapshot_ts=%s,
+           exit_reason=%s
+     WHERE id=%s
+       AND settled=FALSE
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, (exit_price, exit_fees, exit_snapshot_ts, exit_reason, fill_id))
         conn.commit()
 
 

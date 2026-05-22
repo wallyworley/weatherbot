@@ -16,12 +16,9 @@ from weather_bot.data.persistence import connect
 def analyze_pnl():
     """Query settled trades and calculate statistics."""
 
-    # paper_fill.payout is the *per-contract* gross win ($1 on a win, $0 on a
-    # loss), written by jobs.settle_paper_fills. Net PnL is therefore
-    # (payout - price) * contracts - fees -- the same formula as
-    # jobs.paper_report. An earlier version of this file treated payout as
-    # the total dollar receipt, which under-reported every winning trade by
-    # ~$(contracts - 1) dollars.
+    # paper_fill.payout is the *per-contract* final settlement outcome ($1 win,
+    # $0 loss). Early exits use exit_price/exit_fees instead, so final-settlement
+    # calibration cannot mistake an exit price like 0.96 for "won at settlement."
     sql = """
     SELECT
       pf.id,
@@ -31,11 +28,22 @@ def analyze_pnl():
       pf.contracts,
       pf.fees,
       pf.payout,
+      pf.exit_price,
+      pf.exit_fees,
+      pf.exit_ts,
       pf.settled,
       pf.ts,
-      ROUND(COALESCE((pf.payout - pf.price) * pf.contracts - pf.fees, 0)::numeric, 2) as realized_pnl
+      ROUND(COALESCE((
+          CASE
+            WHEN pf.exit_price IS NOT NULL
+              THEN (pf.exit_price - pf.price) * pf.contracts - pf.fees - COALESCE(pf.exit_fees, 0)
+            WHEN pf.payout IS NOT NULL
+              THEN (pf.payout - pf.price) * pf.contracts - pf.fees
+            ELSE NULL
+          END
+      ), 0)::numeric, 2) as realized_pnl
     FROM paper_fill pf
-    WHERE pf.settled = true OR pf.payout IS NOT NULL
+    WHERE pf.settled = true OR pf.payout IS NOT NULL OR pf.exit_price IS NOT NULL
     ORDER BY pf.ts DESC;
     """
 
@@ -57,6 +65,7 @@ def analyze_pnl():
             'contracts': int(t['contracts']),
             'fees': float(t['fees']),
             'payout': float(t['payout']) if t['payout'] else 0,
+            'exit_price': float(t['exit_price']) if t['exit_price'] is not None else None,
             'settled': t['settled'],
             'ts': t['ts'],
             'pnl': float(t['realized_pnl'])
@@ -91,11 +100,11 @@ def analyze_pnl():
     print(f"Worst trade:             ${max_loss:,.2f}")
 
     # Detailed trades
-    print(f"\n{'ID':<6} {'Ticker':<20} {'Side':<4} {'Entry':<7} {'Contracts':<10} {'PnL':<10} {'Settled'}")
+    print(f"\n{'ID':<6} {'Ticker':<20} {'Side':<4} {'Entry':<7} {'Contracts':<10} {'PnL':<10} {'Status'}")
     print("-"*70)
     for t in trade_list:
-        settled_str = "✓" if t['settled'] else "○"
-        print(f"{t['id']:<6} {t['ticker']:<20} {t['side']:<4} ${t['entry_price']:<6.3f} {t['contracts']:<10} ${t['pnl']:<9,.2f} {settled_str}")
+        status = "EXIT" if t["exit_price"] is not None else ("SETTLED" if t['settled'] else "OPEN")
+        print(f"{t['id']:<6} {t['ticker']:<20} {t['side']:<4} ${t['entry_price']:<6.3f} {t['contracts']:<10} ${t['pnl']:<9,.2f} {status}")
 
     print("\n" + "="*70)
 

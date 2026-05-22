@@ -19,6 +19,26 @@ from datetime import date, timedelta
 
 from weather_bot.data import persistence
 
+REALIZED_PNL_SQL = """
+CASE
+    WHEN pf.exit_price IS NOT NULL
+        THEN (pf.exit_price - pf.price) * pf.contracts - pf.fees - COALESCE(pf.exit_fees, 0)
+    WHEN pf.payout IS NOT NULL
+        THEN (pf.payout - pf.price) * pf.contracts - pf.fees
+    ELSE NULL
+END
+"""
+
+GROSS_PNL_SQL = """
+CASE
+    WHEN pf.exit_price IS NOT NULL
+        THEN (pf.exit_price - pf.price) * pf.contracts
+    WHEN pf.payout IS NOT NULL
+        THEN (pf.payout - pf.price) * pf.contracts
+    ELSE NULL
+END
+"""
+
 
 def _hr(title: str):
     print()
@@ -31,19 +51,25 @@ def _overall_stats(cur, days: int) -> None:
     _hr(f"OVERALL — last {days} days")
     cur.execute(
         """
+        WITH fills AS (
+            SELECT pf.*,
+                   {realized_pnl} AS realized_pnl,
+                   {gross_pnl} AS gross_pnl
+              FROM paper_fill pf
+             WHERE pf.ts >= (CURRENT_DATE - %s::INT)
+        )
         SELECT
             COUNT(*)                                               AS n_total,
             COUNT(*) FILTER (WHERE settled)                        AS n_settled,
-            COUNT(*) FILTER (WHERE settled AND payout > 0)         AS n_wins,
+            COUNT(*) FILTER (WHERE settled AND exit_price IS NOT NULL) AS n_exited,
+            COUNT(*) FILTER (WHERE settled AND exit_price IS NULL AND payout IS NOT NULL) AS n_final,
+            COUNT(*) FILTER (WHERE settled AND realized_pnl > 0)   AS n_profitable,
             COALESCE(SUM(price * contracts), 0)                    AS notional,
-            COALESCE(SUM(fees), 0)                                 AS fees,
-            COALESCE(SUM(CASE WHEN settled
-                              THEN (payout - price) * contracts - fees END), 0) AS net_pnl,
-            COALESCE(SUM(CASE WHEN settled
-                              THEN (payout - price) * contracts END), 0)        AS gross_pnl
-        FROM paper_fill
-        WHERE ts >= (CURRENT_DATE - %s::INT)
-        """,
+            COALESCE(SUM(fees + COALESCE(exit_fees, 0)), 0)        AS fees,
+            COALESCE(SUM(CASE WHEN settled THEN realized_pnl END), 0) AS net_pnl,
+            COALESCE(SUM(CASE WHEN settled THEN gross_pnl END), 0) AS gross_pnl
+        FROM fills
+        """.format(realized_pnl=REALIZED_PNL_SQL, gross_pnl=GROSS_PNL_SQL),
         (days,),
     )
     r = cur.fetchone()
@@ -52,17 +78,19 @@ def _overall_stats(cur, days: int) -> None:
         return
 
     settled = r["n_settled"] or 0
-    wins = r["n_wins"] or 0
+    profitable = r["n_profitable"] or 0
+    exited = r["n_exited"] or 0
+    final = r["n_final"] or 0
     net = float(r["net_pnl"] or 0)
     gross = float(r["gross_pnl"] or 0)
     notional = float(r["notional"] or 0)
     fees = float(r["fees"] or 0)
 
     print(f"  fills total      : {r['n_total']}")
-    print(f"  fills settled    : {settled}")
+    print(f"  fills closed     : {settled}  ({final} final, {exited} early exits)")
     if settled:
-        print(f"  wins / losses    : {wins} / {settled - wins}  "
-              f"({100*wins/settled:.1f}% win rate)")
+        print(f"  profitable / loss: {profitable} / {settled - profitable}  "
+              f"({100*profitable/settled:.1f}% profitable)")
     print(f"  notional staked  : ${notional:,.2f}")
     print(f"  fees             : ${fees:,.2f}")
     print(f"  gross P&L        : ${gross:+,.2f}")
@@ -80,6 +108,8 @@ def _edge_realization(cur, days: int) -> None:
         FROM paper_fill pf
         LEFT JOIN signal s ON s.id = pf.signal_id
         WHERE pf.settled = TRUE
+          AND pf.exit_price IS NULL
+          AND pf.payout IS NOT NULL
           AND pf.ts >= (CURRENT_DATE - %s::INT)
         """,
         (days,),
@@ -96,7 +126,7 @@ def _edge_realization(cur, days: int) -> None:
         exp_total += (r["expected_edge"] or 0) * r["contracts"]
         real_total += per_contract_real * r["contracts"]
     n = len(rows)
-    print(f"  settled fills    : {n}")
+    print(f"  final-settled fills: {n}  (early exits excluded from calibration)")
     print(f"  expected edge ∑  : ${exp_total:+,.2f}   "
           f"(avg ${exp_total/n:+,.4f} per contract)")
     print(f"  realized edge ∑  : ${real_total:+,.2f}  "
@@ -109,33 +139,39 @@ def _per_day_breakdown(cur, days: int) -> None:
     _hr(f"PER-DAY — last {days} days")
     cur.execute(
         """
+        WITH fills AS (
+            SELECT pf.*,
+                   {realized_pnl} AS realized_pnl
+              FROM paper_fill pf
+        )
         SELECT km.valid_date AS d,
                COUNT(*)                                         AS n,
-               COUNT(*) FILTER (WHERE pf.settled)               AS n_settled,
-               COUNT(*) FILTER (WHERE pf.settled AND pf.payout>0) AS wins,
+               COUNT(*) FILTER (WHERE pf.settled)               AS n_closed,
+               COUNT(*) FILTER (WHERE pf.settled AND pf.exit_price IS NOT NULL) AS n_exited,
+               COUNT(*) FILTER (WHERE pf.settled AND realized_pnl > 0) AS profitable,
                SUM(pf.price * pf.contracts)                     AS notional,
-               SUM(CASE WHEN pf.settled
-                        THEN (pf.payout - pf.price) * pf.contracts - pf.fees END) AS net_pnl
-        FROM paper_fill pf
+               SUM(CASE WHEN pf.settled THEN realized_pnl END)  AS net_pnl
+        FROM fills pf
         JOIN kalshi_market km ON km.ticker = pf.ticker
         WHERE km.valid_date >= (CURRENT_DATE - %s::INT)
         GROUP BY km.valid_date
         ORDER BY km.valid_date DESC
-        """,
+        """.format(realized_pnl=REALIZED_PNL_SQL),
         (days,),
     )
     rows = cur.fetchall()
     if not rows:
         print("  (no activity)")
         return
-    print(f"  {'date':<12} {'fills':>6} {'settled':>8} {'wins':>5} "
+    print(f"  {'date':<12} {'fills':>6} {'closed':>8} {'exits':>5} {'prof':>5} "
           f"{'notional':>10} {'net P&L':>10}")
     for r in rows:
         net = r["net_pnl"]
         net_txt = f"${float(net):+,.2f}" if net is not None else "       -"
         print(
-            f"  {str(r['d']):<12} {r['n']:>6} {r['n_settled']:>8} "
-            f"{r['wins'] or 0:>5} ${float(r['notional']):>9,.2f} {net_txt:>10}"
+            f"  {str(r['d']):<12} {r['n']:>6} {r['n_closed']:>8} "
+            f"{r['n_exited'] or 0:>5} {r['profitable'] or 0:>5} "
+            f"${float(r['notional']):>9,.2f} {net_txt:>10}"
         )
 
 

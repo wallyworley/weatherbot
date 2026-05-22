@@ -167,6 +167,8 @@ def backtest(start_date: date = None, end_date: date = None):
     FROM paper_fill pf
     JOIN kalshi_market m ON m.ticker = pf.ticker
     WHERE pf.settled = TRUE
+      AND pf.exit_price IS NULL
+      AND pf.payout IS NOT NULL
       AND pf.ts::date BETWEEN %(start_date)s AND %(end_date)s
     ORDER BY pf.ts DESC
     """

@@ -64,6 +64,8 @@ def profile_calibration(start_date: date = None, end_date: date = None):
         JOIN signal s ON s.id = pf.signal_id
         JOIN stations st ON st.code = m.station
         WHERE pf.settled = TRUE
+          AND pf.exit_price IS NULL
+          AND pf.payout IS NOT NULL
           AND pf.ts::date BETWEEN %(start_date)s AND %(end_date)s
           AND s.fair_prob IS NOT NULL
     )

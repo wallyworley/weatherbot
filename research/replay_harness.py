@@ -123,6 +123,7 @@ def _settled_fills(days_back: int) -> list[dict]:
       JOIN kalshi_market km ON km.ticker = pf.ticker
       LEFT JOIN signal s ON s.id = pf.signal_id
      WHERE pf.settled = TRUE
+       AND pf.exit_price IS NULL
        AND pf.payout IS NOT NULL
        AND pf.ts >= NOW() - (%s || ' days')::interval
      ORDER BY pf.ts

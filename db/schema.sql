@@ -205,6 +205,15 @@ CREATE TABLE IF NOT EXISTS paper_fill (
     settled     BOOLEAN NOT NULL DEFAULT FALSE,
     payout      DOUBLE PRECISION
 );
+-- Early exits close a paper fill before final settlement. Keep `payout` reserved
+-- for final per-contract settlement outcome (1.0 win / 0.0 loss); exit proceeds
+-- live in separate fields so calibration can ignore exited trades.
+ALTER TABLE paper_fill ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION;
+ALTER TABLE paper_fill ADD COLUMN IF NOT EXISTS exit_fees DOUBLE PRECISION DEFAULT 0.0;
+ALTER TABLE paper_fill ADD COLUMN IF NOT EXISTS exit_ts TIMESTAMPTZ;
+ALTER TABLE paper_fill ADD COLUMN IF NOT EXISTS exit_snapshot_ts TIMESTAMPTZ;
+ALTER TABLE paper_fill ADD COLUMN IF NOT EXISTS exit_reason TEXT;
+CREATE INDEX IF NOT EXISTS idx_paper_fill_exit ON paper_fill (exit_ts) WHERE exit_price IS NOT NULL;
 
 -- Pending paper orders model a maker-first workflow instead of assuming every
 -- qualifying signal immediately crosses the spread. The processor fills them

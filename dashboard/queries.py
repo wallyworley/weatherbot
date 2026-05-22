@@ -13,6 +13,16 @@ from weather_bot.data import persistence
 _CACHE_TTL_SECONDS = 12
 _DF_CACHE: dict[tuple[str, object], tuple[float, pd.DataFrame]] = {}
 
+REALIZED_PNL_SQL = """
+CASE
+    WHEN pf.exit_price IS NOT NULL
+        THEN (pf.exit_price - pf.price) * pf.contracts - pf.fees - COALESCE(pf.exit_fees, 0)
+    WHEN pf.payout IS NOT NULL
+        THEN (pf.payout - pf.price) * pf.contracts - pf.fees
+    ELSE NULL
+END
+"""
+
 
 def _freeze(value):
     """Make DB params hashable for the dashboard's short-lived query cache."""
@@ -168,6 +178,7 @@ def profitability_slices(days_back: int = 30) -> pd.DataFrame:
     return _df("""
     WITH fills AS (
         SELECT pf.id, pf.ts, pf.ticker, pf.side, pf.price, pf.contracts, pf.payout,
+               pf.exit_price, pf.exit_fees,
                CEIL((0.07 * pf.contracts * pf.price * (1.0 - pf.price)) * 100) / 100.0 AS fees,
                km.station,
                km.valid_date,
@@ -178,9 +189,8 @@ def profitability_slices(days_back: int = 30) -> pd.DataFrame:
                    WHEN pf.price < 0.75 THEN '50-75c'
                    ELSE '75c+'
                END AS price_band,
-               CASE WHEN pf.payout > 0 THEN 1 ELSE 0 END AS won,
-               (pf.payout - pf.price) * pf.contracts
-                   - CEIL((0.07 * pf.contracts * pf.price * (1.0 - pf.price)) * 100) / 100.0 AS net_pnl,
+               CASE WHEN {realized_pnl} > 0 THEN 1 ELSE 0 END AS won,
+               {realized_pnl} AS net_pnl,
                ((CASE WHEN pf.side='YES' THEN s.fair_prob ELSE 1.0 - s.fair_prob END) - pf.price)
                    * pf.contracts
                    - CEIL((0.07 * pf.contracts * pf.price * (1.0 - pf.price)) * 100) / 100.0 AS model_claimed_ev
@@ -206,16 +216,17 @@ def profitability_slices(days_back: int = 30) -> pd.DataFrame:
       FROM fills
      GROUP BY station, lead_day, side, price_band
      ORDER BY net_pnl ASC
-    """, (days_back,))
+    """.format(realized_pnl=REALIZED_PNL_SQL), (days_back,))
 
 
 def per_fill_ledger(days_back: int = 14) -> pd.DataFrame:
     return _df("""
         SELECT pf.id, pf.ts AS fill_ts, pf.ticker, pf.side, pf.price, pf.contracts,
-               pf.fees, pf.payout, pf.settled, km.station, km.var, km.valid_date,
+               pf.fees, pf.payout, pf.exit_price, pf.exit_fees, pf.exit_ts,
+               pf.exit_reason, pf.settled, km.station, km.var, km.valid_date,
                km.lower_f, km.upper_f,
                s.fair_prob, s.market_ask, s.market_bid,
-               (pf.payout - pf.price) * pf.contracts - pf.fees AS realized_pnl,
+               {realized_pnl} AS realized_pnl,
                ((CASE WHEN pf.side='YES' THEN s.fair_prob ELSE 1.0 - s.fair_prob END) * (1 - pf.price)
                 - (1 - (CASE WHEN pf.side='YES' THEN s.fair_prob ELSE 1.0 - s.fair_prob END)) * pf.price)
                 * pf.contracts - pf.fees AS expected_pnl,
@@ -225,7 +236,7 @@ def per_fill_ledger(days_back: int = 14) -> pd.DataFrame:
           LEFT JOIN signal s ON s.id = pf.signal_id
          WHERE km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
          ORDER BY pf.ts DESC
-    """, (days_back,))
+    """.format(realized_pnl=REALIZED_PNL_SQL), (days_back,))
 
 
 def daily_calibration(days_back: int = 14) -> pd.DataFrame:
@@ -241,6 +252,8 @@ def daily_calibration(days_back: int = 14) -> pd.DataFrame:
           JOIN kalshi_market km ON km.ticker = pf.ticker
           JOIN signal s ON s.id = pf.signal_id
          WHERE pf.settled = TRUE
+           AND pf.exit_price IS NULL
+           AND pf.payout IS NOT NULL
            AND km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
            AND s.fair_prob IS NOT NULL
          GROUP BY km.valid_date, km.station
@@ -265,6 +278,8 @@ def bucket_calibration(days_back: int = 30, n_bins: int = 10) -> pd.DataFrame:
           JOIN kalshi_market km ON km.ticker = pf.ticker
           JOIN signal s ON s.id = pf.signal_id
          WHERE pf.settled = TRUE
+           AND pf.exit_price IS NULL
+           AND pf.payout IS NOT NULL
            AND km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
            AND s.fair_prob IS NOT NULL
     )
@@ -293,6 +308,8 @@ def reliability_bins(days_back: int = 30, station: str | None = None) -> pd.Data
           JOIN kalshi_market km ON km.ticker = pf.ticker
           JOIN signal s ON s.id = pf.signal_id
          WHERE pf.settled = TRUE
+           AND pf.exit_price IS NULL
+           AND pf.payout IS NOT NULL
            AND km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
            AND s.fair_prob IS NOT NULL
            AND (%s::text IS NULL OR km.station = %s)
@@ -760,12 +777,12 @@ def atmos_daily_features(station: str, target_date) -> dict | None:
 def pnl_today() -> dict:
     """Today's P&L: realized settled fills + mark-to-market on open positions for valid_date=today."""
     settled = _df("""
-        SELECT COALESCE(SUM((pf.payout - pf.price) * pf.contracts - pf.fees), 0.0) AS net,
+        SELECT COALESCE(SUM({realized_pnl}), 0.0) AS net,
                COUNT(*) AS n
           FROM paper_fill pf
           JOIN kalshi_market km ON km.ticker = pf.ticker
          WHERE pf.settled = TRUE AND km.valid_date = CURRENT_DATE
-    """)
+    """.format(realized_pnl=REALIZED_PNL_SQL))
     open_pos = _df("""
         SELECT pf.side, pf.price, pf.contracts, ms.yes_ask, ms.yes_bid
           FROM paper_fill pf
@@ -791,13 +808,17 @@ def pnl_today() -> dict:
 def pnl_yesterday() -> dict:
     """Yesterday's settled P&L (fills whose valid_date = yesterday and are settled)."""
     row = _df("""
-        SELECT COALESCE(SUM((pf.payout - pf.price) * pf.contracts - pf.fees), 0.0) AS net,
+        WITH fills AS (
+            SELECT {realized_pnl} AS realized_pnl
+              FROM paper_fill pf
+              JOIN kalshi_market km ON km.ticker = pf.ticker
+             WHERE pf.settled = TRUE AND km.valid_date = CURRENT_DATE - INTERVAL '1 day'
+        )
+        SELECT COALESCE(SUM(realized_pnl), 0.0) AS net,
                COUNT(*) AS n_fills,
-               COALESCE(SUM(CASE WHEN (pf.payout - pf.price) * pf.contracts - pf.fees > 0 THEN 1 ELSE 0 END), 0) AS n_wins
-          FROM paper_fill pf
-          JOIN kalshi_market km ON km.ticker = pf.ticker
-         WHERE pf.settled = TRUE AND km.valid_date = CURRENT_DATE - INTERVAL '1 day'
-    """)
+               COALESCE(SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END), 0) AS n_wins
+          FROM fills
+    """.format(realized_pnl=REALIZED_PNL_SQL))
     if row.empty or int(row.iloc[0]["n_fills"]) == 0:
         return {"net": None, "n_fills": 0, "n_wins": 0}
     return {

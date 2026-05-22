@@ -142,6 +142,8 @@ def replay(start: date, end: date, params: ReplayParams,
       JOIN kalshi_market km ON km.ticker = pf.ticker
       LEFT JOIN signal s ON s.id = pf.signal_id
      WHERE pf.settled = TRUE
+       AND pf.exit_price IS NULL
+       AND pf.payout IS NOT NULL
        AND km.valid_date BETWEEN %s AND %s
        AND (%s::text IS NULL OR km.station = %s)
      ORDER BY pf.ts

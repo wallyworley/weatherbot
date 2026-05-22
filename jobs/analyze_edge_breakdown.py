@@ -62,6 +62,8 @@ def _load_fills(days_back: int) -> list[FillRecord]:
       JOIN signal s ON s.id = pf.signal_id
       JOIN kalshi_market km ON km.ticker = pf.ticker
      WHERE pf.settled = TRUE
+       AND pf.exit_price IS NULL
+       AND pf.payout IS NOT NULL
        AND km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
        AND km.var = 'TMAX_DAILY'
        AND s.fair_prob IS NOT NULL
