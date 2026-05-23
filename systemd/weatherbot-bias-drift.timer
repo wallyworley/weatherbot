@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer for weatherbot bias-drift snapshot
+
+[Timer]
+# Run after retrain_bias so station_bias_history captures the latest bias table.
+OnCalendar=*-*-* 15:05:00 UTC
+Persistent=true
+Unit=weatherbot-job@bias_drift.service
+
+[Install]
+WantedBy=timers.target

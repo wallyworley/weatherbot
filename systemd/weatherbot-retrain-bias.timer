@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer for weatherbot station-bias retraining
+
+[Timer]
+# Run after the 13:23 UTC CLI capture and 14:23 UTC paper settlement.
+OnCalendar=*-*-* 14:45:00 UTC
+Persistent=true
+Unit=weatherbot-job@retrain_bias.service
+
+[Install]
+WantedBy=timers.target
