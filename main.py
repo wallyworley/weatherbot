@@ -41,6 +41,11 @@ from weather_bot.strategy.probability_calibration import calibrate_fair_probabil
 # while lead=0 KNYC YES carried +$482 — the only proven edge is same-day.
 MAX_LEAD_DAY_TO_TRADE = 0
 
+# Minimum NO contract price ($0.50). NO bets below this fade a strong YES
+# market (yes_bid > $0.50). 2026-05-24 audit: lead=0 NO bets at price <$0.50
+# went 0/6 for -$124. NO bets at price >=$0.50 were +$50 net across 14 fills.
+NO_PRICE_FLOOR = 0.50
+
 
 def _vote_for_bucket(point_est: float | None, lower_f: float | None, upper_f: float | None) -> str:
     """Map a point-estimate temp to a directional vote on a Kalshi range bucket."""
@@ -286,6 +291,13 @@ def run():
             sig.action = "SKIP"
             sig.skip_reason = "LEAD_DAY_GATE"
             sig.notes = f"LEAD_DAY_GATE|lead={lead_day}>max={MAX_LEAD_DAY_TO_TRADE} {sig.notes}"
+
+        if sig.action == "OPEN" and sig.side == "NO" and sig.market_bid is not None:
+            no_price = 1.0 - float(sig.market_bid)
+            if no_price < NO_PRICE_FLOOR:
+                sig.action = "SKIP"
+                sig.skip_reason = "NO_FADE_GATE"
+                sig.notes = f"NO_FADE_GATE|no_price={no_price:.3f}<{NO_PRICE_FLOOR} {sig.notes}"
 
         # Divergence bypass: when bias-corrected fair disagrees sharply with the
         # market, ask whether the bias table is the source of disagreement by
