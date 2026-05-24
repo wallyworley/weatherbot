@@ -48,6 +48,20 @@ STATIONS: dict[str, Station] = {
     "KATL": Station("KATL", "Atlanta Hartsfield",    33.6367, -84.4281, "America/New_York"),
     "KAUS": Station("KAUS", "Austin-Bergstrom",      30.1950, -97.6700, "America/Chicago"),
     "KPHL": Station("KPHL", "Philadelphia Intl",     39.8744, -75.2424, "America/New_York"),
+    # 2026-05-24 expansion: added 11 cities with live KXHIGH markets, fetch-only.
+    # Station chosen to match the NWS CLI source named in each market's
+    # rules_primary (verified via Kalshi API probe).
+    "KDCA": Station("KDCA", "Washington Reagan Natl", 38.8512, -77.0402, "America/New_York"),
+    "KBOS": Station("KBOS", "Boston Logan",           42.3656, -71.0096, "America/New_York"),
+    "KPHX": Station("KPHX", "Phoenix Sky Harbor",     33.4373, -112.0078, "America/Phoenix"),
+    "KDFW": Station("KDFW", "Dallas-Fort Worth",      32.8998, -97.0403, "America/Chicago"),
+    "KSFO": Station("KSFO", "San Francisco Intl",     37.6213, -122.3790, "America/Los_Angeles"),
+    "KSEA": Station("KSEA", "Seattle-Tacoma",         47.4502, -122.3088, "America/Los_Angeles"),
+    "KLAS": Station("KLAS", "Las Vegas Harry Reid",   36.0840, -115.1537, "America/Los_Angeles"),
+    "KMSY": Station("KMSY", "New Orleans Louis Armstrong", 29.9934, -90.2580, "America/Chicago"),
+    "KMSP": Station("KMSP", "Minneapolis-St Paul",    44.8848, -93.2223, "America/Chicago"),
+    "KSAT": Station("KSAT", "San Antonio Intl",       29.5337, -98.4698, "America/Chicago"),
+    "KOKC": Station("KOKC", "Oklahoma City Will Rogers", 35.3931, -97.6007, "America/Chicago"),
 }
 
 # Neighbor stations for spatial-gradient triangulation around each primary
@@ -84,7 +98,14 @@ NEIGHBOR_STATIONS: dict[str, list[Station]] = {
 # but only TRADE stations actually have markets scored and paper-filled.
 # A station graduates from fetch-only to trade-eligible once its bias table
 # has sample_size >= 10 for the current month at lead_day in {0,1,2}.
-ACTIVE_FETCH_STATIONS: list[str] = ["KNYC", "KMDW", "KMIA", "KLGA", "KORD"]
+ACTIVE_FETCH_STATIONS: list[str] = [
+    # Originally fetched (KLGA/KORD are neighbor stations, not Kalshi targets):
+    "KNYC", "KMDW", "KMIA", "KLGA", "KORD",
+    # 2026-05-24 expansion: fetch-only KXHIGH cities for bias accumulation.
+    # BIAS_GATE will block all trades until each cell has n>=10 — paper safe.
+    "KLAX", "KATL", "KDCA", "KPHL", "KDEN", "KBOS", "KPHX", "KAUS",
+    "KDFW", "KSFO", "KSEA", "KLAS", "KMSY", "KMSP", "KSAT", "KOKC",
+]
 # 2026-05-02: graduated KMDW + KMIA to active trading. All stations pass
 # bias gate at lead 0/1/2 per is_station_calibrated check. The pre-trade
 # BIAS_GATE remains the safety net.

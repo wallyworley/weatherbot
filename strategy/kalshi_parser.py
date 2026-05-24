@@ -27,21 +27,38 @@ from typing import Iterable
 log = logging.getLogger(__name__)
 
 STATION_BY_CODE = {
-    "NY":  "KNYC",
-    # CHI = Chicago Midway (KMDW), NOT O'Hare. Verified 2026-05-02 from Kalshi
-    # rule text: "highest temperature recorded at Chicago Midway, IL...".
-    # Previously incorrectly mapped to KORD.
-    "CHI": "KMDW",
-    "LA":  "KLAX",
-    "MIA": "KMIA",
-    "DEN": "KDEN",
-    "ATL": "KATL",
-    "AUS": "KAUS",
-    "PHL": "KPHL",
+    # Kalshi event-ticker city codes → ICAO station. The "T" prefix on some
+    # codes (TATL, TBOS, TDC, ...) is part of Kalshi's naming for newer
+    # series, not a separator — treat the whole code as opaque.
+    # All mappings verified 2026-05-24 via market `rules_primary` text.
+    "NY":    "KNYC",
+    # CHI = Chicago Midway (KMDW), NOT O'Hare.
+    "CHI":   "KMDW",
+    "LAX":   "KLAX",  # was "LA" — Kalshi never used that prefix
+    "MIA":   "KMIA",
+    "DEN":   "KDEN",
+    "TATL":  "KATL",  # was "ATL" — Kalshi uses TATL
+    "AUS":   "KAUS",
+    "PHIL":  "KPHL",  # was "PHL" — Kalshi uses PHIL
+    # 2026-05-24 expansion: fetch-only daily-high cities.
+    "TDC":   "KDCA",
+    "TBOS":  "KBOS",
+    "TPHX":  "KPHX",
+    "TDAL":  "KDFW",
+    "TSFO":  "KSFO",
+    "TSEA":  "KSEA",
+    "TLV":   "KLAS",
+    "TNOLA": "KMSY",
+    "TMIN":  "KMSP",
+    "TSATX": "KSAT",
+    "TOKC":  "KOKC",
 }
 
+# Build the regex alternation directly from STATION_BY_CODE so the two stay
+# in sync — adding a city only requires editing the dict above.
+_CITY_CODE_ALT = "|".join(sorted(STATION_BY_CODE.keys(), key=len, reverse=True))
 _EVENT_RE = re.compile(
-    r"^KX(HIGH|LOW)(NY|CHI|LA|MIA|DEN|ATL|AUS|PHL)-(\d{2}[A-Z]{3}\d{2})$"
+    rf"^KX(HIGH|LOW)({_CITY_CODE_ALT})-(\d{{2}}[A-Z]{{3}}\d{{2}})$"
 )
 
 

@@ -13,18 +13,39 @@ from weather_bot.strategy import kalshi_parser
 from weather_bot.strategy.kalshi_client import KalshiClient, iter_weather_markets
 
 SERIES_BY_STATION = {
+    # Series tickers verified against Kalshi API on 2026-05-24. Several earlier
+    # entries were silently wrong (e.g. "KXHIGHLA" → actual "KXHIGHLAX"); since
+    # those cities were not in ACTIVE_FETCH_STATIONS the bug was latent. Now
+    # that the expansion enables them, the tickers must match exactly.
+    # KXLOW markets retained for the original cities but appear to be dormant
+    # outside winter — Kalshi serves them seasonally.
     "KNYC": ["KXHIGHNY", "KXLOWNY"],
     # Kalshi CHI markets settle on Chicago Midway (KMDW), not O'Hare (KORD).
     # Verified 2026-05-02 from market payload rules_primary text. KORD entry
     # retained for backward-compat in case ACTIVE_STATIONS ever adds it back.
     "KMDW": ["KXHIGHCHI", "KXLOWCHI"],
     "KORD": ["KXHIGHCHI", "KXLOWCHI"],
-    "KLAX": ["KXHIGHLA", "KXLOWLA"],
     "KMIA": ["KXHIGHMIA", "KXLOWMIA"],
-    "KDEN": ["KXHIGHDEN", "KXLOWDEN"],
-    "KATL": ["KXHIGHATL", "KXLOWATL"],
-    "KAUS": ["KXHIGHAUS", "KXLOWAUS"],
-    "KPHL": ["KXHIGHPHL", "KXLOWPHL"],
+    # 2026-05-24: fixed wrong tickers (KXHIGHLA→KXHIGHLAX, KXHIGHATL→KXHIGHTATL,
+    # KXHIGHPHL→KXHIGHPHIL). KXLOW dropped for these — they had wrong tickers
+    # too and likely don't exist for these cities; add back if/when verified.
+    "KLAX": ["KXHIGHLAX"],
+    "KATL": ["KXHIGHTATL"],
+    "KAUS": ["KXHIGHAUS"],
+    "KPHL": ["KXHIGHPHIL"],
+    "KDEN": ["KXHIGHDEN"],
+    # 2026-05-24 expansion: fetch-only daily-high cities.
+    "KDCA": ["KXHIGHTDC"],
+    "KBOS": ["KXHIGHTBOS"],
+    "KPHX": ["KXHIGHTPHX"],
+    "KDFW": ["KXHIGHTDAL"],
+    "KSFO": ["KXHIGHTSFO"],
+    "KSEA": ["KXHIGHTSEA"],
+    "KLAS": ["KXHIGHTLV"],
+    "KMSY": ["KXHIGHTNOLA"],
+    "KMSP": ["KXHIGHTMIN"],
+    "KSAT": ["KXHIGHTSATX"],
+    "KOKC": ["KXHIGHTOKC"],
 }
 
 
