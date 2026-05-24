@@ -219,13 +219,7 @@ def bias_variance(
 ) -> float:
     row = persistence.get_station_bias(station, model, var, month, lead_day)
     if row:
-        # Prevent over-confidence on thin samples (n<10).
-        # Even with n=6, all pointing one direction, stddev can be artificially tight.
-        # Enforce a 2.0°F minimum to account for sampling variability.
-        stddev_f = float(row["stddev_f"])
-        min_stddev = 2.0
-        effective_stddev = max(stddev_f, min_stddev)
-        return effective_stddev ** 2
+        return float(row["stddev_f"]) ** 2
     return fallback_var
 
 
