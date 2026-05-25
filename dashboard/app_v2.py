@@ -18,6 +18,7 @@ Reads queries.py for all DB access; translations.py for all jargon mapping.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 from typing import Iterable
 
@@ -100,26 +101,35 @@ st.markdown("""
 # ---------------------------------------------------------------------------
 # Render helpers (presentation only — no DB calls here)
 # ---------------------------------------------------------------------------
+_INDENT_RE = re.compile(r'^[ \t]+', re.MULTILINE)
+
+
+def _md(html: str) -> None:
+    """Render raw HTML through st.markdown safely.
+
+    Streamlit's markdown processor treats any line indented 4+ spaces as a
+    code block — even with unsafe_allow_html=True. f-strings that pretty-
+    print HTML across multiple indented lines therefore render their
+    closing tags as visible text. Strip leading whitespace from every line
+    before handing the string to streamlit.
+    """
+    st.markdown(_INDENT_RE.sub('', html), unsafe_allow_html=True)
+
+
 def big_card(label: str, value: str, sub: str = "", value_color: str | None = None) -> None:
     color_style = f"color:{value_color};" if value_color else ""
-    st.markdown(
-        f"""<div class="v2-card">
+    _md(f"""<div class="v2-card">
               <div class="v2-card-label">{label}</div>
               <div class="v2-card-value" style="{color_style}">{value}</div>
               <div class="v2-card-sub">{sub}</div>
-            </div>""",
-        unsafe_allow_html=True,
-    )
+            </div>""")
 
 
 def callout(title: str, body: str, color: str = "#16a34a") -> None:
-    st.markdown(
-        f"""<div class="v2-callout" style="--color:{color};">
+    _md(f"""<div class="v2-callout" style="--color:{color};">
               <div class="v2-callout-title">{title}</div>
               <div>{body}</div>
-            </div>""",
-        unsafe_allow_html=True,
-    )
+            </div>""")
 
 
 def section(title: str, hint: str | None = None) -> None:
@@ -409,13 +419,10 @@ def _render_forecast_cards() -> None:
         mkt = market_p50_for(station, today)
         city = t.friendly_station(station)
         if fc is None:
-            st.markdown(
-                f"""<div class="v2-row">
+            _md(f"""<div class="v2-row">
                     <div class="v2-row-title">{city}</div>
                     <div class="v2-row-line">No forecast available yet.</div>
-                  </div>""",
-                unsafe_allow_html=True,
-            )
+                  </div>""")
             continue
         p50 = fc[50]
         p25 = fc.get(25)
@@ -438,17 +445,14 @@ def _render_forecast_cards() -> None:
             else:
                 diff_phrase = (f"<br><strong>Disagreement:</strong> Bot thinks "
                                f"{abs(diff):.0f}°F cooler than market.")
-        st.markdown(
-            f"""<div class="v2-row">
+        _md(f"""<div class="v2-row">
                 <div class="v2-row-title">{city}</div>
                 <div class="v2-row-line">
                   <strong>Bot expects:</strong> {p50:.0f}°F &nbsp; {range_phrase}
                   {market_phrase}
                   {diff_phrase}
                 </div>
-              </div>""",
-            unsafe_allow_html=True,
-        )
+              </div>""")
 
 
 def _render_open_positions() -> None:
@@ -457,12 +461,9 @@ def _render_open_positions() -> None:
     except Exception:
         positions = queries.open_positions()
     if positions.empty:
-        st.markdown(
-            """<div class="v2-row">
+        _md("""<div class="v2-row">
                 <div class="v2-row-line"><em>No open positions right now.</em></div>
-              </div>""",
-            unsafe_allow_html=True,
-        )
+              </div>""")
         return
     for _, p in positions.iterrows():
         city = t.friendly_station(p["station"])
@@ -489,15 +490,12 @@ def _render_open_positions() -> None:
         obs_phrase = ""
         if pd.notna(p.get("obs_tmax")) and p["var"] == "TMAX_DAILY":
             obs_phrase = f"<br>So far today, observed high: {float(p['obs_tmax']):.0f}°F"
-        st.markdown(
-            f"""<div class="v2-row">
+        _md(f"""<div class="v2-row">
                 <div class="v2-row-line">{line}</div>
                 <div class="v2-row-line" style="font-size:0.85rem; opacity:0.85;">
                   {sub}{live}{obs_phrase}
                 </div>
-              </div>""",
-            unsafe_allow_html=True,
-        )
+              </div>""")
 
 
 def _render_pending_orders() -> None:
@@ -536,14 +534,11 @@ def _render_skip_breakdown(days_back: int = 1) -> None:
                f"{total:,} contracts evaluated, most passed:")
     for _, row in df.iterrows():
         emoji, phrase = t.skip_reason_plain(row["skip_reason"])
-        st.markdown(
-            f"""<div class="v2-skip">
+        _md(f"""<div class="v2-skip">
                 <div class="v2-skip-emoji">{emoji}</div>
                 <div class="v2-skip-text">{phrase}</div>
                 <div class="v2-skip-count">{int(row['n']):,} skips</div>
-              </div>""",
-            unsafe_allow_html=True,
-        )
+              </div>""")
 
 
 # ---------------------------------------------------------------------------
@@ -671,13 +666,10 @@ def _render_trade_row(row: pd.Series) -> None:
 
     # Now render the row content (the expander header is empty, so we put the
     # human-readable summary just above it)
-    st.markdown(
-        f"""<div class="v2-row" style="margin-top:-0.65rem;">
+    _md(f"""<div class="v2-row" style="margin-top:-0.65rem;">
             <div class="v2-row-line">{header}</div>
             <div class="v2-row-line" style="font-size:0.85rem; opacity:0.85;">{sub}</div>
-          </div>""",
-        unsafe_allow_html=True,
-    )
+          </div>""")
 
 
 # ---------------------------------------------------------------------------
@@ -764,10 +756,12 @@ def page_bot_health() -> None:
         # Highlight the winning + losing cell
         best = grid.loc[grid["net_pnl"].idxmax()]
         worst = grid.loc[grid["net_pnl"].idxmin()]
-        st.markdown(f"""
-        - 🟢 **Best cell**: {best['city']} · {best['cell']} → {t.usd(best['net_pnl'], plus_sign=True)} ({int(best['fills'])} bets)
-        - 🔴 **Worst cell**: {worst['city']} · {worst['cell']} → {t.usd(worst['net_pnl'], plus_sign=True)} ({int(worst['fills'])} bets)
-        """)
+        st.markdown(
+            f"- 🟢 **Best cell**: {best['city']} · {best['cell']} → "
+            f"{t.usd(best['net_pnl'], plus_sign=True)} ({int(best['fills'])} bets)\n"
+            f"- 🔴 **Worst cell**: {worst['city']} · {worst['cell']} → "
+            f"{t.usd(worst['net_pnl'], plus_sign=True)} ({int(worst['fills'])} bets)"
+        )
 
     # ── Picture 3: Calibration ────────────────────────────────────────────
     section("Is the bot well-calibrated?",
