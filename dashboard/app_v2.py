@@ -989,9 +989,16 @@ def _new_cities_overview() -> pd.DataFrame:
         SELECT station,
                COUNT(*) AS bias_cells,
                COUNT(*) FILTER (WHERE sample_size >= 10) AS bias_cells_thick,
+               -- BIAS_GATE eligibility for live trading: a thick cell for
+               -- the CURRENT month at lead_day=0 (same-day, the only cell
+               -- with proven edge per our PnL audit).
+               MAX(sample_size) FILTER (
+                   WHERE month = EXTRACT(MONTH FROM CURRENT_DATE)::int
+                     AND lead_day = 0
+               ) AS this_month_lead0_n,
                MAX(updated_at) AS last_bias_update
           FROM station_bias
-         WHERE cycle_hour = -1
+         WHERE cycle_hour = -1 AND var = 'TMAX_DAILY'
          GROUP BY station
     ),
     kalshi AS (
@@ -1006,6 +1013,7 @@ def _new_cities_overview() -> pd.DataFrame:
            ROUND(n.p50_today::numeric, 0) AS nbm_p50_today,
            COALESCE(b.bias_cells, 0)::int AS bias_cells,
            COALESCE(b.bias_cells_thick, 0)::int AS bias_cells_thick,
+           COALESCE(b.this_month_lead0_n, 0)::int AS this_month_lead0_n,
            b.last_bias_update,
            COALESCE(k.markets_today, 0)::int AS kalshi_markets_today
       FROM targets t
@@ -1038,7 +1046,10 @@ def page_new_cities() -> None:
     total = len(df)
     metar_ok = int((df["metar_24h"] > 50).sum())
     nbm_ok = int(df["nbm_p50_today"].notna().sum())
-    bias_ready = int((df["bias_cells_thick"] > 0).sum())
+    # Eligibility for trading = current month + lead_day=0 cell at n≥10.
+    # This is what is_station_calibrated checks before letting any signal OPEN.
+    graduation_ready = df[df["this_month_lead0_n"] >= 10]
+    n_ready = len(graduation_ready)
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         big_card("Cities", str(total), "fetch-only")
@@ -1049,8 +1060,38 @@ def page_new_cities() -> None:
         big_card("NBM forecast", f"{nbm_ok}/{total}",
                  "today's p50 available")
     with c4:
-        big_card("Trade-eligible", f"{bias_ready}/{total}",
-                 "any cell with n≥10")
+        big_card(
+            "Graduation-ready",
+            f"{n_ready}/{total}",
+            "this month, lead=0, n≥10",
+            value_color="#16a34a" if n_ready > 0 else None,
+        )
+
+    # ── Graduation candidates callout ────────────────────────────────────
+    if n_ready > 0:
+        city_list = ", ".join(
+            t.friendly_station(s) for s in sorted(graduation_ready["station"])
+        )
+        callout(
+            f"🎓 {n_ready} cit{'ies' if n_ready != 1 else 'y'} ready to graduate",
+            f"<strong>{city_list}</strong> now ha{'ve' if n_ready != 1 else 's'} "
+            "a thick same-day bias cell for the current month. To promote, "
+            "edit <code>ACTIVE_TRADE_STATIONS</code> in <code>config.py</code> "
+            "and commit — auto-deploy will activate trading on the next "
+            "main.py tick. BIAS_GATE will continue to block longer leads "
+            "until those cells thicken too.",
+            color="#16a34a",
+        )
+    else:
+        callout(
+            "No graduation-ready cities yet",
+            "None of the fetch-only cities have a thick same-day bias cell "
+            "for the current month. This is expected within the first 2-3 "
+            "weeks after a city is added — the bias retrain needs paired "
+            "forecast+observation history to compute usable cells. "
+            "See <em>Per-city status</em> below for each city's progress.",
+            color="#737373",
+        )
 
     # ── Per-city detail ──────────────────────────────────────────────────
     section("Per-city status")
@@ -1068,7 +1109,8 @@ def page_new_cities() -> None:
     display = display[[
         "city", "station", "kalshi_markets_today",
         "metar_24h", "nbm_p50_today", "running_high_today",
-        "bias_cells", "bias_cells_thick", "last_bias_update",
+        "bias_cells", "bias_cells_thick", "this_month_lead0_n",
+        "last_bias_update",
     ]].rename(columns={
         "city": "City",
         "station": "Station",
@@ -1078,6 +1120,7 @@ def page_new_cities() -> None:
         "running_high_today": "Observed so far",
         "bias_cells": "Bias cells",
         "bias_cells_thick": "Cells n≥10",
+        "this_month_lead0_n": "This-mo lead=0 n",
         "last_bias_update": "Bias last updated",
     })
     st.dataframe(display, hide_index=True, use_container_width=True)
