@@ -113,7 +113,24 @@ ACTIVE_FETCH_STATIONS: list[str] = [
 # not KORD (O'Hare). Switched Chicago station from KORD to KMDW. Bias tables
 # for KMDW will be empty initially → BIAS_GATE will block KMDW trades for
 # ~2-4 weeks until enough samples accumulate. Expected behavior.
-ACTIVE_TRADE_STATIONS: list[str] = ["KNYC", "KMDW", "KMIA"]
+# 2026-05-26: graduated all 16 fetch-only cities to active trading.
+# Justification (research/threshold_audit.py + ad-hoc bias query):
+#   - After CLI/METAR/NBM backfill, every new city has n=21 for May lead=0
+#   - 13/16 have |bias| < 1.0°F and stddev < 3.0°F — substantially better
+#     calibration than the existing trio (KMDW +4.43°F σ=5.95, KMIA +2.61°F
+#     σ=3.64, KNYC similar to KMDW)
+#   - LEAD_DAY_GATE blocks lead>=1 universally; NO_FADE_GATE blocks NO<$0.50;
+#     BIAS_GATE re-checks n>=10 at trade time. Safety rails intact.
+# Promotion at full Kelly per the existing cells. Re-audit per-city PnL on
+# or after 2026-06-02 to see which actually have edge vs which need pausing.
+ACTIVE_TRADE_STATIONS: list[str] = [
+    "KNYC", "KMDW", "KMIA",          # original trio
+    "KPHX", "KLAS",                   # desert / climatologically stable
+    "KMSY", "KDCA", "KSFO", "KDFW",   # near-zero bias, moderate stddev
+    "KATL", "KPHL", "KOKC", "KLAX",
+    "KDEN", "KAUS", "KSAT",
+    "KBOS", "KSEA", "KMSP",           # slightly higher bias / stddev
+]
 # Backwards-compat alias — all existing fetcher / retrain code uses this name.
 ACTIVE_STATIONS: list[str] = ACTIVE_FETCH_STATIONS
 
