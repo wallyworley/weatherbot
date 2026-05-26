@@ -34,12 +34,30 @@ USER_AGENT = "weather_bot/0.1 (https://github.com/wallyworley/weatherbot)"
 IEM_RETRIEVE = "https://mesonet.agron.iastate.edu/cgi-bin/afos/retrieve.py"
 
 # ICAO → 3-letter NWS product location code used in CLI/DSM PILs.
+# Most stations use their airport's IATA code as the PIL (e.g. KBOS → BOS,
+# CLIBOS). Verified 2026-05-26 by attempting CLI fetches against the live
+# NWS API for each entry.
 STATION_TO_LOC = {
     "KNYC": "NYC", "KLGA": "LGA",
     "KMDW": "MDW",   # Chicago Midway — Kalshi's CHI settlement station
     "KORD": "ORD",   # Chicago O'Hare — kept for backward compatibility, not used by trading
     "KMIA": "MIA",
     "KLAX": "LAX", "KDEN": "DEN", "KATL": "ATL", "KAUS": "AUS", "KPHL": "PHL",
+    # 2026-05-26 expansion. PILs verified by hitting
+    # api.weather.gov/products/types/CLI/locations/<PIL> for each candidate.
+    # Every one matches the airport's IATA code; the WFO-3-letter alternatives
+    # (VEF, LIX, EWX) returned 0 products and were wrong guesses.
+    "KDCA": "DCA",
+    "KBOS": "BOS",
+    "KPHX": "PHX",
+    "KDFW": "DFW",
+    "KSFO": "SFO",
+    "KSEA": "SEA",
+    "KLAS": "LAS",
+    "KMSY": "MSY",
+    "KMSP": "MSP",
+    "KSAT": "SAT",
+    "KOKC": "OKC",
 }
 
 
