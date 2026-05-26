@@ -32,14 +32,25 @@ from streamlit_autorefresh import st_autorefresh
 from weather_bot.data.persistence import connect
 from weather_bot.dashboard import queries, translations as t
 
-# Schema note: this DB instance does NOT have the optional pf.exit_price /
-# pf.exit_fees columns that queries.py's REALIZED_PNL_SQL expects. Several
-# queries (pnl_yesterday, per_fill_ledger, etc.) fail here. Rather than
-# require a migration just to use the v2 dashboard, v2 defines its own
-# fallback queries below that compute P&L from just (payout, price, fees).
-# Early-exit P&L is not modeled — every settled fill is assumed held to
-# settlement, which matches current bot behavior.
-_V2_PNL_SQL = "(pf.payout - pf.price) * pf.contracts - pf.fees"
+# PnL formula that mirrors queries.REALIZED_PNL_SQL and handles BOTH paths
+# the bot uses to close a paper fill:
+#   - Early exit (close_paper_fill_early): exit_price + exit_fees populated,
+#     payout is NULL.
+#   - Held to settlement: payout populated, exit_price NULL.
+# The bot's strategy/early_exits.py harvests winners at 0.85 threshold and is
+# a meaningful chunk of net P&L (~+$190/30d). v2 previously used a simpler
+# (payout - price)*c - fees formula that silently dropped early exits; this
+# CASE form fixes that.
+_V2_PNL_SQL = """
+CASE
+    WHEN pf.exit_price IS NOT NULL
+        THEN (pf.exit_price - pf.price) * pf.contracts - pf.fees
+             - COALESCE(pf.exit_fees, 0)
+    WHEN pf.payout IS NOT NULL
+        THEN (pf.payout - pf.price) * pf.contracts - pf.fees
+    ELSE NULL
+END
+"""
 
 st.set_page_config(page_title="weather_bot · v2", layout="wide", page_icon="🌡️")
 
@@ -153,15 +164,20 @@ def status_pill(label: str) -> str:
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=12)
 def _v2_settled_fills(days_back: int) -> pd.DataFrame:
-    """One row per settled fill in the last N days, with fields needed for
-    every v2 view. Uses _V2_PNL_SQL (no early-exit support)."""
+    """One row per fill in the last N days. Includes both held-to-settlement
+    fills (payout populated) and early-exit fills (exit_price populated).
+    PnL uses _V2_PNL_SQL which handles both paths."""
     sql = f"""
         SELECT pf.id, pf.ts AS fill_ts, pf.ticker, pf.side, pf.price,
-               pf.contracts, pf.fees, pf.payout, pf.settled,
+               pf.contracts, pf.fees, pf.payout, pf.exit_price, pf.exit_fees,
+               pf.exit_ts, pf.exit_reason, pf.settled,
                km.station, km.var, km.valid_date, km.lower_f, km.upper_f,
                s.fair_prob, s.market_ask, s.market_bid,
                GREATEST(0, (km.valid_date - (pf.ts AT TIME ZONE st.tz)::date))
                    AS lead_day,
+               CASE WHEN pf.exit_price IS NOT NULL THEN 'EARLY_EXIT'
+                    WHEN pf.payout IS NOT NULL THEN 'SETTLED'
+                    ELSE 'OPEN' END AS close_path,
                {_V2_PNL_SQL} AS realized_pnl,
                ((CASE WHEN pf.side='YES' THEN s.fair_prob ELSE 1.0 - s.fair_prob END)
                   * (1 - pf.price)
@@ -179,6 +195,34 @@ def _v2_settled_fills(days_back: int) -> pd.DataFrame:
         cur.execute(sql, (days_back,))
         rows = cur.fetchall()
     return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+@st.cache_data(ttl=12)
+def early_exit_summary(days_back: int = 30) -> dict:
+    """Early-exit firing rate + counterfactual vs held-to-settlement.
+
+    Returns dict with: exit_count, exit_pnl, settled_count, settled_pnl,
+    avg_progress_captured, leftover_estimate.
+    """
+    df = _v2_settled_fills(days_back=days_back)
+    if df.empty:
+        return {"exit_count": 0, "exit_pnl": 0.0,
+                "settled_count": 0, "settled_pnl": 0.0,
+                "exit_share_of_pnl": 0.0}
+    settled = df[df["settled"] == True]  # noqa: E712
+    exits = settled[settled["close_path"] == "EARLY_EXIT"]
+    held = settled[settled["close_path"] == "SETTLED"]
+    exit_pnl = float(exits["realized_pnl"].sum()) if not exits.empty else 0.0
+    held_pnl = float(held["realized_pnl"].sum()) if not held.empty else 0.0
+    total = exit_pnl + held_pnl
+    share = (exit_pnl / total * 100.0) if total != 0 else 0.0
+    return {
+        "exit_count": int(len(exits)),
+        "exit_pnl": exit_pnl,
+        "settled_count": int(len(held)),
+        "settled_pnl": held_pnl,
+        "exit_share_of_pnl": share,
+    }
 
 
 def pnl_yesterday() -> dict:
@@ -280,6 +324,33 @@ def latest_forecast_for(station: str, valid_date) -> dict | None:
     if 50 not in out:
         return None
     return out
+
+
+@st.cache_data(ttl=60)
+def observed_high_today(station: str) -> float | None:
+    """Highest METAR temperature observed today (station-local date).
+
+    We use metar_obs rather than cli_obs because CLI isn't issued until
+    early next morning — useless for in-day "where are we now" context.
+    HFMETAR (5-min observations) gives us a much more current picture than
+    hourly METAR for ASOS stations.
+    """
+    sql = """
+        SELECT MAX(temp_f) AS running_max
+          FROM metar_obs m
+          JOIN stations st ON st.code = m.station
+         WHERE m.station = %s
+           AND (m.obs_time AT TIME ZONE st.tz)::date = CURRENT_DATE
+    """
+    try:
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute(sql, (station,))
+            row = cur.fetchone()
+            if row and row.get("running_max") is not None:
+                return float(row["running_max"])
+    except Exception:
+        return None
+    return None
 
 
 def market_p50_for(station: str, valid_date) -> float | None:
@@ -445,11 +516,25 @@ def _render_forecast_cards() -> None:
             else:
                 diff_phrase = (f"<br><strong>Disagreement:</strong> Bot thinks "
                                f"{abs(diff):.0f}°F cooler than market.")
+        # Running observed high today — pulled from latest METAR / HFMETAR.
+        # CLI isn't issued until tomorrow morning so we can't use it intraday.
+        running = observed_high_today(station)
+        running_phrase = ""
+        if running is not None:
+            gap = p50 - running
+            if gap > 0:
+                gap_phrase = f"still {gap:.0f}°F to go to hit forecast"
+            else:
+                gap_phrase = f"already {abs(gap):.0f}°F past forecast"
+            running_phrase = (f"<br><strong>Highest so far today:</strong> "
+                              f"{running:.0f}°F &nbsp; <span style='opacity:0.75'>"
+                              f"({gap_phrase})</span>")
         _md(f"""<div class="v2-row">
                 <div class="v2-row-title">{city}</div>
                 <div class="v2-row-line">
                   <strong>Bot expects:</strong> {p50:.0f}°F &nbsp; {range_phrase}
                   {market_phrase}
+                  {running_phrase}
                   {diff_phrase}
                 </div>
               </div>""")
@@ -549,7 +634,7 @@ def page_trade_log() -> None:
     st.caption("Every bet the bot has placed, with outcomes once they settle.")
 
     # ── Filters ───────────────────────────────────────────────────────────
-    c1, c2, c3 = st.columns([1, 1, 2])
+    c1, c2 = st.columns(2)
     with c1:
         days = st.selectbox("Window", [7, 14, 30, 60, 90], index=1,
                              format_func=lambda d: f"Last {d} days")
@@ -763,6 +848,48 @@ def page_bot_health() -> None:
             f"{t.usd(worst['net_pnl'], plus_sign=True)} ({int(worst['fills'])} bets)"
         )
 
+    # ── Picture 2.5: Early exits (take-profit) ────────────────────────────
+    section("How much profit does early-exit save?",
+            "The bot has a take-profit rule: when an open position has captured "
+            "≥85% of its maximum possible gain, sell at the current bid. This "
+            "harvests winners before settlement can take them back.")
+    ex = early_exit_summary(days_back=days)
+    cE1, cE2, cE3 = st.columns(3)
+    with cE1:
+        big_card(
+            "Early-exit P&L",
+            t.usd(ex["exit_pnl"], plus_sign=True),
+            f"{ex['exit_count']} positions closed early",
+            value_color=t.signed_color(ex["exit_pnl"]),
+        )
+    with cE2:
+        big_card(
+            "Held-to-settlement P&L",
+            t.usd(ex["settled_pnl"], plus_sign=True),
+            f"{ex['settled_count']} positions held",
+            value_color=t.signed_color(ex["settled_pnl"]),
+        )
+    with cE3:
+        # Share of total P&L coming from early exits — caps at 100% display
+        if ex["exit_count"] == 0:
+            big_card("Take-profit hits", "0 fires", "No early exits in this window.")
+        else:
+            share = ex["exit_share_of_pnl"]
+            sub = (f"Early-exit accounts for {share:+.0f}% of net P&L."
+                   if abs(share) < 200 else
+                   "Early-exit dominates the P&L story.")
+            big_card("Take-profit firing rate",
+                     f"{ex['exit_count']} fires",
+                     sub)
+    if ex["exit_count"] > 0 and ex["exit_pnl"] > 0 and ex["settled_pnl"] < 0:
+        callout(
+            "Early-exit is doing heavy lifting",
+            f"In this window, early exits saved <strong>{t.usd(ex['exit_pnl'])}</strong> "
+            f"while held-to-settlement positions lost <strong>{t.usd(abs(ex['settled_pnl']))}</strong>. "
+            "Without the take-profit rule, the bot's net would be substantially worse.",
+            color="#16a34a",
+        )
+
     # ── Picture 3: Calibration ────────────────────────────────────────────
     section("Is the bot well-calibrated?",
             "When the bot says it's X% confident, the bet should win X% of the time. "
@@ -811,6 +938,157 @@ def page_bot_health() -> None:
                    f"(~{float(top['mean_pred'])*100:.0f}%), "
                    f"it wins {float(top['observed_freq'])*100:.0f}% of the time. "
                    f"That's **{bias_word}**.")
+
+
+# ---------------------------------------------------------------------------
+# PAGE: NEW CITIES
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=30)
+def _new_cities_overview() -> pd.DataFrame:
+    """Per fetch-only city: data coverage + current forecast + observed-so-far.
+
+    Used by the New cities page to show what we know about each station the
+    bot is collecting on but not yet trading.
+    """
+    from weather_bot.config import ACTIVE_FETCH_STATIONS, ACTIVE_TRADE_STATIONS
+    fetch_only = [s for s in ACTIVE_FETCH_STATIONS if s not in ACTIVE_TRADE_STATIONS]
+    if not fetch_only:
+        return pd.DataFrame()
+
+    sql = """
+    WITH targets AS (
+        SELECT UNNEST(%s::text[]) AS code
+    ),
+    metar AS (
+        SELECT m.station,
+               COUNT(*) AS n_24h,
+               MAX(CASE
+                     WHEN (m.obs_time AT TIME ZONE st.tz)::date = CURRENT_DATE
+                       THEN m.temp_f
+                   END) AS running_high_today
+          FROM metar_obs m
+          JOIN stations st ON st.code = m.station
+         WHERE m.obs_time >= NOW() - INTERVAL '24 hours'
+         GROUP BY m.station
+    ),
+    nbm_latest AS (
+        SELECT pf.station, pf.value AS p50_today
+          FROM prob_forecast pf
+          JOIN (
+              SELECT station, MAX(run_time) AS rt
+                FROM prob_forecast
+               WHERE valid_date = CURRENT_DATE
+                 AND var = 'TMAX_DAILY'
+               GROUP BY station
+          ) lr ON lr.station = pf.station AND lr.rt = pf.run_time
+         WHERE pf.valid_date = CURRENT_DATE
+           AND pf.var = 'TMAX_DAILY'
+           AND pf.percentile = 50
+    ),
+    bias_rows AS (
+        SELECT station,
+               COUNT(*) AS bias_cells,
+               COUNT(*) FILTER (WHERE sample_size >= 10) AS bias_cells_thick,
+               MAX(updated_at) AS last_bias_update
+          FROM station_bias
+         WHERE cycle_hour = -1
+         GROUP BY station
+    ),
+    kalshi AS (
+        SELECT station, COUNT(*) AS markets_today
+          FROM kalshi_market
+         WHERE valid_date = CURRENT_DATE
+         GROUP BY station
+    )
+    SELECT t.code AS station,
+           COALESCE(m.n_24h, 0)::int AS metar_24h,
+           m.running_high_today,
+           ROUND(n.p50_today::numeric, 0) AS nbm_p50_today,
+           COALESCE(b.bias_cells, 0)::int AS bias_cells,
+           COALESCE(b.bias_cells_thick, 0)::int AS bias_cells_thick,
+           b.last_bias_update,
+           COALESCE(k.markets_today, 0)::int AS kalshi_markets_today
+      FROM targets t
+      LEFT JOIN metar m ON m.station = t.code
+      LEFT JOIN nbm_latest n ON n.station = t.code
+      LEFT JOIN bias_rows b ON b.station = t.code
+      LEFT JOIN kalshi k ON k.station = t.code
+     ORDER BY t.code
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, (fetch_only,))
+        rows = cur.fetchall()
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def page_new_cities() -> None:
+    st.title("New cities")
+    st.caption(
+        "The bot ingests weather data for 14 cities beyond the 3 it actively trades. "
+        "Each one needs ~30 days of bias data before its trading gate (n≥10) opens. "
+        "Use this page to confirm the pipeline is healthy and watch the bias tables fill in."
+    )
+
+    df = _new_cities_overview()
+    if df.empty:
+        st.info("No fetch-only cities configured.")
+        return
+
+    # ── Top-level summary ────────────────────────────────────────────────
+    total = len(df)
+    metar_ok = int((df["metar_24h"] > 50).sum())
+    nbm_ok = int(df["nbm_p50_today"].notna().sum())
+    bias_ready = int((df["bias_cells_thick"] > 0).sum())
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        big_card("Cities", str(total), "fetch-only")
+    with c2:
+        big_card("METAR healthy", f"{metar_ok}/{total}",
+                 ">50 obs in last 24h")
+    with c3:
+        big_card("NBM forecast", f"{nbm_ok}/{total}",
+                 "today's p50 available")
+    with c4:
+        big_card("Trade-eligible", f"{bias_ready}/{total}",
+                 "any cell with n≥10")
+
+    # ── Per-city detail ──────────────────────────────────────────────────
+    section("Per-city status")
+    display = df.copy()
+    display["city"] = display["station"].map(t.friendly_station)
+    display["running_high_today"] = display["running_high_today"].map(
+        lambda x: f"{x:.0f}°F" if pd.notna(x) else "—"
+    )
+    display["nbm_p50_today"] = display["nbm_p50_today"].map(
+        lambda x: f"{x:.0f}°F" if pd.notna(x) else "—"
+    )
+    display["last_bias_update"] = display["last_bias_update"].map(
+        lambda x: pd.Timestamp(x).strftime("%Y-%m-%d") if pd.notna(x) else "—"
+    )
+    display = display[[
+        "city", "station", "kalshi_markets_today",
+        "metar_24h", "nbm_p50_today", "running_high_today",
+        "bias_cells", "bias_cells_thick", "last_bias_update",
+    ]].rename(columns={
+        "city": "City",
+        "station": "Station",
+        "kalshi_markets_today": "Markets today",
+        "metar_24h": "METAR (24h)",
+        "nbm_p50_today": "NBM p50 today",
+        "running_high_today": "Observed so far",
+        "bias_cells": "Bias cells",
+        "bias_cells_thick": "Cells n≥10",
+        "last_bias_update": "Bias last updated",
+    })
+    st.dataframe(display, hide_index=True, use_container_width=True)
+
+    st.caption(
+        "**Bias cells** = number of (month, lead_day) combinations the bias retraining "
+        "has been able to compute for this station. **Cells n≥10** = how many of those "
+        "are sample-thick enough to pass BIAS_GATE. When this count is positive for "
+        "the current month's lead_day=0, the station is technically eligible to trade — "
+        "but you'd still want a few more days of data before promoting it to ACTIVE_TRADE_STATIONS."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -945,6 +1223,7 @@ PAGES = {
     "Today": page_today,
     "Trade Log": page_trade_log,
     "How is the bot doing?": page_bot_health,
+    "New cities": page_new_cities,
     "Engine Room": page_engine_room,
 }
 
