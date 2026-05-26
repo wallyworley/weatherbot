@@ -27,6 +27,7 @@ from weather_bot.config import (
     PAPER_MODE,
     REQUIRE_AGREEMENT_N,
     REQUIRE_TOP_BOOK_SIZE,
+    TAKE_PROFIT_THRESHOLD,
 )
 from weather_bot.data import persistence
 from weather_bot.data.persistence import connect
@@ -183,7 +184,7 @@ def run():
     persistence.bootstrap_stations()
     if PAPER_MODE:
         from weather_bot.strategy import early_exits
-        exit_summary = early_exits.process_early_exits(threshold=0.85)
+        exit_summary = early_exits.process_early_exits(threshold=TAKE_PROFIT_THRESHOLD)
         if exit_summary.checked or exit_summary.exited:
             log.info(
                 "Processed early exits: checked=%d exited=%d",

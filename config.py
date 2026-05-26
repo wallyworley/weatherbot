@@ -212,6 +212,15 @@ PAPER_ORDER_MODE = os.getenv("PAPER_ORDER_MODE", "true").lower() == "true"
 # meaningless or upstream-broken signals from polluting the calibration set.
 PAPER_BYPASS_TRIPWIRE = os.getenv("PAPER_BYPASS_TRIPWIRE", "true").lower() == "true"
 PAPER_BYPASS_STATION_PAUSE = os.getenv("PAPER_BYPASS_STATION_PAUSE", "true").lower() == "true"
+
+# Take-profit / early-exit threshold: fraction of max possible gain at which
+# the bot closes an open position at the current bid. 2026-05-25 audit on
+# 30d of fills showed lower thresholds capture more brief upticks before
+# they fade back to zero (e.g., 0.50 would have improved net by ~$363 vs
+# 0.85). Caveat: audit used peak-of-window prices, real bot exits at
+# first-crossing, so realized gain is smaller. Set via env so we can A/B
+# without a redeploy.
+TAKE_PROFIT_THRESHOLD = float(os.getenv("TAKE_PROFIT_THRESHOLD", "0.85"))
 PAPER_ORDER_IMPROVEMENT_CENTS = int(os.getenv("PAPER_ORDER_IMPROVEMENT_CENTS", "3"))
 PAPER_ORDER_TTL_MIN = int(os.getenv("PAPER_ORDER_TTL_MIN", "15"))
 
