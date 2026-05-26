@@ -187,9 +187,12 @@ def run():
         exit_summary = early_exits.process_early_exits(threshold=TAKE_PROFIT_THRESHOLD)
         if exit_summary.checked or exit_summary.exited:
             log.info(
-                "Processed early exits: checked=%d exited=%d",
+                "Processed early exits: checked=%d exited=%d "
+                "(skipped_stale=%d skipped_thin_book=%d)",
                 exit_summary.checked,
                 exit_summary.exited,
+                exit_summary.skipped_stale,
+                exit_summary.skipped_thin_book,
             )
     if PAPER_MODE and PAPER_ORDER_MODE:
         summary = paper_orders.process_pending_orders()
