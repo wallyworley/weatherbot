@@ -6,9 +6,12 @@ Kalshi daily temp contracts use event tickers like:
   KXLOWCHI-26APR18       (daily LOW at CHI for April 18, 2026)
 
 Individual market tickers inside an event look like:
-  KXHIGHNY-26APR18-T68    ("high exactly 68°F", a 1-degree bucket)
-  KXHIGHNY-26APR18-B70    ("high >= 70°F", open upper)
+  KXHIGHNY-26APR18-T68    (threshold: strike_type='greater', floor=68 → "≥69°F or above")
+  KXHIGHNY-26APR18-B70    (between bucket: strike_type='between' → a 1-2° range)
   KXHIGHNY-26APR18-T67.5  (sometimes 0.5F buckets)
+
+Note: T-type tickers are threshold/tail markets, NOT exact-temperature buckets.
+Kalshi's strike_type drives parsing — do not infer bucket type from the T/B prefix.
 
 The ticker format has been stable but we don't rely on it — we parse the
 `subtitle` / `yes_sub_title` field from the Kalshi market payload which
