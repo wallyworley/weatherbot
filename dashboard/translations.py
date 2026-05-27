@@ -89,7 +89,9 @@ def bucket_phrase(lower_f: float | None, upper_f: float | None) -> str:
     for display. Matches Kalshi wording exactly:
        "79° to 80°", "78° or below", "87° or above".
     """
-    lo, hi = lower_f, upper_f
+    import math
+    lo = None if lower_f is None or (isinstance(lower_f, float) and math.isnan(lower_f)) else lower_f
+    hi = None if upper_f is None or (isinstance(upper_f, float) and math.isnan(upper_f)) else upper_f
     if lo is None and hi is None:
         return "?"
     if lo is None:
