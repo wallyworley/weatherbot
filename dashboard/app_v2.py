@@ -198,6 +198,88 @@ def _v2_settled_fills(days_back: int) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=12)
+def todays_closed_fills() -> pd.DataFrame:
+    """Fills that opened and closed for today's market.
+
+    We only trade lead_day=0, so today's fills have valid_date=today. This
+    catches both take-profit exits and held-to-settlement closes (though
+    settlement only happens after tomorrow's CLI lands).
+
+    Surfaces in the Today page so a take-profit-heavy day doesn't look
+    empty (every open position can be closed by lunch, leaving the
+    open-positions section blank).
+    """
+    sql = f"""
+        SELECT pf.id, pf.ts AS fill_ts, pf.ticker, pf.side, pf.price,
+               pf.contracts, pf.fees, pf.payout, pf.exit_price, pf.exit_fees,
+               pf.exit_ts, pf.exit_reason,
+               km.station, km.var, km.valid_date, km.lower_f, km.upper_f,
+               CASE WHEN pf.exit_price IS NOT NULL THEN 'EARLY_EXIT'
+                    WHEN pf.payout IS NOT NULL THEN 'SETTLED'
+                    ELSE 'OTHER' END AS close_path,
+               {_V2_PNL_SQL} AS realized_pnl
+          FROM paper_fill pf
+          JOIN kalshi_market km ON km.ticker = pf.ticker
+         WHERE km.valid_date = CURRENT_DATE
+           AND pf.settled = TRUE
+         ORDER BY COALESCE(pf.exit_ts, pf.ts) DESC
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(sql)
+        rows = cur.fetchall()
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+@st.cache_data(ttl=12)
+def pnl_today_v2() -> dict:
+    """Realized P&L from today's closed fills + open-position counts.
+
+    Distinct from queries.pnl_today (which mixes realized + mark-to-market
+    on opens, and assumes legacy schema). This version is paper-only,
+    realized-only, and surfaces a clear caveat about open exposure that
+    hasn't settled yet.
+    """
+    df = todays_closed_fills()
+    if df.empty:
+        realized = 0.0
+        wins = losses = 0
+    else:
+        realized = float(df["realized_pnl"].sum())
+        wins = int((df["realized_pnl"] > 0).sum())
+        losses = int((df["realized_pnl"] <= 0).sum())
+
+    # Count still-open positions for today's market (downside not yet
+    # materialized).
+    sql = """
+        SELECT COUNT(*) AS n,
+               COALESCE(SUM(pf.price * pf.contracts), 0) AS capital_at_risk
+          FROM paper_fill pf
+          JOIN kalshi_market km ON km.ticker = pf.ticker
+         WHERE km.valid_date = CURRENT_DATE
+           AND pf.settled = FALSE
+    """
+    open_n = 0
+    capital_at_risk = 0.0
+    try:
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute(sql)
+            r = cur.fetchone()
+            if r:
+                open_n = int(r["n"])
+                capital_at_risk = float(r["capital_at_risk"])
+    except Exception:
+        pass
+
+    return {
+        "realized": realized,
+        "n_closed": len(df) if not df.empty else 0,
+        "wins": wins, "losses": losses,
+        "open_count": open_n,
+        "capital_at_risk": capital_at_risk,
+    }
+
+
+@st.cache_data(ttl=12)
 def early_exit_summary(days_back: int = 30) -> dict:
     """Early-exit firing rate + counterfactual vs held-to-settlement.
 
@@ -378,12 +460,26 @@ def page_today() -> None:
     st.caption(today_str)
 
     # ── Top metric cards ──────────────────────────────────────────────────
+    today = pnl_today_v2()
     y = pnl_yesterday()
     w = pnl_this_week()
     status_emoji, status_label, status_color = overall_bot_status()
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
+        if today["n_closed"] == 0:
+            big_card("Today (realized)", "—", "Nothing closed yet today.")
+        else:
+            sub = f"{today['wins']} wins, {today['losses']} losses"
+            if today["open_count"] > 0:
+                sub += f" · {today['open_count']} still open"
+            big_card(
+                "Today (realized)",
+                t.usd(today["realized"], plus_sign=True),
+                sub,
+                value_color=t.signed_color(today["realized"]),
+            )
+    with c2:
         net = y.get("net")
         if net is None or y.get("n_fills", 0) == 0:
             big_card("Yesterday", "—", "No bets settled yesterday.")
@@ -395,7 +491,7 @@ def page_today() -> None:
                 f"{y['n_wins']} wins, {losses} losses",
                 value_color=t.signed_color(net),
             )
-    with c2:
+    with c3:
         if w["n_fills"] == 0:
             big_card("Last 7 days", "—", "No settled bets in the last week.")
         else:
@@ -405,12 +501,28 @@ def page_today() -> None:
                 f"{w['n_wins']} wins, {w['n_losses']} losses",
                 value_color=t.signed_color(w["net"]),
             )
-    with c3:
+    with c4:
         big_card("Bot status",
                  f"{status_emoji} {status_label}",
                  "All trading + data systems checked." if status_emoji == "🟢"
                  else "Open the Engine Room page for details.",
                  value_color=status_color)
+
+    # If today's realized is positive but there's significant open exposure,
+    # flag the asymmetry — winners harvest fast via take-profit, losers don't
+    # settle until tomorrow morning's CLI.
+    if today["n_closed"] > 0 and today["realized"] > 0 and today["open_count"] > 0:
+        callout(
+            "Today's number is one side of the coin",
+            f"Take-profit harvested <strong>{today['n_closed']}</strong> winners "
+            f"for <strong>{t.usd(today['realized'])}</strong>, but "
+            f"<strong>{today['open_count']}</strong> positions ("
+            f"${today['capital_at_risk']:.0f} capital at risk) "
+            "are still open. Losers don't trigger take-profit — they sit "
+            "until tomorrow's CLI lands and settle at $0. Wait for "
+            "tomorrow's full picture before drawing conclusions.",
+            color="#f59e0b",
+        )
 
     # ── Anomaly callouts ──────────────────────────────────────────────────
     _render_anomalies()
@@ -421,10 +533,15 @@ def page_today() -> None:
     _render_forecast_cards()
 
     # ── What we're betting today ──────────────────────────────────────────
-    section("What we're betting today",
-            "Live paper positions and pending offers, in plain English.")
+    section("Currently open positions",
+            "Live paper positions and pending offers. On a heavy take-profit "
+            "day this can be empty even though we placed plenty of trades.")
     _render_open_positions()
     _render_pending_orders()
+
+    # ── Today's closed bets — surfaced separately so a "0 open positions"
+    # state doesn't make a profitable day look empty.
+    _render_todays_closed_trades()
 
     # ── Why the bot skipped trades ────────────────────────────────────────
     section("Why the bot skipped trades",
@@ -579,6 +696,69 @@ def _render_open_positions() -> None:
                 <div class="v2-row-line">{line}</div>
                 <div class="v2-row-line" style="font-size:0.85rem; opacity:0.85;">
                   {sub}{live}{obs_phrase}
+                </div>
+              </div>""")
+
+
+def _render_todays_closed_trades() -> None:
+    """Today's already-closed paper fills (either take-profit or held-to-settle).
+
+    Hidden entirely when nothing has closed yet. When present, sorts winners
+    on top so the day's biggest hits are visible at a glance.
+    """
+    df = todays_closed_fills()
+    if df.empty:
+        return
+    won_total = float(df.loc[df["realized_pnl"] > 0, "realized_pnl"].sum())
+    lost_total = float(df.loc[df["realized_pnl"] <= 0, "realized_pnl"].sum())
+    n_exit = int((df["close_path"] == "EARLY_EXIT").sum())
+    n_settle = int((df["close_path"] == "SETTLED").sum())
+    subtitle_parts = [f"{len(df)} closed today"]
+    if n_exit:
+        subtitle_parts.append(f"{n_exit} via take-profit")
+    if n_settle:
+        subtitle_parts.append(f"{n_settle} held to settlement")
+    section("Today's closed bets", " · ".join(subtitle_parts))
+    st.caption(
+        f"Winners: **{t.usd(won_total, plus_sign=True)}** · "
+        f"Losers: **{t.usd(lost_total)}**"
+    )
+
+    # Sort by absolute P&L impact so the biggest moves (positive or negative)
+    # are visible first.
+    df_sorted = df.assign(_abs=df["realized_pnl"].abs()).sort_values(
+        "_abs", ascending=False
+    )
+    for _, row in df_sorted.iterrows():
+        city = t.friendly_station(row["station"])
+        bucket = t.bucket_phrase(row.get("lower_f"), row.get("upper_f"))
+        var_phrase = t.friendly_var(row["var"])
+        pnl = float(row["realized_pnl"]) if pd.notna(row.get("realized_pnl")) else None
+        outcome_color = t.signed_color(pnl) if pnl is not None else "#737373"
+        outcome_text = t.usd(pnl, plus_sign=True) if pnl is not None else "—"
+
+        # What we paid → what we got out at
+        entry = float(row["price"])
+        if pd.notna(row.get("exit_price")):
+            close_price = float(row["exit_price"])
+            close_label = "take-profit"
+        elif pd.notna(row.get("payout")):
+            close_price = float(row["payout"])
+            close_label = "settled"
+        else:
+            close_price = 0.0
+            close_label = "?"
+
+        header = (f'{side_pill(row["side"])} <strong>{city}</strong> '
+                  f'{var_phrase} {bucket}')
+        sub = (f"{int(row['contracts'])} contracts · "
+               f"entered ${entry:.2f} → closed ${close_price:.2f} "
+               f"({close_label}) &nbsp;·&nbsp; "
+               f"<strong style='color:{outcome_color}'>{outcome_text}</strong>")
+        _md(f"""<div class="v2-row">
+                <div class="v2-row-line">{header}</div>
+                <div class="v2-row-line" style="font-size:0.85rem; opacity:0.85;">
+                  {sub}
                 </div>
               </div>""")
 
