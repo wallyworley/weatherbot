@@ -183,11 +183,13 @@ def _v2_settled_fills(days_back: int) -> pd.DataFrame:
                   * (1 - pf.price)
                 - (1 - (CASE WHEN pf.side='YES' THEN s.fair_prob
                               ELSE 1.0 - s.fair_prob END)) * pf.price)
-                * pf.contracts - pf.fees AS expected_pnl
+                * pf.contracts - pf.fees AS expected_pnl,
+               co.tmax_f AS cli_tmax_f
           FROM paper_fill pf
           JOIN kalshi_market km ON km.ticker = pf.ticker
           JOIN stations st ON st.code = km.station
           LEFT JOIN signal s ON s.id = pf.signal_id
+          LEFT JOIN cli_obs co ON co.station = km.station AND co.local_date = km.valid_date
          WHERE km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
          ORDER BY pf.ts DESC
     """
@@ -892,9 +894,16 @@ def _render_trade_row(row: pd.Series) -> None:
     fill_ts = pd.to_datetime(row["fill_ts"])
     fill_str = fill_ts.strftime("%b %-d, %-I:%M%p").lower()
 
+    valid_date_str = pd.to_datetime(row["valid_date"]).strftime("%b %-d")
+    cli_tmax = row.get("cli_tmax_f")
+    if cli_tmax is not None and not pd.isna(cli_tmax):
+        cli_str = f" · actual high <strong>{cli_tmax:.0f}°F</strong>"
+    else:
+        cli_str = " · actual high pending"
+
     header = (f'{side_pill(side)} <strong>{city}</strong> '
               f'{var_phrase} will be <strong>{bucket}</strong> '
-              f'on {pd.to_datetime(row["valid_date"]).strftime("%b %-d")}')
+              f'on {valid_date_str}{cli_str}')
     sub = (f"{contracts} contracts at ${price:.2f} · "
            f"placed {fill_str} · "
            f"<strong style='color:{outcome_color}'>{outcome_text}</strong>")
