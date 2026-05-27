@@ -184,7 +184,12 @@ def _v2_settled_fills(days_back: int) -> pd.DataFrame:
                 - (1 - (CASE WHEN pf.side='YES' THEN s.fair_prob
                               ELSE 1.0 - s.fair_prob END)) * pf.price)
                 * pf.contracts - pf.fees AS expected_pnl,
-               co.tmax_f AS cli_tmax_f
+               co.tmax_f AS cli_tmax_f,
+               (SELECT MAX(m.temp_f)
+                  FROM metar_obs m
+                 WHERE m.station = km.station
+                   AND (m.obs_time AT TIME ZONE st.tz)::date = km.valid_date
+               ) AS metar_high_f
           FROM paper_fill pf
           JOIN kalshi_market km ON km.ticker = pf.ticker
           JOIN stations st ON st.code = km.station
@@ -896,14 +901,18 @@ def _render_trade_row(row: pd.Series) -> None:
 
     valid_date_str = pd.to_datetime(row["valid_date"]).strftime("%b %-d")
     cli_tmax = row.get("cli_tmax_f")
+    metar_high = row.get("metar_high_f")
+
     if cli_tmax is not None and not pd.isna(cli_tmax):
-        cli_str = f" · actual high <strong>{cli_tmax:.0f}°F</strong>"
+        temp_str = f" · official high <strong>{cli_tmax:.0f}°F</strong>"
+    elif metar_high is not None and not pd.isna(metar_high):
+        temp_str = f" · high so far <strong>{metar_high:.0f}°F</strong>"
     else:
-        cli_str = " · actual high pending"
+        temp_str = ""
 
     header = (f'{side_pill(side)} <strong>{city}</strong> '
               f'{var_phrase} will be <strong>{bucket}</strong> '
-              f'on {valid_date_str}{cli_str}')
+              f'on {valid_date_str}{temp_str}')
     sub = (f"{contracts} contracts at ${price:.2f} · "
            f"placed {fill_str} · "
            f"<strong style='color:{outcome_color}'>{outcome_text}</strong>")
