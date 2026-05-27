@@ -7,9 +7,9 @@ from __future__ import annotations
 import argparse
 import logging
 
-from weather_bot.config import ACTIVE_STATIONS
+from weather_bot.config import ACTIVE_STATIONS, TAKE_PROFIT_THRESHOLD
 from weather_bot.data import persistence
-from weather_bot.strategy import kalshi_parser
+from weather_bot.strategy import early_exits, kalshi_parser
 from weather_bot.strategy.kalshi_client import KalshiClient, iter_weather_markets
 
 SERIES_BY_STATION = {
@@ -91,6 +91,13 @@ def run(statuses: tuple[str, ...] = ("open",), snapshot: bool = True, delay: flo
         if snap_rows:
             persistence.insert_market_snapshots(snap_rows)
         logging.info("Logged %d market snapshots", len(snap_rows))
+
+        summary = early_exits.process_early_exits(threshold=TAKE_PROFIT_THRESHOLD)
+        if summary.exited or summary.skipped_stale or summary.skipped_thin_book:
+            logging.info(
+                "early-exits after snapshot: exited=%d stale=%d thin_book=%d",
+                summary.exited, summary.skipped_stale, summary.skipped_thin_book,
+            )
 
 
 if __name__ == "__main__":
