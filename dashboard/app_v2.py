@@ -896,8 +896,8 @@ def _render_trade_row(row: pd.Series) -> None:
         outcome_text = "Open"
         outcome_color = "#f59e0b"
 
-    fill_ts = pd.to_datetime(row["fill_ts"])
-    fill_str = fill_ts.strftime("%b %-d, %-I:%M%p").lower()
+    fill_ts = pd.to_datetime(row["fill_ts"], utc=True).tz_convert("America/New_York")
+    fill_str = fill_ts.strftime("%b %-d, %-I:%M%p ET").lower()
 
     valid_date_str = pd.to_datetime(row["valid_date"]).strftime("%b %-d")
     cli_tmax = row.get("cli_tmax_f")
@@ -1361,7 +1361,7 @@ def page_engine_room() -> None:
             available = [c for c in wanted if c in health.columns]
             show = health[available].copy()
             if "ts" in show.columns:
-                show["ts"] = pd.to_datetime(show["ts"]).dt.strftime("%Y-%m-%d %H:%M")
+                show["ts"] = pd.to_datetime(show["ts"], utc=True).dt.strftime("%Y-%m-%d %H:%M UTC")
             st.dataframe(show, hide_index=True, use_container_width=True)
 
     with tabs[1]:
@@ -1481,7 +1481,8 @@ with st.sidebar:
     if st.button("Refresh now", use_container_width=True):
         queries.clear_cache()
         st.rerun()
-    st.caption(f"Loaded at {datetime.now().strftime('%H:%M:%S')}")
+    from zoneinfo import ZoneInfo
+    st.caption(f"Loaded at {datetime.now(ZoneInfo('America/New_York')).strftime('%H:%M:%S ET')}")
     st.divider()
     st.caption("**Trading live:** " + ", ".join(
         t.friendly_station(s) for s in queries.trade_eligible_stations()))
