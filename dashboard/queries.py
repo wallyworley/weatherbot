@@ -23,6 +23,14 @@ CASE
 END
 """
 
+# Every "today" reference in the dashboard is from a user reading in ET.
+# VPS clock is UTC, so plain CURRENT_DATE rolls over at 8pm ET — when the
+# dashboard would suddenly switch to tomorrow's view. All "today" SQL below
+# uses `(now() AT TIME ZONE 'America/New_York')::date` inline so each query
+# is self-contained when read in isolation. For ts columns (timestamptz),
+# convert to the station-local or ET date with `(ts AT TIME ZONE 'America/New_York')::date`
+# before comparing.
+
 
 def _freeze(value):
     """Make DB params hashable for the dashboard's short-lived query cache."""
@@ -85,7 +93,7 @@ def open_positions() -> pd.DataFrame:
     return _df("""
         SELECT pf.id, pf.ts, pf.ticker, pf.side, pf.price, pf.contracts, pf.fees,
                km.station, km.var, km.valid_date, km.lower_f, km.upper_f,
-               (km.valid_date - CURRENT_DATE)::int AS days_to_settle,
+               (km.valid_date - (now() AT TIME ZONE 'America/New_York')::date)::int AS days_to_settle,
                ms.yes_ask, ms.yes_bid
           FROM paper_fill pf
           JOIN kalshi_market km ON km.ticker = pf.ticker
@@ -135,7 +143,7 @@ def signals_today() -> pd.DataFrame:
                km.station, km.var, km.valid_date, km.lower_f, km.upper_f
           FROM signal s
           JOIN kalshi_market km ON km.ticker = s.ticker
-         WHERE s.ts >= CURRENT_DATE
+         WHERE (s.ts AT TIME ZONE 'America/New_York')::date >= (now() AT TIME ZONE 'America/New_York')::date
          ORDER BY s.ts DESC
     """)
 
@@ -149,7 +157,7 @@ def skip_breakdown(days_back: int = 7) -> pd.DataFrame:
                COUNT(DISTINCT ticker) AS n_tickers
           FROM signal
          WHERE action = 'SKIP'
-           AND ts >= CURRENT_DATE - (%s || ' days')::interval
+           AND (ts AT TIME ZONE 'America/New_York')::date >= (now() AT TIME ZONE 'America/New_York')::date - (%s || ' days')::interval
          GROUP BY skip_reason
          ORDER BY n DESC
     """, (days_back,))
@@ -163,7 +171,7 @@ def signal_activity(days_back: int = 7) -> pd.DataFrame:
                COALESCE(skip_reason, 'OPEN') AS reason,
                COUNT(*) AS n
           FROM signal
-         WHERE ts >= CURRENT_DATE - (%s || ' days')::interval
+         WHERE (ts AT TIME ZONE 'America/New_York')::date >= (now() AT TIME ZONE 'America/New_York')::date - (%s || ' days')::interval
          GROUP BY day, action, reason
          ORDER BY day DESC, action, reason
     """, (days_back,))
@@ -199,7 +207,7 @@ def profitability_slices(days_back: int = 30) -> pd.DataFrame:
           JOIN stations st ON st.code = km.station
           LEFT JOIN signal s ON s.id = pf.signal_id
          WHERE pf.settled = TRUE
-           AND km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
+           AND km.valid_date >= (now() AT TIME ZONE 'America/New_York')::date - (%s || ' days')::interval
     )
     SELECT station,
            lead_day,
@@ -234,7 +242,7 @@ def per_fill_ledger(days_back: int = 14) -> pd.DataFrame:
           FROM paper_fill pf
           JOIN kalshi_market km ON km.ticker = pf.ticker
           LEFT JOIN signal s ON s.id = pf.signal_id
-         WHERE km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
+         WHERE km.valid_date >= (now() AT TIME ZONE 'America/New_York')::date - (%s || ' days')::interval
          ORDER BY pf.ts DESC
     """.format(realized_pnl=REALIZED_PNL_SQL), (days_back,))
 
@@ -254,7 +262,7 @@ def daily_calibration(days_back: int = 14) -> pd.DataFrame:
          WHERE pf.settled = TRUE
            AND pf.exit_price IS NULL
            AND pf.payout IS NOT NULL
-           AND km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
+           AND km.valid_date >= (now() AT TIME ZONE 'America/New_York')::date - (%s || ' days')::interval
            AND s.fair_prob IS NOT NULL
          GROUP BY km.valid_date, km.station
          ORDER BY km.valid_date, km.station
@@ -280,7 +288,7 @@ def bucket_calibration(days_back: int = 30, n_bins: int = 10) -> pd.DataFrame:
          WHERE pf.settled = TRUE
            AND pf.exit_price IS NULL
            AND pf.payout IS NOT NULL
-           AND km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
+           AND km.valid_date >= (now() AT TIME ZONE 'America/New_York')::date - (%s || ' days')::interval
            AND s.fair_prob IS NOT NULL
     )
     SELECT bin,
@@ -310,7 +318,7 @@ def reliability_bins(days_back: int = 30, station: str | None = None) -> pd.Data
          WHERE pf.settled = TRUE
            AND pf.exit_price IS NULL
            AND pf.payout IS NOT NULL
-           AND km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
+           AND km.valid_date >= (now() AT TIME ZONE 'America/New_York')::date - (%s || ' days')::interval
            AND s.fair_prob IS NOT NULL
            AND (%s::text IS NULL OR km.station = %s)
     )
@@ -358,7 +366,7 @@ def event_reliability_bins(days_back: int = 30, station: str | None = None) -> p
                        ELSE NULL
                      END AS value_f
           ) truth ON TRUE
-         WHERE km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
+         WHERE km.valid_date >= (now() AT TIME ZONE 'America/New_York')::date - (%s || ' days')::interval
            AND s.fair_prob IS NOT NULL
            AND km.station IS NOT NULL
            AND km.valid_date IS NOT NULL
@@ -421,7 +429,7 @@ def yes_probability_calibration(days_back: int = 60, n_bins: int = 10) -> pd.Dat
                        ELSE NULL
                      END AS value_f
           ) truth ON TRUE
-         WHERE km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
+         WHERE km.valid_date >= (now() AT TIME ZONE 'America/New_York')::date - (%s || ' days')::interval
            AND s.fair_prob IS NOT NULL
            AND km.station IS NOT NULL
            AND km.valid_date IS NOT NULL
@@ -547,8 +555,8 @@ def model_accuracy(days_back: int = 30) -> pd.DataFrame:
                COALESCE(c.tmax_f, dm.tmax_f) AS truth_tmax
           FROM stations s
           CROSS JOIN generate_series(
-              (CURRENT_DATE - (%s || ' days')::interval)::date,
-              CURRENT_DATE, '1 day'::interval) AS d
+              ((now() AT TIME ZONE 'America/New_York')::date - (%s || ' days')::interval)::date,
+              (now() AT TIME ZONE 'America/New_York')::date, '1 day'::interval) AS d
           LEFT JOIN cli_obs c ON c.station = s.code AND c.local_date = d::date
           LEFT JOIN daily_obs dm ON dm.station = s.code AND dm.local_date = d::date
          WHERE s.code = ANY(%s)
@@ -611,7 +619,7 @@ def vote_distribution_today() -> pd.DataFrame:
                action,
                COUNT(*) AS n
           FROM signal
-         WHERE ts >= CURRENT_DATE AND model_votes IS NOT NULL
+         WHERE (ts AT TIME ZONE 'America/New_York')::date >= (now() AT TIME ZONE 'America/New_York')::date AND model_votes IS NOT NULL
          GROUP BY side, n_yes, n_no, action
          ORDER BY action, n_yes, n_no
     """)
@@ -781,7 +789,7 @@ def pnl_today() -> dict:
                COUNT(*) AS n
           FROM paper_fill pf
           JOIN kalshi_market km ON km.ticker = pf.ticker
-         WHERE pf.settled = TRUE AND km.valid_date = CURRENT_DATE
+         WHERE pf.settled = TRUE AND km.valid_date = (now() AT TIME ZONE 'America/New_York')::date
     """.format(realized_pnl=REALIZED_PNL_SQL))
     open_pos = _df("""
         SELECT pf.side, pf.price, pf.contracts, ms.yes_ask, ms.yes_bid
@@ -791,7 +799,7 @@ def pnl_today() -> dict:
               SELECT yes_ask, yes_bid FROM market_snapshot
                WHERE ticker = pf.ticker ORDER BY ts DESC LIMIT 1
           ) ms ON true
-         WHERE pf.settled = FALSE AND km.valid_date = CURRENT_DATE
+         WHERE pf.settled = FALSE AND km.valid_date = (now() AT TIME ZONE 'America/New_York')::date
     """)
     realized = float(settled.iloc[0]["net"]) if not settled.empty else 0.0
     n_settled = int(settled.iloc[0]["n"]) if not settled.empty else 0
@@ -812,7 +820,7 @@ def pnl_yesterday() -> dict:
             SELECT {realized_pnl} AS realized_pnl
               FROM paper_fill pf
               JOIN kalshi_market km ON km.ticker = pf.ticker
-             WHERE pf.settled = TRUE AND km.valid_date = CURRENT_DATE - INTERVAL '1 day'
+             WHERE pf.settled = TRUE AND km.valid_date = (now() AT TIME ZONE 'America/New_York')::date - INTERVAL '1 day'
         )
         SELECT COALESCE(SUM(realized_pnl), 0.0) AS net,
                COUNT(*) AS n_fills,
@@ -833,7 +841,7 @@ def open_positions_with_obs() -> pd.DataFrame:
     return _df("""
         SELECT pf.id, pf.ts, pf.ticker, pf.side, pf.price, pf.contracts, pf.fees,
                km.station, km.var, km.valid_date, km.lower_f, km.upper_f,
-               (km.valid_date - CURRENT_DATE)::int AS days_to_settle,
+               (km.valid_date - (now() AT TIME ZONE 'America/New_York')::date)::int AS days_to_settle,
                ms.yes_ask, ms.yes_bid,
                obs.obs_tmax, obs.obs_tmin,
                fc.p50,
