@@ -1,0 +1,15 @@
+[Unit]
+Description=weather_bot daily pull of settled Kalshi markets
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/weather_bot
+EnvironmentFile=/opt/weather_bot/.env
+ExecStart=/opt/weather_bot/.venv/bin/python -m weather_bot.jobs.pull_kalshi_markets --statuses settled --no-snapshot --delay 0.3
+StandardOutput=append:/var/log/weather_bot/pull_kalshi_settled.log
+StandardError=append:/var/log/weather_bot/pull_kalshi_settled.log
+TimeoutStartSec=15min
