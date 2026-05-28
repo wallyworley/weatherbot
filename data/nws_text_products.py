@@ -91,6 +91,34 @@ _CLI_MAX = re.compile(r"^\s*MAXIMUM\s+(-?\d+)[A-Z]*\s+(\d{1,2}:?\d{2}\s*(?:AM|PM
 _CLI_MIN = re.compile(r"^\s*MINIMUM\s+(-?\d+)[A-Z]*\s+(\d{1,2}:?\d{2}\s*(?:AM|PM))",
                        re.MULTILINE | re.IGNORECASE)
 
+# CLI title line: "...CLIMATE SUMMARY FOR MAY 27 2026..." — tells us which
+# calendar date the CLI's TODAY section refers to. The YESTERDAY section is
+# always (FOR_DATE - 1).
+_CLI_FOR_DATE = re.compile(
+    r"CLIMATE SUMMARY FOR\s+([A-Z]+)\s+(\d{1,2})\s+(\d{4})",
+    re.IGNORECASE,
+)
+
+_MONTHS = {m: i for i, m in enumerate(
+    "JANUARY FEBRUARY MARCH APRIL MAY JUNE JULY AUGUST "
+    "SEPTEMBER OCTOBER NOVEMBER DECEMBER".split(), start=1)}
+
+
+def _extract_for_date(text: str):
+    """Return the date object the CLI is FOR (i.e., the date its TODAY refers
+    to), or None if unparseable."""
+    from datetime import date as _date
+    m = _CLI_FOR_DATE.search(text or "")
+    if not m:
+        return None
+    mo = _MONTHS.get(m.group(1).upper())
+    if mo is None:
+        return None
+    try:
+        return _date(int(m.group(3)), mo, int(m.group(2)))
+    except ValueError:
+        return None
+
 
 def parse_cli(text: str) -> CliObservation:
     """Extract daily TMAX/TMIN from a CLI body. Tries YESTERDAY first (the
@@ -148,6 +176,21 @@ def _nws_morning_window(target_date) -> tuple[datetime, datetime]:
     return start, start + timedelta(hours=18)
 
 
+def _nws_cli_window(target_date) -> tuple[datetime, datetime]:
+    """Wider window than the morning one — captures BOTH:
+      - evening-of-target_date issuances (e.g. KEWX's 22:47 UTC final-of-day
+        CLI for Austin/San Antonio, which contains the daytime max but
+        lives in the TODAY section because the CLI is FOR target_date),
+      - next-morning issuances that contain target_date in YESTERDAY.
+
+    Range: target_date 18:00 UTC → target_date+2 00:00 UTC."""
+    start = datetime.combine(target_date, datetime.min.time(),
+                              tzinfo=timezone.utc) + timedelta(hours=18)
+    end = datetime.combine(target_date + timedelta(days=2),
+                            datetime.min.time(), tzinfo=timezone.utc)
+    return start, end
+
+
 def _nws_list(type_: str, location: str, start: datetime, end: datetime) -> list[dict]:
     params = {
         "type": type_, "location": location, "limit": 20,
@@ -192,18 +235,67 @@ def _iem_retrieve(pil: str, target_date) -> Optional[tuple[str, datetime]]:
     return r.text, datetime.combine(issue, datetime.min.time(), tzinfo=timezone.utc)
 
 
+def _is_pm_time(t: Optional[str]) -> bool:
+    """Heuristic: a true daytime max should have time stamp in the PM."""
+    return bool(t) and "PM" in t.upper()
+
+
+def _select_cli_for_target(
+    products: list[dict], target_date,
+) -> Optional[tuple[CliObservation, str, datetime]]:
+    """Walk candidate products newest-first, fetch and parse each, pick the
+    first that reports a valid daytime max for target_date.
+
+    Acceptance order:
+      1. CLI body says "FOR (target_date+1)" with a YESTERDAY section
+         containing a parsed TMAX → canonical retrospective summary.
+      2. CLI body says "FOR target_date" with a TODAY section whose
+         tmax_time is in PM → end-of-day intraday final (KEWX/KBOU pattern).
+
+    Skip:
+      - Products whose FOR_DATE doesn't match target_date or target_date+1.
+      - Products that only parsed an AM tmax_time (overnight low, no
+        daytime max recorded yet)."""
+    next_day = target_date + timedelta(days=1)
+    for p in products:  # NWS returns newest first
+        try:
+            text, issued = _nws_get(p["id"])
+        except Exception as e:
+            log.warning("NWS CLI fetch %s: %s", p.get("id"), e)
+            continue
+        obs = parse_cli(text)
+        for_date = _extract_for_date(text)
+        # Accept morning-after retrospective with YESTERDAY parsed.
+        if (for_date == next_day and obs.section == "YESTERDAY"
+                and obs.tmax_f is not None):
+            return obs, text, issued
+        # Accept end-of-day "FOR target_date" CLI if it has a real daytime max.
+        if (for_date == target_date and obs.section == "TODAY"
+                and obs.tmax_f is not None and _is_pm_time(obs.tmax_time_lst)):
+            return obs, text, issued
+    return None
+
+
 def fetch_cli(station: str, target_date) -> Optional[tuple[CliObservation, str, datetime]]:
-    """Fetch and parse the CLI for `target_date`'s data. Returns (parsed, raw_text, issued_at)."""
+    """Fetch and parse the CLI for `target_date`'s data. Returns (parsed, raw_text, issued_at).
+
+    Walks all CLI products in the target_date evening → target_date+2 window
+    and selects the one that contains a real daytime max for target_date.
+    Handles two issuance patterns:
+      - Most WFOs: morning of target_date+1 with YESTERDAY=target_date section.
+      - Some WFOs (KEWX Austin/SAT, KBOU Denver): evening of target_date
+        with TODAY=target_date section (no YESTERDAY section in morning CLIs).
+    """
     loc = STATION_TO_LOC.get(station)
     if not loc:
         return None
-    start, end = _nws_morning_window(target_date)
+    start, end = _nws_cli_window(target_date)
     if (datetime.now(tz=timezone.utc).date() - target_date).days <= 6:
         try:
             products = _nws_list("CLI", loc, start, end)
-            if products:
-                text, issued = _nws_get(products[0]["id"])
-                return parse_cli(text), text, issued
+            picked = _select_cli_for_target(products, target_date)
+            if picked is not None:
+                return picked
         except Exception as e:
             log.warning("NWS CLI %s %s failed: %s", station, target_date, e)
     iem = _iem_retrieve(f"CLI{loc}", target_date)
