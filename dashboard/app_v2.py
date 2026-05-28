@@ -195,6 +195,7 @@ def _v2_settled_fills(days_back: int) -> pd.DataFrame:
                               ELSE 1.0 - s.fair_prob END)) * pf.price)
                 * pf.contracts - pf.fees AS expected_pnl,
                co.tmax_f AS cli_tmax_f,
+               (km.payload->>'expiration_value')::float AS kalshi_settle_f,
                (SELECT MAX(m.temp_f)
                   FROM metar_obs m
                  WHERE m.station = km.station
@@ -912,9 +913,16 @@ def _render_trade_row(row: pd.Series) -> None:
     valid_date_str = pd.to_datetime(row["valid_date"]).strftime("%b %-d")
     cli_tmax = row.get("cli_tmax_f")
     metar_high = row.get("metar_high_f")
+    kalshi_settle = row.get("kalshi_settle_f")
 
     if cli_tmax is not None and not pd.isna(cli_tmax):
         temp_str = f" · official high <strong>{cli_tmax:.0f}°F</strong>"
+        # If Kalshi's settlement value is recorded and differs from our CLI,
+        # surface the divergence — that's the cross-check the user wants.
+        if (kalshi_settle is not None and not pd.isna(kalshi_settle)
+                and abs(kalshi_settle - cli_tmax) >= 0.5):
+            temp_str += (f" <span style='color:#ef4444'>"
+                          f"(Kalshi settled at {kalshi_settle:.0f}°F)</span>")
     elif metar_high is not None and not pd.isna(metar_high):
         temp_str = f" · high so far <strong>{metar_high:.0f}°F</strong>"
     else:
