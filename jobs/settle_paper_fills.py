@@ -5,14 +5,16 @@ Kalshi weather range markets resolve YES if observed value falls in
 [lower_f, upper_f). For each fill's (station, valid_date, var) we look up
 the official observation and mark the fill settled with payout $1 (win) or $0 (loss).
 
-Source priority:
-  1. NWS CLI (cli_obs table) — Kalshi NHIGH settlement authority
-  2. METAR-derived daily_obs — fallback when CLI not yet captured
+Source: NWS CLI ONLY. Kalshi settles on the official NWS Climatological
+Report (Daily) — anything else risks boundary-bucket settlement errors.
 
-30-day comparison showed METAR-reconstructed TMAX understates CLI by 0.5-1°F
-on 12-22 of 30 days at our fetch stations. Preferring CLI matches what Kalshi
-actually settles on. The source used per fill is logged so the dashboard can
-spot when METAR fallback flipped an outcome.
+History (2026-05-27): a previous version of this job fell back to METAR
+when CLI hadn't been pulled yet. METAR understates CLI by 0.5-1°F on most
+days, which silently flipped 28 paper fills to wrong outcomes between
+April and May (net +$922 of phantom P&L). Boundary buckets where CLI
+exactly equals an edge value (e.g., CLI=64 with bucket [62, 64)) are the
+exact case METAR-fallback breaks. Always wait for CLI — being a day late
+beats settling on the wrong number.
 
 Usage:
     python -m weather_bot.jobs.settle_paper_fills
@@ -39,21 +41,18 @@ def _yes_wins(lower_f: float | None, upper_f: float | None, obs: float) -> bool:
 
 
 def _get_obs_value(station: str, valid_date, var: str) -> tuple[float | None, str]:
-    """Return (observed_value, source). Tries CLI first; falls back to METAR-derived."""
+    """Return (CLI_tmax_or_tmin, 'CLI') or (None, 'pending'). No METAR fallback
+    — METAR undercounts CLI by 0.5-1°F and silently mis-settles boundary
+    buckets (see module docstring). If CLI isn't available yet, defer."""
     if var == "TMAX_DAILY":
         cli = nws.get_cli_tmax(station, valid_date)
-        if cli is not None:
-            return cli, "CLI"
     elif var == "TMIN_DAILY":
         cli = nws.get_cli_tmin(station, valid_date)
-        if cli is not None:
-            return cli, "CLI"
-    rows = persistence.get_daily_obs(station, valid_date, valid_date)
-    if not rows:
-        return None, "none"
-    r = rows[0]
-    val = r["tmax_f"] if var == "TMAX_DAILY" else r["tmin_f"]
-    return val, "METAR"
+    else:
+        cli = None
+    if cli is not None:
+        return cli, "CLI"
+    return None, "pending"
 
 
 def run(dry_run: bool = False) -> None:
