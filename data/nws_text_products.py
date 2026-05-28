@@ -120,20 +120,52 @@ def _extract_for_date(text: str):
         return None
 
 
+# Section headers in CLI bodies appear on their own line, indented, with no
+# trailing data. The previous \bTODAY\b token match incorrectly fired on
+# "VALID TODAY AS OF 0500 PM" in the body header — see tests/test_nws_cli_parser
+# for the regression case.
+_CLI_SECTION_HDR = re.compile(
+    r"^\s+(YESTERDAY|TODAY|MONTH TO DATE|SINCE)\b",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _section_at(text: str, pos: int) -> str | None:
+    """Return the most recent section header preceding position `pos` in
+    `text`, or None if no header precedes it. Used to attribute a parsed
+    MAXIMUM/MINIMUM line to its section."""
+    last = None
+    for m in _CLI_SECTION_HDR.finditer(text):
+        if m.start() >= pos:
+            break
+        last = m.group(1).upper()
+    return last
+
+
 def parse_cli(text: str) -> CliObservation:
-    """Extract daily TMAX/TMIN from a CLI body. Tries YESTERDAY first (the
-    canonical settlement section); falls back to TODAY (intraday)."""
+    """Extract daily TMAX/TMIN from a CLI body. Prefers the YESTERDAY section
+    when both are populated; falls back to TODAY (intraday).
+
+    Implementation: rather than match section *headers* and then search for
+    MAXIMUM inside them (which is brittle when a body header contains
+    "VALID TODAY ..."), we find all MAXIMUM/MINIMUM data lines and attribute
+    each to the nearest preceding section header. That structurally cannot
+    mismatch on header-line tokens."""
     out = CliObservation(None, None, None, None, None)
+    # Group all MAXIMUM/MINIMUM lines by their attributed section.
+    sec_max: dict[str, re.Match] = {}
+    sec_min: dict[str, re.Match] = {}
+    for m in _CLI_MAX.finditer(text):
+        sec = _section_at(text, m.start())
+        if sec and sec not in sec_max:
+            sec_max[sec] = m
+    for m in _CLI_MIN.finditer(text):
+        sec = _section_at(text, m.start())
+        if sec and sec not in sec_min:
+            sec_min[sec] = m
     for label in ("YESTERDAY", "TODAY"):
-        block_match = re.search(
-            rf"\b{label}\b(.*?)(?:\bTODAY\b|\bYESTERDAY\b|\bMONTH TO DATE\b|\bSINCE\b|\Z)",
-            text, re.DOTALL | re.IGNORECASE,
-        )
-        if not block_match:
-            continue
-        block = block_match.group(1)
-        m_max = _CLI_MAX.search(block)
-        m_min = _CLI_MIN.search(block)
+        m_max = sec_max.get(label)
+        m_min = sec_min.get(label)
         if m_max or m_min:
             out.section = label
             if m_max:
@@ -256,7 +288,6 @@ def _select_cli_for_target(
       - Products whose FOR_DATE doesn't match target_date or target_date+1.
       - Products that only parsed an AM tmax_time (overnight low, no
         daytime max recorded yet)."""
-    next_day = target_date + timedelta(days=1)
     for p in products:  # NWS returns newest first
         try:
             text, issued = _nws_get(p["id"])
@@ -265,11 +296,18 @@ def _select_cli_for_target(
             continue
         obs = parse_cli(text)
         for_date = _extract_for_date(text)
-        # Accept morning-after retrospective with YESTERDAY parsed.
-        if (for_date == next_day and obs.section == "YESTERDAY"
-                and obs.tmax_f is not None):
+        # Accept any YESTERDAY-section parse. YESTERDAY by definition reports
+        # the day before issuance, and our fetch window is bounded so the
+        # only YESTERDAY data in window is for target_date. Different WFOs
+        # write the body title as "FOR <issuance_date>" (so YESTERDAY refers
+        # to issuance_date-1) or "FOR <yesterday>" (so YESTERDAY refers to
+        # for_date itself). KNYC uses the latter; KMDW uses the former.
+        # Trusting the section name avoids guessing the convention.
+        if obs.section == "YESTERDAY" and obs.tmax_f is not None:
             return obs, text, issued
-        # Accept end-of-day "FOR target_date" CLI if it has a real daytime max.
+        # Accept end-of-day "FOR target_date" intraday CLI if it has a real
+        # daytime max (PM time). This is the KEWX/KBOU pattern where no
+        # YESTERDAY section is ever issued for some days.
         if (for_date == target_date and obs.section == "TODAY"
                 and obs.tmax_f is not None and _is_pm_time(obs.tmax_time_lst)):
             return obs, text, issued

@@ -1,0 +1,58 @@
+
+000
+CDUS44 KEWX 271228
+CLIAUS
+
+CLIMATE REPORT 
+NATIONAL WEATHER SERVICE AUSTIN/SAN ANTONIO
+728 AM CDT WED MAY 27 2026
+
+...................................
+
+...THE AUSTIN BERGSTROM CLIMATE SUMMARY FOR MAY 27 2026...
+VALID AS OF 0700 AM LOCAL TIME.
+
+CLIMATE NORMAL PERIOD: 1991 TO 2020
+CLIMATE RECORD PERIOD: 1943 TO 2026
+
+
+WEATHER ITEM   OBSERVED TIME   RECORD YEAR NORMAL DEPARTURE           
+                VALUE   (LST)  VALUE       VALUE  FROM               
+                                                  NORMAL           
+................................................................
+TEMPERATURE (F)                                                          
+ TODAY                                                               
+  MAXIMUM         65   3:42 AM 100    2011  90    -25                 
+  MINIMUM         64   5:59 AM  59    1950  69     -5                 
+  AVERAGE         65                                               
+
+PRECIPITATION (IN)                                                    
+  TODAY            0.11          1.78 2014   0.15  -0.04              
+  MONTH TO DATE    7.96                      4.42   3.54              
+  SINCE MAR 1     13.48                      9.71   3.77              
+  SINCE JAN 1     14.80                     14.42   0.38              
+
+................................................................
+
+
+THE AUSTIN BERGSTROM CLIMATE NORMALS FOR TOMORROW
+                         NORMAL    RECORD    YEAR                     
+ MAXIMUM TEMPERATURE (F)   90       100      2011                      
+ MINIMUM TEMPERATURE (F)   69        56      2003                      
+
+
+SUNRISE AND SUNSET                                                    
+MAY 27 2026...........SUNRISE   6:31 AM CDT   SUNSET   8:25 PM CDT     
+MAY 28 2026...........SUNRISE   6:31 AM CDT   SUNSET   8:26 PM CDT     
+
+
+-  INDICATES NEGATIVE NUMBERS.
+R  INDICATES RECORD WAS SET OR TIED.
+MM INDICATES DATA IS MISSING.
+T  INDICATES TRACE AMOUNT.
+
+
+
+
+$$
+
