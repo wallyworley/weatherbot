@@ -21,6 +21,16 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta
 from typing import Iterable
+from zoneinfo import ZoneInfo
+
+# Dashboard treats "today" as today in Eastern Time — matches Kalshi's
+# operating timezone and user mental model. The VPS clock is UTC, so the
+# bare CURRENT_DATE / datetime.now() rolls over at 8pm ET and incorrectly
+# shows "tomorrow" in the evening.
+_ET = ZoneInfo("America/New_York")
+
+def _et_now() -> datetime:
+    return datetime.now(_ET)
 
 import numpy as np
 import pandas as pd
@@ -195,7 +205,7 @@ def _v2_settled_fills(days_back: int) -> pd.DataFrame:
           JOIN stations st ON st.code = km.station
           LEFT JOIN signal s ON s.id = pf.signal_id
           LEFT JOIN cli_obs co ON co.station = km.station AND co.local_date = km.valid_date
-         WHERE km.valid_date >= CURRENT_DATE - (%s || ' days')::interval
+         WHERE km.valid_date >= (now() AT TIME ZONE 'America/New_York')::date - (%s || ' days')::interval
          ORDER BY pf.ts DESC
     """
     with connect() as conn, conn.cursor() as cur:
@@ -227,7 +237,7 @@ def todays_closed_fills() -> pd.DataFrame:
                {_V2_PNL_SQL} AS realized_pnl
           FROM paper_fill pf
           JOIN kalshi_market km ON km.ticker = pf.ticker
-         WHERE km.valid_date = CURRENT_DATE
+         WHERE km.valid_date = (now() AT TIME ZONE 'America/New_York')::date
            AND pf.settled = TRUE
          ORDER BY COALESCE(pf.exit_ts, pf.ts) DESC
     """
@@ -262,7 +272,7 @@ def pnl_today_v2() -> dict:
                COALESCE(SUM(pf.price * pf.contracts), 0) AS capital_at_risk
           FROM paper_fill pf
           JOIN kalshi_market km ON km.ticker = pf.ticker
-         WHERE km.valid_date = CURRENT_DATE
+         WHERE km.valid_date = (now() AT TIME ZONE 'America/New_York')::date
            AND pf.settled = FALSE
     """
     open_n = 0
@@ -321,7 +331,7 @@ def pnl_yesterday() -> dict:
         return {"net": None, "n_fills": 0, "n_wins": 0}
     settled = df[(df["settled"] == True) &  # noqa: E712
                   (pd.to_datetime(df["valid_date"]).dt.date ==
-                   (datetime.now().date() - timedelta(days=1)))]
+                   (_et_now().date() - timedelta(days=1)))]
     if settled.empty:
         return {"net": None, "n_fills": 0, "n_wins": 0}
     net = float(settled["realized_pnl"].sum())
@@ -429,7 +439,7 @@ def observed_high_today(station: str) -> float | None:
           FROM metar_obs m
           JOIN stations st ON st.code = m.station
          WHERE m.station = %s
-           AND (m.obs_time AT TIME ZONE st.tz)::date = CURRENT_DATE
+           AND (m.obs_time AT TIME ZONE st.tz)::date = (now() AT TIME ZONE st.tz)::date
     """
     try:
         with connect() as conn, conn.cursor() as cur:
@@ -462,9 +472,9 @@ def market_p50_for(station: str, valid_date) -> float | None:
 # PAGE: TODAY
 # ---------------------------------------------------------------------------
 def page_today() -> None:
-    today_str = datetime.now().strftime("%A, %B %-d, %Y")
+    today_str = _et_now().strftime("%A, %B %-d, %Y")
     st.title("Today")
-    st.caption(today_str)
+    st.caption(today_str + " · ET")
 
     # ── Top metric cards ──────────────────────────────────────────────────
     today = pnl_today_v2()
@@ -604,7 +614,7 @@ def _render_anomalies() -> None:
 
 
 def _render_forecast_cards() -> None:
-    today = datetime.now().date()
+    today = _et_now().date()
     trade_stations = queries.trade_eligible_stations()
     if not trade_stations:
         st.info("No stations currently configured for live trading.")
@@ -1161,7 +1171,7 @@ def _new_cities_overview() -> pd.DataFrame:
         SELECT m.station,
                COUNT(*) AS n_24h,
                MAX(CASE
-                     WHEN (m.obs_time AT TIME ZONE st.tz)::date = CURRENT_DATE
+                     WHEN (m.obs_time AT TIME ZONE st.tz)::date = (now() AT TIME ZONE 'America/New_York')::date
                        THEN m.temp_f
                    END) AS running_high_today
           FROM metar_obs m
@@ -1175,11 +1185,11 @@ def _new_cities_overview() -> pd.DataFrame:
           JOIN (
               SELECT station, MAX(run_time) AS rt
                 FROM prob_forecast
-               WHERE valid_date = CURRENT_DATE
+               WHERE valid_date = (now() AT TIME ZONE 'America/New_York')::date
                  AND var = 'TMAX_DAILY'
                GROUP BY station
           ) lr ON lr.station = pf.station AND lr.rt = pf.run_time
-         WHERE pf.valid_date = CURRENT_DATE
+         WHERE pf.valid_date = (now() AT TIME ZONE 'America/New_York')::date
            AND pf.var = 'TMAX_DAILY'
            AND pf.percentile = 50
     ),
@@ -1191,7 +1201,7 @@ def _new_cities_overview() -> pd.DataFrame:
                -- the CURRENT month at lead_day=0 (same-day, the only cell
                -- with proven edge per our PnL audit).
                MAX(sample_size) FILTER (
-                   WHERE month = EXTRACT(MONTH FROM CURRENT_DATE)::int
+                   WHERE month = EXTRACT(MONTH FROM (now() AT TIME ZONE 'America/New_York')::date)::int
                      AND lead_day = 0
                ) AS this_month_lead0_n,
                MAX(updated_at) AS last_bias_update
@@ -1202,7 +1212,7 @@ def _new_cities_overview() -> pd.DataFrame:
     kalshi AS (
         SELECT station, COUNT(*) AS markets_today
           FROM kalshi_market
-         WHERE valid_date = CURRENT_DATE
+         WHERE valid_date = (now() AT TIME ZONE 'America/New_York')::date
          GROUP BY station
     )
     SELECT t.code AS station,
