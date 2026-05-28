@@ -195,7 +195,7 @@ def _v2_settled_fills(days_back: int) -> pd.DataFrame:
                               ELSE 1.0 - s.fair_prob END)) * pf.price)
                 * pf.contracts - pf.fees AS expected_pnl,
                co.tmax_f AS cli_tmax_f,
-               (km.payload->>'expiration_value')::float AS kalshi_settle_f,
+               NULLIF(km.payload->>'expiration_value', '')::float AS kalshi_settle_f,
                (SELECT MAX(m.temp_f)
                   FROM metar_obs m
                  WHERE m.station = km.station
