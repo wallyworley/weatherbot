@@ -568,10 +568,17 @@ def expire_pending_paper_orders() -> int:
 
 
 def list_unsettled_paper_fills() -> list[dict]:
-    """Return unsettled fills joined with their market metadata (for settlement)."""
+    """Return unsettled fills joined with their market metadata (for settlement).
+
+    Includes Kalshi's `expiration_value` when available — settle prefers this
+    over our NWS CLI capture since Kalshi's value is the actual settlement
+    authority. NULLIF on empty string handles still-open markets where the
+    field exists but is blank.
+    """
     sql = """
     SELECT pf.id, pf.ticker, pf.side, pf.price, pf.contracts, pf.fees,
-           km.station, km.var, km.valid_date, km.lower_f, km.upper_f
+           km.station, km.var, km.valid_date, km.lower_f, km.upper_f,
+           NULLIF(km.payload->>'expiration_value', '')::float AS kalshi_settle_value
       FROM paper_fill pf
       JOIN kalshi_market km ON km.ticker = pf.ticker
      WHERE pf.settled = FALSE

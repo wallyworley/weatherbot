@@ -2,7 +2,7 @@
 Description=Timer for daily settled Kalshi pull
 
 [Timer]
-OnCalendar=*-*-* 15:00:00 UTC
+OnCalendar=*-*-* 14:00:00 UTC
 Persistent=true
 Unit=weatherbot-kalshi-settled.service
 

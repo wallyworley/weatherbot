@@ -72,3 +72,39 @@ def test_extract_for_date_from_morning_after_cli():
     from datetime import date
     d = nws._extract_for_date(_read("cli_knyc_2026-05-26.txt"))
     assert d == date(2026, 5, 26)
+
+
+def test_ksat_evening_kewx_peer():
+    """KSAT same WFO as KAUS (KEWX) — also has VALID TODAY in header.
+    Should extract 84°F at 4:26 PM TODAY."""
+    obs = nws.parse_cli(_read("cli_ksat_2026-05-27_evening.txt"))
+    assert obs.section == "TODAY"
+    assert obs.tmax_f == 84.0
+    assert obs.tmax_time_lst == "4:26 PM"
+
+
+def test_kden_evening_kbou_pattern():
+    """KDEN (KBOU) — same evening-intraday-only pattern. Header has
+    VALID TODAY AS OF 0400 PM. Should extract 70°F at 1:30 PM TODAY."""
+    obs = nws.parse_cli(_read("cli_kden_2026-05-27_evening.txt"))
+    assert obs.section == "TODAY"
+    assert obs.tmax_f == 70.0
+    assert obs.tmax_time_lst == "130 PM"
+
+
+def test_kmia_morning_after_normal():
+    """KMIA (KMFL) — typical normal pattern. Title 'FOR MAY 26 2026' with
+    clean YESTERDAY section. Should extract 88°F at 3:15 PM YESTERDAY."""
+    obs = nws.parse_cli(_read("cli_kmia_2026-05-26.txt"))
+    assert obs.section == "YESTERDAY"
+    assert obs.tmax_f == 88.0
+    assert obs.tmax_time_lst == "3:15 PM"
+
+
+def test_ksfo_morning_after_pacific():
+    """KSFO Pacific-time station. Morning-after CLI with YESTERDAY section.
+    Should extract 64°F at 12:59 PM YESTERDAY."""
+    obs = nws.parse_cli(_read("cli_ksfo_2026-05-26.txt"))
+    assert obs.section == "YESTERDAY"
+    assert obs.tmax_f == 64.0
+    assert obs.tmax_time_lst == "12:59 PM"

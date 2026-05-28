@@ -5,16 +5,22 @@ Kalshi weather range markets resolve YES if observed value falls in
 [lower_f, upper_f). For each fill's (station, valid_date, var) we look up
 the official observation and mark the fill settled with payout $1 (win) or $0 (loss).
 
-Source: NWS CLI ONLY. Kalshi settles on the official NWS Climatological
-Report (Daily) — anything else risks boundary-bucket settlement errors.
+Source priority:
+  1. Kalshi `expiration_value` (the actual settlement number we'd be paid
+     against — bottom-line authority)
+  2. NWS CLI tmax/tmin (what Kalshi uses under the hood; small risk of
+     drift when daytime peak occurs after the last NWS issuance our parser
+     can read)
+  3. Defer (return None) — never settle on a guess
 
-History (2026-05-27): a previous version of this job fell back to METAR
-when CLI hadn't been pulled yet. METAR understates CLI by 0.5-1°F on most
-days, which silently flipped 28 paper fills to wrong outcomes between
-April and May (net +$922 of phantom P&L). Boundary buckets where CLI
-exactly equals an edge value (e.g., CLI=64 with bucket [62, 64)) are the
-exact case METAR-fallback breaks. Always wait for CLI — being a day late
-beats settling on the wrong number.
+History:
+  - 2026-05-27: removed METAR fallback after it silently flipped 28 fills
+    (+$922 phantom P&L) on boundary buckets where METAR undercounted CLI
+    by 1°F.
+  - 2026-05-28: added Kalshi `expiration_value` as primary source. The
+    daily settled-pull (weatherbot-kalshi-settled.timer at 14:00 UTC,
+    before settle at 14:23 UTC) populates `kalshi_market.payload.expiration_value`
+    for any market settled in the previous 24h.
 
 Usage:
     python -m weather_bot.jobs.settle_paper_fills
@@ -40,14 +46,24 @@ def _yes_wins(lower_f: float | None, upper_f: float | None, obs: float) -> bool:
     return True
 
 
-def _get_obs_value(station: str, valid_date, var: str) -> tuple[float | None, str]:
-    """Return (CLI_tmax_or_tmin, 'CLI') or (None, 'pending'). No METAR fallback
-    — METAR undercounts CLI by 0.5-1°F and silently mis-settles boundary
-    buckets (see module docstring). If CLI isn't available yet, defer."""
+def _get_obs_value(fill: dict) -> tuple[float | None, str]:
+    """Return (observed_value, source) for a fill.
+
+    Priority:
+      1. fill['kalshi_settle_value'] — Kalshi's expiration_value from the
+         most recent settled-market pull. This IS the value Kalshi paid
+         against; if available, no further lookup needed.
+      2. NWS CLI tmax/tmin for (station, valid_date).
+      3. None — defer to a later run.
+    """
+    kalshi = fill.get("kalshi_settle_value")
+    if kalshi is not None:
+        return float(kalshi), "KALSHI"
+    var = fill["var"]
     if var == "TMAX_DAILY":
-        cli = nws.get_cli_tmax(station, valid_date)
+        cli = nws.get_cli_tmax(fill["station"], fill["valid_date"])
     elif var == "TMIN_DAILY":
-        cli = nws.get_cli_tmin(station, valid_date)
+        cli = nws.get_cli_tmin(fill["station"], fill["valid_date"])
     else:
         cli = None
     if cli is not None:
@@ -65,7 +81,7 @@ def run(dry_run: bool = False) -> None:
     by_source: dict[str, int] = {}
 
     for f in fills:
-        obs, source = _get_obs_value(f["station"], f["valid_date"], f["var"])
+        obs, source = _get_obs_value(f)
         if obs is None:
             pending += 1
             continue  # day hasn't resolved yet

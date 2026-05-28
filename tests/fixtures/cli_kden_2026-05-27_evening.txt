@@ -1,0 +1,96 @@
+
+000
+CDUS45 KBOU 272247
+CLIDEN
+
+CLIMATE REPORT 
+NATIONAL WEATHER SERVICE DENVER/BOULDER
+447 PM MDT WED MAY 27 2026
+
+...................................
+
+...THE DENVER CO CLIMATE SUMMARY FOR MAY 27 2026...
+VALID TODAY AS OF 0400 PM LOCAL TIME.
+
+CLIMATE NORMAL PERIOD 1991 TO 2020
+CLIMATE RECORD PERIOD 1872 TO 2026
+
+
+WEATHER ITEM   OBSERVED TIME   RECORD YEAR NORMAL DEPARTURE LAST      
+                VALUE   (LST)  VALUE       VALUE  FROM      YEAR     
+                                                  NORMAL           
+...................................................................
+TEMPERATURE (F)                                                          
+ TODAY                                                               
+  MAXIMUM         70    130 PM  93    2006  76     -6       75       
+  MINIMUM         50    414 AM  34    1950  48      2       41       
+  AVERAGE         60                        62     -2       58     
+
+PRECIPITATION (IN)                                                    
+  TODAY            0.03          1.41 1897   0.07  -0.04      T       
+  MONTH TO DATE    1.56                      1.87  -0.31     3.23     
+  SINCE OCT 1      3.72                      7.18  -3.46     7.90     
+  SINCE JAN 1      3.16                      5.20  -2.04     5.77     
+
+DEGREE DAYS                                                           
+ HEATING                                                              
+  TODAY            5                         5      0        7        
+  MONTH TO DATE  234                       246    -12      217        
+  SINCE MAR 1   1087                      1489   -402     1268        
+  SINCE JUL 1   4367                      5796  -1429     5212        
+
+ COOLING                                                              
+  TODAY            0                         2     -2        0        
+  MONTH TO DATE   23                        17      6       12        
+  SINCE MAR 1     34                        18     16       16        
+  SINCE JAN 1     34                        18     16       16        
+...................................................................
+
+
+WIND (MPH)                                                            
+  HIGHEST WIND SPEED    26   HIGHEST WIND DIRECTION    SE (120)       
+  HIGHEST GUST SPEED    34   HIGHEST GUST DIRECTION     E (100)       
+  AVERAGE WIND SPEED    12.7                                        
+
+
+SKY COVER                                                             
+  POSSIBLE SUNSHINE  MM                                                 
+  AVERAGE SKY COVER 0.8                                                 
+
+
+WEATHER CONDITIONS                                                    
+THE FOLLOWING WEATHER WAS RECORDED TODAY.                             
+  THUNDERSTORM                                                        
+  LIGHT RAIN                                                          
+  FOG                                                                 
+
+
+RELATIVE HUMIDITY (PERCENT)
+ HIGHEST    93           200 PM                                      
+ LOWEST     42           100 PM                                      
+ AVERAGE    68                                                        
+
+..........................................................
+
+
+THE DENVER CO CLIMATE NORMALS FOR TOMORROW
+                         NORMAL    RECORD    YEAR                     
+ MAXIMUM TEMPERATURE (F)   77        93      1974                      
+ MINIMUM TEMPERATURE (F)   48        32      1947                      
+
+
+SUNRISE AND SUNSET                                                    
+MAY 27 2026...........SUNRISE   535 AM MDT   SUNSET   817 PM MDT     
+MAY 28 2026...........SUNRISE   534 AM MDT   SUNSET   818 PM MDT     
+
+
+-  INDICATES NEGATIVE NUMBERS.
+R  INDICATES RECORD WAS SET OR TIED.
+MM INDICATES DATA IS MISSING.
+T  INDICATES TRACE AMOUNT.
+
+
+
+
+$$
+

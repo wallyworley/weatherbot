@@ -1,0 +1,100 @@
+
+000
+CDUS44 KEWX 272247
+CLISAT
+
+CLIMATE REPORT 
+NATIONAL WEATHER SERVICE AUSTIN/SAN ANTONIO
+547 PM CDT WED MAY 27 2026
+
+...................................
+
+...THE SAN ANTONIO CLIMATE SUMMARY FOR MAY 27 2026...
+VALID TODAY AS OF 0500 PM LOCAL TIME.
+
+CLIMATE NORMAL PERIOD: 1991 TO 2020
+CLIMATE RECORD PERIOD: 1886 TO 2026
+
+
+WEATHER ITEM   OBSERVED TIME   RECORD YEAR NORMAL DEPARTURE LAST      
+                VALUE   (LST)  VALUE       VALUE  FROM      YEAR     
+                                                  NORMAL           
+...................................................................
+TEMPERATURE (F)                                                          
+ TODAY                                                               
+  MAXIMUM         84   4:26 PM 100    2011  89     -5       88        
+  MINIMUM         63   4:45 AM  52    1901  70     -7       67        
+  AVERAGE         74                        79     -5       78     
+
+PRECIPITATION (IN)                                                    
+  TODAY            T             4.26 1957   0.15  -0.15     0.01     
+  MONTH TO DATE    5.81                      3.85   1.96     2.51     
+  SINCE MAR 1     13.71                      8.58   5.13     6.41     
+  SINCE JAN 1     15.17                     12.28   2.89     8.12     
+
+SNOWFALL (IN)                                                              
+  TODAY            0.0                                                
+  MONTH TO DATE    0.0                                                
+  SINCE MAR 1      0.0                                                
+  SINCE JUL 1      T                                                  
+  SNOW DEPTH       0                                                 
+
+DEGREE DAYS                                                           
+ HEATING                                                              
+  TODAY            0                         0      0        0        
+  MONTH TO DATE    7                         0      7        0        
+  SINCE MAR 1     83                       174    -91       53        
+  SINCE JUL 1    852                      1436   -584     1082        
+
+ COOLING                                                              
+  TODAY            9                        14     -5       13        
+  MONTH TO DATE  273                       299    -26      431        
+  SINCE MAR 1    802                       536    266      924        
+  SINCE JAN 1    888                       565    323      984        
+...................................................................
+
+
+WIND (MPH)                                                            
+  HIGHEST WIND SPEED    17   HIGHEST WIND DIRECTION     E (70)        
+  HIGHEST GUST SPEED    24   HIGHEST GUST DIRECTION    NE (60)        
+  AVERAGE WIND SPEED     6.2                                        
+
+
+SKY COVER                                                             
+  AVERAGE SKY COVER 0.9                                                 
+
+
+WEATHER CONDITIONS                                                    
+THE FOLLOWING WEATHER WAS RECORDED TODAY.                             
+  LIGHT RAIN                                                          
+
+
+RELATIVE HUMIDITY (PERCENT)
+ HIGHEST    97           4:00 AM                                      
+ LOWEST     43           4:00 PM                                      
+ AVERAGE    70                                                        
+
+..........................................................
+
+
+THE SAN ANTONIO CLIMATE NORMALS FOR TOMORROW
+                         NORMAL    RECORD    YEAR                     
+ MAXIMUM TEMPERATURE (F)   90       103      1927                      
+ MINIMUM TEMPERATURE (F)   70        55      1976                      
+
+
+SUNRISE AND SUNSET                                                    
+MAY 27 2026...........SUNRISE   6:36 AM CDT   SUNSET   8:27 PM CDT     
+MAY 28 2026...........SUNRISE   6:35 AM CDT   SUNSET   8:27 PM CDT     
+
+
+-  INDICATES NEGATIVE NUMBERS.
+R  INDICATES RECORD WAS SET OR TIED.
+MM INDICATES DATA IS MISSING.
+T  INDICATES TRACE AMOUNT.
+
+
+
+
+$$
+
