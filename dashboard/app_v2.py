@@ -115,6 +115,31 @@ st.markdown("""
   .v2-pill-no  { background: rgba(220,38,38,0.15); color: #dc2626; }
   .v2-pill-pending { background: rgba(245,158,11,0.15); color: #f59e0b; }
   .v2-pill-filled  { background: rgba(99,102,241,0.15); color: #6366f1; }
+  /* Control-room: tighter hero cards */
+  .v2-card.v2-compact { min-height: 78px; padding: 0.7rem 0.9rem; }
+  .v2-card.v2-compact .v2-card-value { font-size: 1.5rem; }
+  /* Live ticker (marquee) */
+  .v2-ticker-wrap {
+    overflow: hidden; white-space: nowrap;
+    border: 1px solid rgba(128,128,128,0.22); border-radius: 8px;
+    background: rgba(128,128,128,0.05); padding: 0.5rem 0; margin: 0.2rem 0 0.4rem;
+  }
+  .v2-ticker { display: inline-block; padding-left: 100%; animation: v2scroll 55s linear infinite; }
+  .v2-ticker-wrap:hover .v2-ticker { animation-play-state: paused; }
+  @keyframes v2scroll { 0% { transform: translateX(0); } 100% { transform: translateX(-100%); } }
+  .v2-tick { font-size: 0.92rem; font-variant-numeric: tabular-nums; margin: 0 0.2rem; }
+  .v2-tick-sep { color: rgba(128,128,128,0.45); margin: 0 0.55rem; }
+  /* Station heatmap tiles */
+  .v2-tiles { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.2rem 0 0.6rem; }
+  .v2-tile {
+    flex: 1 1 88px; min-width: 88px; max-width: 130px;
+    border-radius: 8px; padding: 0.45rem 0.55rem; text-align: center;
+    border: 1px solid rgba(128,128,128,0.18);
+  }
+  .v2-tile-city { font-size: 0.74rem; font-weight: 600; opacity: 0.9;
+                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .v2-tile-pnl { font-size: 1.0rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .v2-tile-sub { font-size: 0.68rem; opacity: 0.7; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -470,101 +495,232 @@ def market_p50_for(station: str, valid_date) -> float | None:
 
 
 # ---------------------------------------------------------------------------
-# PAGE: TODAY
+# Control-room helpers: live ticker + station heatmap
+# ---------------------------------------------------------------------------
+def _short_city(station: str) -> str:
+    """Compact city label for tiles/ticker, e.g. 'New York (Central Park)' -> 'New York'."""
+    return t.friendly_station(station).split(" (")[0]
+
+
+@st.cache_data(ttl=12)
+def _ticker_events(limit: int = 30) -> pd.DataFrame:
+    """Most recent paper-fill lifecycle events (opens, take-profit exits,
+    settlements) newest-first, for the scrolling ticker."""
+    sql = f"""
+        SELECT km.station, pf.side, pf.price, pf.contracts,
+               pf.exit_price, pf.payout, pf.settled,
+               COALESCE(pf.exit_ts, pf.ts) AS event_ts,
+               CASE WHEN pf.exit_price IS NOT NULL THEN 'EXIT'
+                    WHEN pf.payout IS NOT NULL THEN 'SETTLED'
+                    ELSE 'OPEN' END AS kind,
+               {_V2_PNL_SQL} AS realized_pnl
+          FROM paper_fill pf
+          JOIN kalshi_market km ON km.ticker = pf.ticker
+         ORDER BY COALESCE(pf.exit_ts, pf.ts) DESC
+         LIMIT %s
+    """
+    try:
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute(sql, (limit,))
+            rows = cur.fetchall()
+    except Exception:
+        return pd.DataFrame()
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def render_ticker() -> None:
+    """Scrolling marquee of the latest trade events — the 'it's alive' strip."""
+    df = _ticker_events()
+    if df.empty:
+        return
+    items: list[str] = []
+    for _, r in df.iterrows():
+        city = _short_city(r["station"])
+        side = str(r["side"])
+        scol = "#16a34a" if side == "YES" else "#dc2626"
+        kind = r["kind"]
+        if kind == "OPEN":
+            cents = float(r["price"]) * 100
+            body = (f'<span style="color:{scol};font-weight:600">{side}</span> '
+                    f'{city} {cents:.0f}¢ ×{int(r["contracts"])}')
+            emoji = "🟢" if side == "YES" else "🔴"
+        else:
+            pnl = r.get("realized_pnl")
+            pnl = float(pnl) if pd.notna(pnl) else 0.0
+            pcol = t.signed_color(pnl)
+            verb = "exit" if kind == "EXIT" else "settled"
+            emoji = "💰" if (kind == "EXIT" and pnl > 0) else ("✅" if pnl > 0 else "❌")
+            body = (f'{city} {verb} '
+                    f'<span style="color:{pcol};font-weight:600">{t.usd(pnl, plus_sign=True)}</span>')
+        items.append(f'<span class="v2-tick">{emoji} {body}</span>')
+    strip = '<span class="v2-tick-sep">•</span>'.join(items)
+    # Repeat once so the loop reads continuously instead of leaving a gap.
+    _md(f'<div class="v2-ticker-wrap"><div class="v2-ticker">{strip}'
+        f'<span class="v2-tick-sep">•</span>{strip}</div></div>')
+
+
+@st.cache_data(ttl=12)
+def _station_grid_7d() -> pd.DataFrame:
+    """Per-station net realized P&L + fill count over the last 7 days."""
+    df = _v2_settled_fills(days_back=7)
+    if df.empty:
+        return pd.DataFrame()
+    settled = df[df["settled"] == True]  # noqa: E712
+    if settled.empty:
+        return pd.DataFrame()
+    g = (settled.groupby("station", as_index=False)
+                .agg(net=("realized_pnl", "sum"), fills=("id", "count")))
+    return g
+
+
+def _tile_bg(net: float, has_fills: bool) -> str:
+    """Background color for a station tile, intensity scaled by |net|."""
+    if not has_fills:
+        return "rgba(128,128,128,0.06)"
+    mag = min(1.0, abs(net) / 60.0)            # saturate at ±$60/wk
+    alpha = 0.10 + 0.32 * mag
+    rgb = "22,163,74" if net > 0 else ("220,38,38" if net < 0 else "128,128,128")
+    return f"rgba({rgb},{alpha:.2f})"
+
+
+def render_station_grid() -> None:
+    """All trade-eligible stations as colored tiles — the whole fleet at a glance."""
+    try:
+        stations = list(queries.trade_eligible_stations())
+    except Exception:
+        stations = []
+    if not stations:
+        return
+    grid = _station_grid_7d()
+    by_station = {row["station"]: row for _, row in grid.iterrows()} if not grid.empty else {}
+    # Order tiles by net P&L (best first) so winners/losers cluster visually;
+    # stations with no fills sink to the end.
+    def _sort_key(s: str):
+        r = by_station.get(s)
+        return (0, -float(r["net"])) if r is not None else (1, 0.0)
+    tiles: list[str] = []
+    for s in sorted(stations, key=_sort_key):
+        r = by_station.get(s)
+        has = r is not None
+        net = float(r["net"]) if has else 0.0
+        fills = int(r["fills"]) if has else 0
+        bg = _tile_bg(net, has)
+        pnl_txt = t.usd(net, plus_sign=True) if has else "—"
+        pnl_col = t.signed_color(net) if has else "#737373"
+        sub = f"{fills} bet{'s' if fills != 1 else ''}" if has else "no bets (7d)"
+        tiles.append(
+            f'<div class="v2-tile" style="background:{bg}">'
+            f'<div class="v2-tile-city">{_short_city(s)}</div>'
+            f'<div class="v2-tile-pnl" style="color:{pnl_col}">{pnl_txt}</div>'
+            f'<div class="v2-tile-sub">{sub}</div></div>'
+        )
+    _md(f'<div class="v2-tiles">{"".join(tiles)}</div>')
+
+
+# ---------------------------------------------------------------------------
+# PAGE: TODAY (control room)
 # ---------------------------------------------------------------------------
 def page_today() -> None:
-    today_str = _et_now().strftime("%A, %B %-d, %Y")
-    st.title("Today")
-    st.caption(today_str + " · ET")
-
-    # ── Top metric cards ──────────────────────────────────────────────────
     today = pnl_today_v2()
     y = pnl_yesterday()
     w = pnl_this_week()
     status_emoji, status_label, status_color = overall_bot_status()
 
+    # ── Header line: date + live bot-status pill ──────────────────────────
+    today_str = _et_now().strftime("%A, %B %-d")
+    hl, hr = st.columns([3, 1])
+    with hl:
+        st.title("Control Room")
+        st.caption(today_str + " · ET")
+    with hr:
+        _md(f'<div style="text-align:right;padding-top:0.9rem;font-size:1.05rem;'
+            f'font-weight:600;color:{status_color}">{status_emoji} {status_label}</div>'
+            f'<div style="text-align:right;font-size:0.78rem;opacity:0.7">'
+            f'{today["open_count"]} open · ${today["capital_at_risk"]:.0f} at risk</div>')
+
+    # ── Hero numbers (the 4 that matter) ──────────────────────────────────
+    week_winrate = (w["n_wins"] / w["n_fills"]) if w["n_fills"] else None
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         if today["n_closed"] == 0:
-            big_card("Today (realized)", "—", "Nothing closed yet today.")
+            _compact_card("Today", "—", "nothing closed yet")
         else:
-            sub = f"{today['wins']} wins, {today['losses']} losses"
-            if today["open_count"] > 0:
-                sub += f" · {today['open_count']} still open"
-            big_card(
-                "Today (realized)",
-                t.usd(today["realized"], plus_sign=True),
-                sub,
-                value_color=t.signed_color(today["realized"]),
-            )
+            _compact_card("Today", t.usd(today["realized"], plus_sign=True),
+                          f"{today['wins']}W · {today['losses']}L"
+                          + (f" · {today['open_count']} open" if today["open_count"] else ""),
+                          value_color=t.signed_color(today["realized"]))
     with c2:
-        net = y.get("net")
-        if net is None or y.get("n_fills", 0) == 0:
-            big_card("Yesterday", "—", "No bets settled yesterday.")
-        else:
-            losses = y["n_fills"] - y["n_wins"]
-            big_card(
-                "Yesterday",
-                t.usd(net, plus_sign=True),
-                f"{y['n_wins']} wins, {losses} losses",
-                value_color=t.signed_color(net),
-            )
-    with c3:
         if w["n_fills"] == 0:
-            big_card("Last 7 days", "—", "No settled bets in the last week.")
+            _compact_card("Last 7 days", "—", "no settled bets")
         else:
-            big_card(
-                "Last 7 days",
-                t.usd(w["net"], plus_sign=True),
-                f"{w['n_wins']} wins, {w['n_losses']} losses",
-                value_color=t.signed_color(w["net"]),
-            )
+            _compact_card("Last 7 days", t.usd(w["net"], plus_sign=True),
+                          f"{w['n_wins']}W · {w['n_losses']}L",
+                          value_color=t.signed_color(w["net"]))
+    with c3:
+        _compact_card("Open risk",
+                      f"${today['capital_at_risk']:.0f}",
+                      f"{today['open_count']} position{'s' if today['open_count'] != 1 else ''}")
     with c4:
-        big_card("Bot status",
-                 f"{status_emoji} {status_label}",
-                 "All trading + data systems checked." if status_emoji == "🟢"
-                 else "Open the Engine Room page for details.",
-                 value_color=status_color)
+        if week_winrate is None:
+            _compact_card("Win rate (7d)", "—", "no settled bets")
+        else:
+            _compact_card("Win rate (7d)", f"{week_winrate*100:.0f}%",
+                          f"{w['n_wins']}/{w['n_fills']} bets")
 
-    # If today's realized is positive but there's significant open exposure,
-    # flag the asymmetry — winners harvest fast via take-profit, losers don't
-    # settle until tomorrow morning's CLI.
+    # ── Live ticker ───────────────────────────────────────────────────────
+    render_ticker()
+
+    # ── Anomaly callouts (only render when something's actually wrong) ─────
+    _render_anomalies()
+
+    # ── Station heatmap: whole fleet at a glance (last 7 days) ────────────
+    section("Cities · last 7 days", "Green = made money, red = lost. Size of color = how much.")
+    render_station_grid()
+
+    # ── Open positions ────────────────────────────────────────────────────
+    section("Open right now",
+            "Live paper positions. On a heavy take-profit day this can be empty "
+            "even though we traded plenty — see today's closed bets below.")
+    _render_open_positions()
+    _render_pending_orders()
+
+    # Take-profit asymmetry caveat — kept visible because it changes how you
+    # read a green "Today" number.
     if today["n_closed"] > 0 and today["realized"] > 0 and today["open_count"] > 0:
         callout(
             "Today's number is one side of the coin",
             f"Take-profit harvested <strong>{today['n_closed']}</strong> winners "
             f"for <strong>{t.usd(today['realized'])}</strong>, but "
-            f"<strong>{today['open_count']}</strong> positions ("
-            f"${today['capital_at_risk']:.0f} capital at risk) "
-            "are still open. Losers don't trigger take-profit — they sit "
-            "until tomorrow's CLI lands and settle at $0. Wait for "
-            "tomorrow's full picture before drawing conclusions.",
+            f"<strong>{today['open_count']}</strong> positions "
+            f"(${today['capital_at_risk']:.0f} at risk) are still open. Losers "
+            "don't trigger take-profit — they settle at $0 tomorrow. Wait for "
+            "the full picture before drawing conclusions.",
             color="#f59e0b",
         )
 
-    # ── Anomaly callouts ──────────────────────────────────────────────────
-    _render_anomalies()
+    # ── Everything diagnostic: one click away, collapsed by default ───────
+    with st.expander("Today's closed bets"):
+        df_closed = todays_closed_fills()
+        if df_closed.empty:
+            st.caption("Nothing has closed yet today.")
+        else:
+            _render_todays_closed_trades()
 
-    # ── What the bot thinks today ─────────────────────────────────────────
-    section("What the bot thinks today",
-            "Forecast and market price for each city the bot is actively trading.")
-    _render_forecast_cards()
+    with st.expander("What the bot thinks today (forecasts vs market)"):
+        _render_forecast_cards()
 
-    # ── What we're betting today ──────────────────────────────────────────
-    section("Currently open positions",
-            "Live paper positions and pending offers. On a heavy take-profit "
-            "day this can be empty even though we placed plenty of trades.")
-    _render_open_positions()
-    _render_pending_orders()
+    with st.expander("Why the bot skipped trades"):
+        _render_skip_breakdown(days_back=1)
 
-    # ── Today's closed bets — surfaced separately so a "0 open positions"
-    # state doesn't make a profitable day look empty.
-    _render_todays_closed_trades()
 
-    # ── Why the bot skipped trades ────────────────────────────────────────
-    section("Why the bot skipped trades",
-            "The bot evaluates thousands of contracts a day. Most don't meet our criteria.")
-    _render_skip_breakdown(days_back=1)
+def _compact_card(label: str, value: str, sub: str = "", value_color: str | None = None) -> None:
+    """A tighter big_card variant for the control-room hero row."""
+    color_style = f"color:{value_color};" if value_color else ""
+    _md(f"""<div class="v2-card v2-compact">
+              <div class="v2-card-label">{label}</div>
+              <div class="v2-card-value" style="{color_style}">{value}</div>
+              <div class="v2-card-sub">{sub}</div>
+            </div>""")
 
 
 def _render_anomalies() -> None:
