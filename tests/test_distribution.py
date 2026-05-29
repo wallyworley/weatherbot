@@ -84,5 +84,9 @@ def test_lead_day_variance_schedule_is_lead_aware():
     assert lead_day_variance_multiplier(1) == 1.25
     assert lead_day_variance_multiplier(2) == 1.15
     assert lead_day_variance_multiplier(3) == 1.05
-    assert max_widen_factor_for_lead(0) == 1.10
+    # lead=0 widening was raised 1.10 → 1.40 on 2026-05-29 after a 14-day
+    # calibration audit found bot fair_prob 10-18pp overconfident across
+    # every bucket >20%. See models/distribution.py docstring + the memory
+    # file calibration_overconfidence_fix_2026_05_29.md.
+    assert max_widen_factor_for_lead(0) == 1.40
     assert max_widen_factor_for_lead(1) == 1.35
