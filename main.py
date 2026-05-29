@@ -20,6 +20,8 @@ from datetime import datetime, timedelta, timezone
 from weather_bot.config import (
     ACTIVE_TRADE_STATIONS,
     BANKROLL_USD,
+    MAX_NO_PRICE,
+    MIN_YES_PRICE,
     PAPER_BYPASS_TRIPWIRE,
     PAPER_ORDER_IMPROVEMENT_CENTS,
     PAPER_ORDER_MODE,
@@ -302,6 +304,25 @@ def run():
                 sig.action = "SKIP"
                 sig.skip_reason = "NO_FADE_GATE"
                 sig.notes = f"NO_FADE_GATE|no_price={no_price:.3f}<{NO_PRICE_FLOOR} {sig.notes}"
+            # NO consensus-fade ceiling: 2026-05-29 calibration audit found
+            # NO at price >=$0.60 lost net -$150 over 14 days (held -$608,
+            # exit captures +$458). Bot is overconfident in its NO conviction
+            # when market is pricing the bucket as the consensus middle.
+            elif no_price >= MAX_NO_PRICE:
+                sig.action = "SKIP"
+                sig.skip_reason = "NO_CONSENSUS_GATE"
+                sig.notes = f"NO_CONSENSUS_GATE|no_price={no_price:.3f}>={MAX_NO_PRICE} {sig.notes}"
+
+        # YES tail floor: 2026-05-29 calibration audit found YES at price
+        # <$0.20 lost net -$189 over 14 days, with held bets going 0/95.
+        # The cheap-tail strategy depends on take-profit exits, which only
+        # fire 15% of the time — the other 85% decay to zero.
+        if (sig.action == "OPEN" and sig.side == "YES"
+                and sig.market_ask is not None
+                and float(sig.market_ask) < MIN_YES_PRICE):
+            sig.action = "SKIP"
+            sig.skip_reason = "YES_TAIL_GATE"
+            sig.notes = f"YES_TAIL_GATE|yes_ask={float(sig.market_ask):.3f}<{MIN_YES_PRICE} {sig.notes}"
 
         # Divergence bypass: when bias-corrected fair disagrees sharply with the
         # market, ask whether the bias table is the source of disagreement by

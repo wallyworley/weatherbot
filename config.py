@@ -263,6 +263,16 @@ MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.02"))
 KELLY_FRACTION = float(os.getenv("KELLY_FRACTION", "0.25"))
 MIN_EDGE_BPS = int(os.getenv("MIN_EDGE_BPS", "200"))   # 200 bps = 2 cents per $1
 
+# Entry-price gates added 2026-05-29 after 14-day calibration audit found:
+#   - YES at price <$0.20 (cheap tail bets): 112 fills, 17 take-profits,
+#     95 decayed to zero. Net -$189 (held -$740 vs exit +$551).
+#   - NO at price >=$0.60 (fade-consensus): 126 fills, 85 take-profits, 41
+#     held to settlement. Net -$150 (held -$608 vs exit +$458).
+# Both categories suffer from the bot's systemic overconfidence (predicted
+# 95% vs observed 81% win rate). Block entries in these zones; tune via env.
+MIN_YES_PRICE = float(os.getenv("MIN_YES_PRICE", "0.20"))
+MAX_NO_PRICE = float(os.getenv("MAX_NO_PRICE", "0.60"))
+
 # ---------------------------------------------------------------------------
 # Probability calibration
 # ---------------------------------------------------------------------------
