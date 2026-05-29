@@ -124,7 +124,7 @@ st.markdown("""
     border: 1px solid rgba(128,128,128,0.22); border-radius: 8px;
     background: rgba(128,128,128,0.05); padding: 0.5rem 0; margin: 0.2rem 0 0.4rem;
   }
-  .v2-ticker { display: inline-block; padding-left: 100%; animation: v2scroll 55s linear infinite; }
+  .v2-ticker { display: inline-block; padding-left: 100%; animation: v2scroll 140s linear infinite; }
   .v2-ticker-wrap:hover .v2-ticker { animation-play-state: paused; }
   @keyframes v2scroll { 0% { transform: translateX(0); } 100% { transform: translateX(-100%); } }
   .v2-tick { font-size: 0.92rem; font-variant-numeric: tabular-nums; margin: 0 0.2rem; }
