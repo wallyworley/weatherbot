@@ -263,6 +263,18 @@ MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.02"))
 KELLY_FRACTION = float(os.getenv("KELLY_FRACTION", "0.25"))
 MIN_EDGE_BPS = int(os.getenv("MIN_EDGE_BPS", "200"))   # 200 bps = 2 cents per $1
 
+# Auto-SKIP when our fair_prob diverges from market mid by more than this.
+# 2026-05-29 (Opus 4.8 review): tightened 0.50 → 0.20. The bot is adversely
+# selected — overconfidence scales with divergence from the market:
+#   <10pp from mkt   n=166  +7.6pp overconfident
+#   10-20pp          n=110  +18.0pp
+#   20-35pp          n=51   +32.5pp  ← toxic
+#   >35pp            n=9    +21.0pp
+# The market is the better forecaster on liquid weather contracts; most of
+# what the model scores as "edge" beyond ~20pp is its own error. The old 0.50
+# cap let the entire toxic 0.20-0.35 band through. Env-configurable for A/B.
+MAX_FAIR_MKT_DIVERGENCE = float(os.getenv("MAX_FAIR_MKT_DIVERGENCE", "0.20"))
+
 # Entry-price gates added 2026-05-29 after 14-day calibration audit found:
 #   - YES at price <$0.20 (cheap tail bets): 112 fills, 17 take-profits,
 #     95 decayed to zero. Net -$189 (held -$740 vs exit +$551).
@@ -283,8 +295,16 @@ MAX_NO_PRICE = float(os.getenv("MAX_NO_PRICE", "0.60"))
 PROB_CALIBRATION_ENABLED = os.getenv("PROB_CALIBRATION_ENABLED", "true").lower() == "true"
 PROB_CALIBRATION_DAYS_BACK = int(os.getenv("PROB_CALIBRATION_DAYS_BACK", "60"))
 PROB_CALIBRATION_MIN_BUCKET_N = int(os.getenv("PROB_CALIBRATION_MIN_BUCKET_N", "20"))
-PROB_CALIBRATION_PRIOR_N = float(os.getenv("PROB_CALIBRATION_PRIOR_N", "35"))
-PROB_CALIBRATION_MAX_DELTA = float(os.getenv("PROB_CALIBRATION_MAX_DELTA", "0.15"))
+# 2026-05-29 (Opus 4.8 review): PRIOR_N 35→15 and MAX_DELTA 0.15→0.20. The
+# exit-independent reliability curve shows ~+17pp overconfidence above the 20%
+# bucket — but the calibrator was only applying ~42% of that gap (n/(n+35) at
+# n≈25) AND capping the result at 0.15. Both settings throttled the empirical
+# correction below what the data demands. Lowering PRIOR_N roughly doubles the
+# applied fraction; raising MAX_DELTA lets the full ~17pp correction land. The
+# calibrator is the right lever for a flat/location-shaped error (vs widening
+# the distribution, which was reverted in models/distribution.py same day).
+PROB_CALIBRATION_PRIOR_N = float(os.getenv("PROB_CALIBRATION_PRIOR_N", "15"))
+PROB_CALIBRATION_MAX_DELTA = float(os.getenv("PROB_CALIBRATION_MAX_DELTA", "0.20"))
 
 # ---------------------------------------------------------------------------
 # Profitability controls (paper/live entry shaping)

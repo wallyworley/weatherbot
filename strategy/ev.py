@@ -20,18 +20,19 @@ from weather_bot.config import (
     BANKROLL_USD,
     KALSHI_FEE_COEFF,
     KELLY_FRACTION,
+    MAX_FAIR_MKT_DIVERGENCE,
     MAX_POSITION_PCT,
     MIN_EDGE_BPS,
 )
 
 log = logging.getLogger(__name__)
 
-# Auto-skip any signal where our fair diverges from market mid by >50 points.
-# Two consecutive paper-trading losses on extreme-divergence signals (fair=44%
-# vs mkt=1%, then fair=97% vs mkt=15%) proved the distribution is the outlier,
-# not the market. When divergence is this large, something upstream is broken —
-# trust the market and route the signal to manual review instead of trading it.
-_MAX_FAIR_MKT_DIVERGENCE = 0.50
+# Auto-skip any signal where our fair diverges from market mid by more than the
+# configured threshold. Originally 0.50 (catch only broken-upstream outliers),
+# tightened to 0.20 on 2026-05-29: overconfidence scales with divergence, so
+# the market is the better forecaster precisely where the model disagrees most.
+# Now sourced from config so it can be A/B-tuned without a redeploy.
+_MAX_FAIR_MKT_DIVERGENCE = MAX_FAIR_MKT_DIVERGENCE
 
 
 @dataclass

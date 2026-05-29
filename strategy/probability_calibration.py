@@ -119,11 +119,15 @@ def _bucket_stats(
           JOIN kalshi_market km ON km.ticker = s.ticker
           JOIN stations st ON st.code = km.station
           LEFT JOIN cli_obs c ON c.station = km.station AND c.local_date = km.valid_date
-          LEFT JOIN daily_obs d ON d.station = km.station AND d.local_date = km.valid_date
+          -- Truth source is CLI only, matching jobs/settle_paper_fills.py (which
+          -- dropped its METAR/daily_obs fallback on 2026-05-28). Using daily_obs
+          -- here would label outcomes off a source the settler no longer trusts,
+          -- biasing the reliability curve on exactly the boundary buckets that
+          -- matter most. Unlabelled (CLI-missing) days are excluded below.
           LEFT JOIN LATERAL (
               SELECT CASE
-                       WHEN km.var = 'TMAX_DAILY' THEN COALESCE(c.tmax_f, d.tmax_f)
-                       WHEN km.var = 'TMIN_DAILY' THEN COALESCE(c.tmin_f, d.tmin_f)
+                       WHEN km.var = 'TMAX_DAILY' THEN c.tmax_f
+                       WHEN km.var = 'TMIN_DAILY' THEN c.tmin_f
                        ELSE NULL
                      END AS value_f
           ) truth ON TRUE

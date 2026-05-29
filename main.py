@@ -81,6 +81,9 @@ def _compute_model_votes(station: str, valid_date, var: str,
     return {**votes, "n_yes": n_yes, "n_no": n_no, "n_total": n_yes + n_no}
 
 
+log = logging.getLogger(__name__)
+
+
 def _tripwire_red_stations() -> set[str]:
     """Stations currently flagged RED by the health-check tripwire.
 
@@ -100,8 +103,6 @@ def _tripwire_red_stations() -> set[str]:
         # let a missing tripwire table BLOCK trading. Logged so it's visible.
         log.warning("tripwire query failed (failing open): %s", exc)
         return set()
-
-log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -180,6 +181,47 @@ def _ask_size_for_side(sig, top: OrderbookTop) -> int | None:
     if sig.side == "YES":
         return top.yes_ask_size
     return top.yes_bid_size
+
+
+def _apply_price_gates(sig):
+    """Apply the entry-price gates (NO_FADE / NO_CONSENSUS / YES_TAIL) to an
+    OPEN signal in place. No-op if the signal isn't OPEN.
+
+    Extracted so the divergence-bypass path can re-run these on the resurrected
+    no-bias signal — otherwise a BIAS_BLAMED signal would skip the very gates
+    that block toxic YES-tail / NO-consensus entries.
+
+    Gate rationale (2026-05-29 calibration audit):
+      - NO_FADE_GATE: NO at price <$0.50 fades a strong YES market — 0/6 historically.
+      - NO_CONSENSUS_GATE: NO at price >=MAX_NO_PRICE fades the consensus middle;
+        bot is overconfident there (held -$608, exit +$458 over 14d).
+      - YES_TAIL_GATE: YES at price <MIN_YES_PRICE relies on take-profit exits
+        that only fire ~15% of the time; the other 85% decay to zero.
+    """
+    if sig.action != "OPEN":
+        return sig
+
+    if sig.side == "NO" and sig.market_bid is not None:
+        no_price = 1.0 - float(sig.market_bid)
+        if no_price < NO_PRICE_FLOOR:
+            sig.action = "SKIP"
+            sig.skip_reason = "NO_FADE_GATE"
+            sig.notes = f"NO_FADE_GATE|no_price={no_price:.3f}<{NO_PRICE_FLOOR} {sig.notes}"
+            return sig
+        if no_price >= MAX_NO_PRICE:
+            sig.action = "SKIP"
+            sig.skip_reason = "NO_CONSENSUS_GATE"
+            sig.notes = f"NO_CONSENSUS_GATE|no_price={no_price:.3f}>={MAX_NO_PRICE} {sig.notes}"
+            return sig
+
+    if (sig.side == "YES" and sig.market_ask is not None
+            and float(sig.market_ask) < MIN_YES_PRICE):
+        sig.action = "SKIP"
+        sig.skip_reason = "YES_TAIL_GATE"
+        sig.notes = f"YES_TAIL_GATE|yes_ask={float(sig.market_ask):.3f}<{MIN_YES_PRICE} {sig.notes}"
+        return sig
+
+    return sig
 
 
 def run():
@@ -286,7 +328,9 @@ def run():
             sig.skip_reason = "TRIPWIRE_RED"
             sig.notes = f"TRIPWIRE_RED|station={m['station']} {sig.notes}"
         if sig.action == "OPEN":
-            lead_day = lead_day_for_station(m["station"], m["valid_date"], now_utc)
+            # Reuse the clamped lead_day computed above (line ~273). The earlier
+            # bare recompute here dropped the max(0, …) clamp, so downstream
+            # gates could disagree with the value used for calibration.
             eligible, reason = is_station_calibrated(m["station"], m["var"], m["valid_date"], lead_day)
             if not eligible:
                 sig.action = "SKIP"
@@ -298,31 +342,10 @@ def run():
             sig.skip_reason = "LEAD_DAY_GATE"
             sig.notes = f"LEAD_DAY_GATE|lead={lead_day}>max={MAX_LEAD_DAY_TO_TRADE} {sig.notes}"
 
-        if sig.action == "OPEN" and sig.side == "NO" and sig.market_bid is not None:
-            no_price = 1.0 - float(sig.market_bid)
-            if no_price < NO_PRICE_FLOOR:
-                sig.action = "SKIP"
-                sig.skip_reason = "NO_FADE_GATE"
-                sig.notes = f"NO_FADE_GATE|no_price={no_price:.3f}<{NO_PRICE_FLOOR} {sig.notes}"
-            # NO consensus-fade ceiling: 2026-05-29 calibration audit found
-            # NO at price >=$0.60 lost net -$150 over 14 days (held -$608,
-            # exit captures +$458). Bot is overconfident in its NO conviction
-            # when market is pricing the bucket as the consensus middle.
-            elif no_price >= MAX_NO_PRICE:
-                sig.action = "SKIP"
-                sig.skip_reason = "NO_CONSENSUS_GATE"
-                sig.notes = f"NO_CONSENSUS_GATE|no_price={no_price:.3f}>={MAX_NO_PRICE} {sig.notes}"
-
-        # YES tail floor: 2026-05-29 calibration audit found YES at price
-        # <$0.20 lost net -$189 over 14 days, with held bets going 0/95.
-        # The cheap-tail strategy depends on take-profit exits, which only
-        # fire 15% of the time — the other 85% decay to zero.
-        if (sig.action == "OPEN" and sig.side == "YES"
-                and sig.market_ask is not None
-                and float(sig.market_ask) < MIN_YES_PRICE):
-            sig.action = "SKIP"
-            sig.skip_reason = "YES_TAIL_GATE"
-            sig.notes = f"YES_TAIL_GATE|yes_ask={float(sig.market_ask):.3f}<{MIN_YES_PRICE} {sig.notes}"
+        # Entry-price gates (NO_FADE / NO_CONSENSUS / YES_TAIL). Extracted to a
+        # helper so the divergence-bypass path below can re-run them on a
+        # resurrected no-bias signal.
+        sig = _apply_price_gates(sig)
 
         # Divergence bypass: when bias-corrected fair disagrees sharply with the
         # market, ask whether the bias table is the source of disagreement by
@@ -360,6 +383,11 @@ def run():
                     sig_nb.model_votes = sig.model_votes
                     sig_nb.reversal_risk = sig.reversal_risk
                     sig, fair_prob = sig_nb, fair_nb
+                    # Re-run entry-price gates on the resurrected signal — the
+                    # no-bias evaluate() above never passed through them, so a
+                    # BIAS_BLAMED OPEN could otherwise land in a YES-tail or
+                    # NO-consensus zone we explicitly block.
+                    sig = _apply_price_gates(sig)
                 elif sig_nb.skip_reason == "DIVERGENCE":
                     sig.notes = f"MODEL_BLAMED|fair_no_bias={fair_nb:.3f}|raw_no_bias={raw_fair_nb:.3f} {sig.notes}"
                 else:

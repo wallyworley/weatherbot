@@ -69,21 +69,23 @@ def lead_day_variance_multiplier(lead_day: int) -> float:
 def max_widen_factor_for_lead(lead_day: int) -> float:
     """Cap knot widening so noisy bias samples cannot blow out the CDF.
 
-    2026-05-29: bumped lead=0 from 1.10 to 1.40 after calibration audit
-    found systemic overconfidence of 10-18 percentage points across every
-    fair_prob bucket above 20% (predicted 95% wins → actual 81%). The
-    original 1.10 cap was tuned on the 3-station May-1 baseline; the
-    16-station graduation since then expanded the distribution noticeably.
-    Wider knots let the bias table's empirical stddev_f translate into
-    actual distribution width instead of being clipped. Re-evaluate
-    around 2026-06-09 against fresh calibration data."""
+    2026-05-29 (Opus 4.8 review): reverted lead=0 from 1.40 back to 1.10.
+    The 1.40 bump (earlier same day) was the wrong lever for the observed
+    error. The exit-independent reliability curve shows a ~constant +17pp
+    overconfidence across every bucket above 20%, while the 10-20% bucket
+    is already well-calibrated (+1.5pp). A flat/location-shaped error is NOT
+    a too-narrow distribution — widening pulls probabilities toward 0.5 and
+    so corrupts the already-calibrated low buckets while only partially
+    helping the top. The correct lever is the per-bin empirical calibrator
+    (strategy/probability_calibration.py); see config PROB_CALIBRATION_*.
+    Re-evaluate around 2026-06-09 against fresh calibration data."""
     if lead_day == 1:
         return 1.35
     if lead_day == 2:
         return 1.25
     if lead_day >= 3:
         return 1.15
-    return 1.40
+    return 1.10
 
 
 @dataclass

@@ -40,7 +40,9 @@ def test_fee_aware_kelly_is_lower_than_fee_less_kelly():
 
 
 def test_evaluate_opens_when_edge_is_large():
-    sig = ev.evaluate("KX-TEST", fair_prob=0.70, yes_ask=0.50, yes_bid=0.49, bankroll=1000)
+    # fair 0.65 vs mid 0.495 = 0.155 divergence, within the 0.20 cap (tightened
+    # from 0.50 on 2026-05-29). Still a large per-contract edge → OPEN YES.
+    sig = ev.evaluate("KX-TEST", fair_prob=0.65, yes_ask=0.50, yes_bid=0.49, bankroll=1000)
     assert sig.action == "OPEN"
     assert sig.side == "YES"
     assert sig.size_usd > 0
