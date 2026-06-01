@@ -39,6 +39,7 @@ import argparse
 from collections import defaultdict
 
 from weather_bot.data import persistence
+from weather_bot.strategy.ev import fee_per_contract
 
 # Realized settlement value for a market: Kalshi's expiration_value first
 # (what we'd actually be paid against), else NWS CLI tmax/tmin. NULL => the day
@@ -144,6 +145,77 @@ def _metrics(rows, bins: int):
                 reliability=reliability)
 
 
+# Divergence buckets matching the 2026-05-29 review's cohorts. The current
+# MAX_FAIR_MKT_DIVERGENCE cap is 0.20 (blocks the last two buckets); the old
+# cap was 0.50.
+_DIV_BUCKETS = [(0.0, 0.10), (0.10, 0.20), (0.20, 0.35), (0.35, 1.01)]
+
+
+def _trading_layer(cur, days: int):
+    """Per-divergence-bucket realized edge on a COUNTERFACTUAL-HOLD basis.
+
+    Unit is actual fills (real entry prices) joined to the signal that
+    triggered them (for fair_prob + market mid at decision time) and to the
+    market's true settlement. 'Hold' = settle at expiry, ignoring early exit —
+    this is the clean test of whether trading at high divergence actually
+    loses money, i.e. whether the 0.20 divergence cap is throwing away edge.
+    """
+    cur.execute(
+        f"""
+        SELECT pf.side, pf.price, pf.contracts, pf.fees,
+               pf.payout, pf.exit_price, pf.exit_fees,
+               km.station, km.lower_f, km.upper_f,
+               s.fair_prob, s.market_ask, s.market_bid,
+               {_REALIZED_SQL} AS realized
+          FROM paper_fill pf
+          JOIN kalshi_market km ON km.ticker = pf.ticker
+          LEFT JOIN signal s    ON s.id = pf.signal_id
+          LEFT JOIN cli_obs co  ON co.station = km.station AND co.local_date = km.valid_date
+         WHERE pf.settled
+           AND km.valid_date >= CURRENT_DATE - %s
+           AND km.valid_date <  CURRENT_DATE
+        """,
+        (days,),
+    )
+    rows = []
+    for r in cur.fetchall():
+        if r["realized"] is None or r["fair_prob"] is None:
+            continue
+        if r["market_ask"] is None or r["market_bid"] is None:
+            continue
+        lo, hi, real = r["lower_f"], r["upper_f"], float(r["realized"])
+        yes_win = not ((lo is not None and real < lo) or (hi is not None and real >= hi))
+        side_won = (r["side"] == "YES") == yes_win
+        price = float(r["price"])
+        # counterfactual hold: settle at expiry, entry fee only
+        hold_net_pc = (1.0 if side_won else 0.0) - price - fee_per_contract(price)
+        # actual realized (with early exit if any), per contract
+        if r["exit_price"] is not None:
+            actual_pc = (float(r["exit_price"]) - price
+                         - (r["fees"] + (r["exit_fees"] or 0)) / r["contracts"])
+        else:
+            actual_pc = (float(r["payout"]) - price - r["fees"] / r["contracts"])
+        mid_yes = (float(r["market_ask"]) + float(r["market_bid"])) / 2.0
+        div = abs(float(r["fair_prob"]) - mid_yes)
+        rows.append((div, hold_net_pc, actual_pc, side_won, r["station"], r["contracts"]))
+
+    def _bucket(b_lo, b_hi):
+        sel = [x for x in rows if b_lo <= x[0] < b_hi]
+        if not sel:
+            return None
+        n = len(sel)
+        return dict(
+            n=n,
+            div=sum(x[0] for x in sel) / n,
+            hold=sum(x[1] for x in sel) / n,
+            actual=sum(x[2] for x in sel) / n,
+            win=sum(1 for x in sel if x[3]) / n,
+            contracts=sum(x[5] for x in sel),
+        )
+
+    return rows, [(lo, hi, _bucket(lo, hi)) for lo, hi in _DIV_BUCKETS]
+
+
 def _hr(title: str):
     print("\n" + "=" * 76 + f"\n{title}\n" + "=" * 76)
 
@@ -213,6 +285,48 @@ def main():
     print("\n  If HELD-EXP looks far worse-calibrated than ALL, that is the "
           "take-profit\n  adverse-selection artifact — not model overconfidence. "
           "Trust ALL.")
+
+    # Trading-layer: does high divergence actually lose? (divergence-cap test)
+    with persistence.connect() as conn, conn.cursor() as cur:
+        tl_rows, tl_buckets = _trading_layer(cur, args.days)
+    _hr("TRADING LAYER — realized edge by |fair-mkt| divergence (per contract)")
+    print("  Counterfactual HOLD-to-settlement on actual fills. The 0.20 cap "
+          "blocks\n  the bottom two buckets; if their HOLD edge is positive, the "
+          "cap cuts real edge.")
+    print(f"\n  {'divergence':<14}{'n':>5}{'contracts':>10}{'avg_div':>9}"
+          f"{'HOLD edge':>11}{'ACTUAL edge':>12}{'win%':>7}")
+    for lo, hi, b in tl_buckets:
+        rng = f"[{lo:.2f},{hi:.2f})"
+        cap = "  <-CAP blocks" if lo >= 0.20 else ""
+        if b is None:
+            print(f"  {rng:<14}{'0':>5}{'-':>10}{'-':>9}{'-':>11}{'-':>12}{'-':>7}{cap}")
+            continue
+        print(f"  {rng:<14}{b['n']:>5}{b['contracts']:>10}{b['div']:>9.3f}"
+              f"{b['hold']:>+11.4f}{b['actual']:>+12.4f}{100*b['win']:>6.0f}%{cap}")
+    print("\n  HOLD edge = if we'd held to settlement (clean signal). ACTUAL = "
+          "with early\n  exits (take-profit). HOLD>0 in capped buckets ⇒ the "
+          "0.20 divergence cap is\n  too tight and the 05-29 'winner's curse' "
+          "read was the contamination talking.")
+
+    # Per-station trading layer: which stations actually extract hold-edge?
+    _hr("TRADING LAYER PER-STATION — hold-edge per contract (sorted best→worst)")
+    by_st = defaultdict(list)
+    for div, hold, actual, won, st, contracts in tl_rows:
+        by_st[st].append((hold, actual, won, contracts))
+    print(f"  {'station':<9}{'n':>5}{'contracts':>10}{'HOLD edge':>11}"
+          f"{'ACTUAL edge':>12}{'win%':>7}")
+    st_stats = []
+    for st, xs in by_st.items():
+        n = len(xs)
+        st_stats.append((st, n, sum(x[3] for x in xs),
+                         sum(x[0] for x in xs) / n, sum(x[1] for x in xs) / n,
+                         sum(1 for x in xs if x[2]) / n))
+    for st, n, contracts, hold, actual, win in sorted(st_stats, key=lambda x: -x[3]):
+        print(f"  {st:<9}{n:>5}{contracts:>10}{hold:>+11.4f}{actual:>+12.4f}"
+              f"{100*win:>6.0f}%")
+    print("\n  Positive HOLD edge = genuine model edge vs market. Negative = "
+          "the bot's\n  'edge' is noise and it's paying spread/fees/adverse "
+          "selection to a better market.")
 
 
 if __name__ == "__main__":
