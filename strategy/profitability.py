@@ -14,6 +14,7 @@ from weather_bot.config import (
     PAPER_MODE,
     PAUSED_TRADE_STATIONS,
     PROFIT_CONTROLS_ENABLED,
+    TRADE_STATION_WHITELIST,
     YES_10_25C_MAX_USD,
     YES_10_25C_SIZE_MULT,
     YES_25_50C_SIZE_MULT,
@@ -55,6 +56,15 @@ def apply_profitability_controls(
             sig.skip_reason = "PROFIT_GATE"
             sig.notes = f"PROFIT_GATE|station_paused={station_u} {sig.notes}"
             return sig
+
+    # Positive-edge whitelist: when configured, anything not on it is blocked.
+    # The pause bypass intentionally does NOT apply here — the whitelist is a
+    # hard restriction of the trading surface, paper or live.
+    if TRADE_STATION_WHITELIST and station_u not in TRADE_STATION_WHITELIST:
+        sig.action = "SKIP"
+        sig.skip_reason = "PROFIT_GATE"
+        sig.notes = f"PROFIT_GATE|not_whitelisted={station_u} {sig.notes}"
+        return sig
 
     multiplier = 1.0
     if station_u == "KNYC" and lead_day >= 1:
