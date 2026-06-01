@@ -275,6 +275,16 @@ MIN_EDGE_BPS = int(os.getenv("MIN_EDGE_BPS", "200"))   # 200 bps = 2 cents per $
 # cap let the entire toxic 0.20-0.35 band through. Env-configurable for A/B.
 MAX_FAIR_MKT_DIVERGENCE = float(os.getenv("MAX_FAIR_MKT_DIVERGENCE", "0.20"))
 
+# Edge haircut (2026-06-01). Subtracted from the modeled per-contract edge
+# (in cents) BEFORE the MIN_EDGE_BPS entry gate. The mark-to-settlement audit
+# (research/calibration_mark_to_settlement.py) found the bot's modeled "edge"
+# overstates realized counterfactual-HOLD edge at every divergence bucket — it
+# pays spread+fees+adverse-selection to a tighter market. A haircut raises the
+# bar so only edges large enough to survive that systematic tax can trade.
+# Default 0.0 = neutral (no behavior change); set live only after fitting the
+# magnitude against per-station hold-edge, NOT by guessing. Env-configurable.
+EDGE_HAIRCUT_CENTS = float(os.getenv("EDGE_HAIRCUT_CENTS", "0.0"))
+
 # Entry-price gates added 2026-05-29 after 14-day calibration audit found:
 #   - YES at price <$0.20 (cheap tail bets): 112 fills, 17 take-profits,
 #     95 decayed to zero. Net -$189 (held -$740 vs exit +$551).
@@ -316,6 +326,21 @@ PROFIT_CONTROLS_ENABLED = os.getenv("PROFIT_CONTROLS_ENABLED", "true").lower() =
 PAUSED_TRADE_STATIONS = [
     s.strip().upper()
     for s in os.getenv("PAUSED_TRADE_STATIONS", "KMDW").split(",")
+    if s.strip()
+]
+
+# Positive-edge station whitelist (2026-06-01). When non-empty, ONLY these
+# stations may OPEN — every other station SKIPs with PROFIT_GATE|not_whitelisted.
+# Empty (default) disables the whitelist, falling back to PAUSED_TRADE_STATIONS.
+# Motivation: research/calibration_mark_to_settlement.py showed the model's
+# P(YES) is well-calibrated (BSS +0.35) yet only ~4 stations have positive
+# counterfactual-HOLD edge vs the market (KAUS/KSAT/KBOS/KSFO; KNYC ~flat). The
+# rest pay spread+fees+adverse-selection to a tighter market. The whitelist is
+# the inverse of the pause list — a tighter, evidence-based trading surface.
+# Opt-in via .env so we never silently shrink the live surface on a code default.
+TRADE_STATION_WHITELIST = [
+    s.strip().upper()
+    for s in os.getenv("TRADE_STATION_WHITELIST", "").split(",")
     if s.strip()
 ]
 

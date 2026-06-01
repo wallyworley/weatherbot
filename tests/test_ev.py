@@ -57,3 +57,19 @@ def test_evaluate_chooses_no_side_when_overpriced():
     # 20% fair, YES trading at 40 cents → better to buy NO at 60 cents
     sig = ev.evaluate("KX-TEST", fair_prob=0.20, yes_ask=0.40, yes_bid=0.38, bankroll=1000)
     assert sig.side == "NO"
+
+
+def test_edge_haircut_can_flip_marginal_open_to_skip(monkeypatch):
+    # Same input as test_evaluate_opens_when_edge_is_large (~13c/contract edge).
+    # A 20c haircut exceeds the edge → the entry gate must SKIP for NO_EDGE.
+    monkeypatch.setattr(ev, "_EDGE_HAIRCUT", 0.20)
+    sig = ev.evaluate("KX-TEST", fair_prob=0.65, yes_ask=0.50, yes_bid=0.49, bankroll=1000)
+    assert sig.action == "SKIP"
+    assert sig.skip_reason == "NO_EDGE"
+
+
+def test_edge_haircut_default_is_neutral():
+    # Default (0.0) haircut leaves the large-edge case OPEN, unchanged.
+    assert ev._EDGE_HAIRCUT == 0.0
+    sig = ev.evaluate("KX-TEST", fair_prob=0.65, yes_ask=0.50, yes_bid=0.49, bankroll=1000)
+    assert sig.action == "OPEN"

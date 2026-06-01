@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from weather_bot.config import (
     BANKROLL_USD,
+    EDGE_HAIRCUT_CENTS,
     KALSHI_FEE_COEFF,
     KELLY_FRACTION,
     MAX_FAIR_MKT_DIVERGENCE,
@@ -33,6 +34,11 @@ log = logging.getLogger(__name__)
 # the market is the better forecaster precisely where the model disagrees most.
 # Now sourced from config so it can be A/B-tuned without a redeploy.
 _MAX_FAIR_MKT_DIVERGENCE = MAX_FAIR_MKT_DIVERGENCE
+
+# Systematic haircut ($/contract) subtracted from modeled edge before the entry
+# gate. Modeled edge overstates realized hold-edge (spread/fees/adverse
+# selection vs a tighter market); this raises the bar. 0.0 = neutral default.
+_EDGE_HAIRCUT = EDGE_HAIRCUT_CENTS / 100.0
 
 
 @dataclass
@@ -145,8 +151,10 @@ def evaluate(
         size_usd = risk_usd * (price / (price + fee)) if (price + fee) > 0 else 0.0
         # Payout per contract if correct: $1.00. Profit: 1 - price - fee. Loss: price + fee.
         ev_contract = win_prob * (1.0 - price) - (1.0 - win_prob) * price - fee
-        edge = ev_contract                              # in $ per contract
-        ev_per_dollar = ev_contract / price             # return on capital
+        # Edge haircut: modeled edge overstates realized hold-edge, so discount
+        # it before the entry gate (default 0.0 = no change).
+        edge = ev_contract - _EDGE_HAIRCUT              # in $ per contract
+        ev_per_dollar = edge / price                    # return on capital
 
         edge_bps = int(edge * 10_000 / max(price, 1e-6))
 
