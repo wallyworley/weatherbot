@@ -244,6 +244,147 @@ def fetch_nbm_qmd_daily_percentiles(
     return _read_percentiles_at_lead(run, lead, station, fcst_keyword)
 
 
+# ---------------------------------------------------------------------------
+# Fetch-once / extract-all-stations fast path (backfill optimization).
+#
+# The per-station path above re-downloads and re-decodes the SAME grib message
+# once per station (the lead — and therefore the message — is station-
+# independent). For N stations that is N× redundant cfgrib decoding. The
+# functions below decode each percentile message ONCE and extract every
+# station's nearest grid point from the shared dataset. Output is identical
+# per-station to looping fetch_nbm_qmd_daily_percentiles (proven by
+# research/validate_fast_nbm.py). Live code paths are untouched.
+# ---------------------------------------------------------------------------
+def _station_window_ok(run: datetime, lead: int, station: Station, target_day: date) -> bool:
+    """Same sanity guard as fetch_nbm_qmd_daily_percentiles: does the chosen
+    QMD window overlap the station's local target day?"""
+    window_start = run + timedelta(hours=lead - _QMD_WINDOW_HOURS)
+    window_end = run + timedelta(hours=lead)
+    day_hours_utc = _local_day_window_utc(station, target_day)
+    day_start, day_end = day_hours_utc[0], day_hours_utc[-1] + timedelta(hours=1)
+    return window_end > day_start and window_start < day_end
+
+
+def _find_qmd_pct_messages(run: datetime, lead: int, fcst_keyword: str):
+    """Return (key, {percentile: GribMessage}) for the QMD file at `lead`.
+    Mirrors the message-selection logic in _read_percentiles_at_lead."""
+    key = _nbm_key(run, "qmd", lead)
+    if not grib_utils.object_exists(NBM_BUCKET, key):
+        log.warning("NBM QMD missing: %s", key)
+        return key, {}
+    try:
+        idx = grib_utils.parse_idx(NBM_BUCKET, key)
+    except Exception as exc:
+        log.warning("idx parse failed for %s: %s", key, exc)
+        return key, {}
+    msgs_by_pct: dict[int, grib_utils.GribMessage] = {}
+    for m in idx:
+        if _PCTL_SELECTOR not in m.line or fcst_keyword not in m.line:
+            continue
+        for part in m.line.split(":"):
+            if part.endswith("% level"):
+                try:
+                    pct = int(part.replace("% level", "").strip())
+                except ValueError:
+                    continue
+                if pct in NBM_PERCENTILES:
+                    msgs_by_pct[pct] = m
+    return key, msgs_by_pct
+
+
+def fetch_qmd_all_stations(
+    run: datetime,
+    target_day: date,
+    var: str,
+    stations: list[Station],
+) -> dict[str, dict[int, float]]:
+    """Fetch-once variant of fetch_nbm_qmd_daily_percentiles for many stations.
+
+    Decodes each percentile message ONCE and extracts every eligible station's
+    nearest grid point. Returns {station_code: {percentile: temp_f}} containing
+    only stations that pass the window guard and have data. Per-station values
+    are identical to fetch_nbm_qmd_daily_percentiles (same nearest_point + unit
+    conversion on the same decoded grid)."""
+    if var == "TMAX_DAILY":
+        fcst_type, fcst_keyword = "max", "max fcst"
+    elif var == "TMIN_DAILY":
+        fcst_type, fcst_keyword = "min", "min fcst"
+    else:
+        raise ValueError(f"Unsupported var: {var}")
+
+    lead = _find_period_message_lead(run, target_day, fcst_type)
+    if lead is None:
+        return {}
+    eligible = [s for s in stations if _station_window_ok(run, lead, s, target_day)]
+    if not eligible:
+        return {}
+    key, msgs_by_pct = _find_qmd_pct_messages(run, lead, fcst_keyword)
+    if not msgs_by_pct:
+        return {}
+
+    out: dict[str, dict[int, float]] = {s.code: {} for s in eligible}
+    for pct, msg in msgs_by_pct.items():
+        single = grib_utils.save_temp(grib_utils.download_ranges(NBM_BUCKET, key, [msg]))
+        try:
+            ds_one = grib_utils.open_dataset(single)
+            for s in eligible:
+                pt = grib_utils.nearest_point(ds_one, s.lat, s.lon)
+                val_k = float(list(pt.data_vars.values())[0].values)
+                out[s.code][pct] = grib_utils.kelvin_to_fahrenheit(val_k)
+        finally:
+            single.unlink(missing_ok=True)
+    return {code: pcts for code, pcts in out.items() if pcts}
+
+
+def run_fast(
+    target_days: Iterable[date] | None = None,
+    cycle: datetime | None = None,
+    max_fallback_cycles: int = 4,
+) -> None:
+    """Backfill-optimized run(): identical output to run(), but each grib
+    message is decoded once for all stations instead of once per station.
+
+    Per-station 6-hour cycle fallback is preserved: each station independently
+    settles on the most recent cycle that yields its data."""
+    first_cycle = cycle or latest_run_time()
+    today = datetime.now(tz=timezone.utc).date()
+    if target_days is None:
+        target_days = [today + timedelta(days=i) for i in range(8)]
+    target_days = list(target_days)
+    stations = [STATIONS[c] for c in ACTIVE_STATIONS]
+
+    all_rows: list[dict] = []
+    for d in target_days:
+        for var in ("TMAX_DAILY", "TMIN_DAILY"):
+            remaining = {s.code: s for s in stations}
+            results: dict[str, dict[int, float]] = {}
+            cycle_used: dict[str, datetime] = {}
+            tried_cycle = first_cycle
+            for _ in range(max_fallback_cycles + 1):
+                if not remaining:
+                    break
+                got = fetch_qmd_all_stations(tried_cycle, d, var, list(remaining.values()))
+                for code, pcts in got.items():
+                    if pcts:
+                        results[code] = pcts
+                        cycle_used[code] = tried_cycle
+                        remaining.pop(code, None)
+                if not remaining:
+                    break
+                tried_cycle = tried_cycle - timedelta(hours=6)
+            for code, pcts in results.items():
+                for p, v in pcts.items():
+                    all_rows.append(dict(
+                        station=code, model="NBM_QMD", run_time=cycle_used[code],
+                        valid_date=d, var=var, percentile=p, value=v,
+                    ))
+    if all_rows:
+        persistence.upsert_prob_forecast(all_rows)
+        log.info("Persisted %d NBM QMD rows (fast path)", len(all_rows))
+    else:
+        log.warning("No NBM QMD rows persisted across any cycle (fast path)")
+
+
 def run(
     target_days: Iterable[date] | None = None,
     cycle: datetime | None = None,

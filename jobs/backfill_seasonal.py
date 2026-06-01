@@ -72,7 +72,9 @@ def _nbm_for_window(start: date, end: date, dry_run: bool) -> int:
             log.info("NBM (dry) cycle=%s target=[%s,%s]", cycle, d, d + timedelta(days=1))
         else:
             try:
-                nbm_fetcher.run(target_days=[d, d + timedelta(days=1)], cycle=cycle)
+                # Fast path: decode each grib message once for all stations
+                # (identical output to run(), ~Nx fewer cfgrib decodes).
+                nbm_fetcher.run_fast(target_days=[d, d + timedelta(days=1)], cycle=cycle)
             except Exception as exc:
                 log.warning("NBM backfill failed for %s: %s", d, exc)
         days += 1
@@ -85,6 +87,11 @@ def main() -> None:
     ap.add_argument("--years", required=True, help="comma list, e.g. 2023,2024,2025")
     ap.add_argument("--months", required=True, help="comma list, e.g. 4,5,6")
     ap.add_argument("--dry-run", action="store_true")
+    # NBM (S3) tolerates heavy parallelism; obs (IEM) rate-limits, so the two
+    # are split into separate passes with different concurrency. These flags
+    # let one invocation do only one side.
+    ap.add_argument("--skip-obs", action="store_true", help="NBM-only pass")
+    ap.add_argument("--skip-nbm", action="store_true", help="obs-only pass")
     args = ap.parse_args()
 
     years = [int(y) for y in args.years.split(",") if y.strip()]
@@ -106,8 +113,8 @@ def main() -> None:
     for start, end in windows:
         log.info("=== window %s .. %s (%d days, %d stations) ===",
                  start, end, (end - start).days, len(ACTIVE_STATIONS))
-        n_obs = _obs_for_window(start, end, args.dry_run)
-        n_days = _nbm_for_window(start, end, args.dry_run)
+        n_obs = 0 if args.skip_obs else _obs_for_window(start, end, args.dry_run)
+        n_days = 0 if args.skip_nbm else _nbm_for_window(start, end, args.dry_run)
         log.info("--- window %s done: %d daily-obs rows, %d NBM days ---",
                  start, n_obs, n_days)
     log.info("Seasonal backfill complete. Run retrain_bias_station_aware next.")
