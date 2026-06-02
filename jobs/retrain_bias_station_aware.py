@@ -49,6 +49,7 @@ WITH paired AS (
 )
 SELECT
     station, model, var, month, lead_day,
+    -1                                                         AS cycle_hour,
     AVG(fcst_f - obs_f)::double precision                       AS mean_bias_f,
     COALESCE(STDDEV_SAMP(fcst_f - obs_f), 0)::double precision  AS stddev_f,
     COUNT(*)::int                                               AS sample_size
@@ -61,11 +62,16 @@ HAVING COUNT(*) >= %(min_n)s
 ORDER BY station, model, var, month, lead_day
 """
 
+# Writes the cycle-agnostic lane (cycle_hour=-1). The station_bias PK is
+# (station, model, var, month, lead_day, cycle_hour) since the 2026-05-17 cycle
+# lanes, so cycle_hour MUST be in the column list and the ON CONFLICT target.
+# (jobs/retrain_bias.py is the primary nightly retrain and writes both lanes;
+# this station-aware variant exists for per-station start-date windows.)
 _UPSERT_SQL = """
 INSERT INTO station_bias
-    (station, model, var, month, lead_day, mean_bias_f, stddev_f, sample_size, updated_at)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
-ON CONFLICT (station, model, var, month, lead_day) DO UPDATE SET
+    (station, model, var, month, lead_day, cycle_hour, mean_bias_f, stddev_f, sample_size, updated_at)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+ON CONFLICT (station, model, var, month, lead_day, cycle_hour) DO UPDATE SET
     mean_bias_f = EXCLUDED.mean_bias_f,
     stddev_f    = EXCLUDED.stddev_f,
     sample_size = EXCLUDED.sample_size,
@@ -149,6 +155,7 @@ def retrain(
                         r["var"],
                         r["month"],
                         r["lead_day"],
+                        r["cycle_hour"],
                         r["mean_bias_f"],
                         r["stddev_f"],
                         r["sample_size"],
