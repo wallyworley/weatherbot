@@ -3,6 +3,44 @@
 Items to check on or after 2026-06-09, gathered across the 2026-06-03 session.
 Most are env-tunable; none touch real money (paper mode).
 
+## The frame for this whole re-eval
+
+The two external sources we brought in are not strategies to choose between —
+they are the **two halves of one winning system**, and the bot is currently weak
+at both:
+
+- **Prilo WeatherEdge = the forecaster.** Edge = being right about the temperature
+  *distribution*: regime conditioning (Miami humidity runs hot, Chicago lake-breeze
+  suppresses, SFO marine cap), correct σ, and the discipline to sit out the (many)
+  days with no edge. This is the **entry-selection / pricing** half.
+- **The Polymarket trader = the trader.** Edge = almost pure *execution*: buy the
+  cheap bracket, **sell the intraday rally**, never hold to settlement. This is the
+  **trade-management / exit** half.
+
+They are bound by one mechanism that our own data also points at: **the daily high
+is revealed gradually through the day, and the edge lives in that reveal, not at
+settlement** (Prilo: "current peak so far is the #1 mover, σ collapses as obs come
+in"; the trader: buys before the reveal, sells during it; our backtest: overnight
+cheap entries profit, post-reveal afternoon entries bleed).
+
+Prilo tells you *which* cheap bracket will rally; the trader tells you to *buy it
+cheap and sell the rally*. They multiply. Our bot does neither well — regime-blind
+on the forecast side (so its disagreements are noise = winner's curse), and it
+holds cheap tails to zero on the execution side (take-profit fires ~15%).
+
+**Tension, resolved:** Prilo says "wait for morning obs"; the trader + our data say
+"overnight cheap entries profit." These are two bet *types* — a confident
+*directional* bet should wait for obs; a cheap *convex* bet is fine early **only
+because you sell the rally**. So `YES_TAIL_GATE` is treating the wrong thing: cheap
+tails aren't the problem, cheap tails *held to zero* are. Regime-filter them + fix
+the exit, don't just block them.
+
+**The test to anchor every 6/9 decision:** *Does this change help us be right about
+the regime (Prilo) or harvest the reveal (the trader)?* If it does neither, it's a
+stopgap around a bot that wasn't built for the reveal — and most of the gates we've
+been stacking are exactly that. The two big levers (a regime layer; a reliable
+sell-the-rally exit) are the main event; everything below is supporting detail.
+
 ## A. Calibration / entry changes shipped 2026-05-29 (verify they worked)
 
 Deployed: DIVERGENCE cap 0.50→0.20 (`MAX_FAIR_MKT_DIVERGENCE`), widen 1.40→1.10,
