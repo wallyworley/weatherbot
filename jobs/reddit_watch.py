@@ -21,6 +21,7 @@ import argparse
 import html
 import json
 import logging
+import os
 import re
 import urllib.error
 import urllib.request
@@ -156,6 +157,44 @@ def _write_post(p: Post) -> Path:
     return path
 
 
+def _send_email(new_posts: list[Post]) -> None:
+    """Email a digest of new posts via the Resend HTTPS API.
+
+    No-op unless RESEND_API_KEY is set (VPS blocks outbound SMTP, so we use an
+    HTTPS email API instead). Failure here never blocks inbox capture — the
+    posts are already written; we just log and move on.
+    """
+    key = os.getenv("RESEND_API_KEY")
+    if not key or not new_posts:
+        return
+    to = os.getenv("NOTIFY_EMAIL_TO", "wallyworley@gmail.com")
+    sender = os.getenv("NOTIFY_EMAIL_FROM", "weatherbot <onboarding@resend.dev>")
+    rows = "".join(
+        f'<p style="margin:0 0 10px"><strong>[{html.escape(p.feed)}]</strong> '
+        f'{html.escape(p.title)}<br>'
+        f'<a href="{html.escape(p.link)}">{html.escape(p.link)}</a></p>'
+        for p in new_posts
+    )
+    body = (
+        f"<p>{len(new_posts)} new weather / prediction-market post(s) captured:</p>"
+        f"{rows}"
+        '<p style="color:#888;font-size:13px">Leads to test, not signals — '
+        "full text in research/reddit_inbox/ on the VPS.</p>"
+    )
+    subject = f"[weatherbot] {len(new_posts)} new post(s) — {new_posts[0].title[:60]}"
+    payload = json.dumps({"from": sender, "to": [to], "subject": subject, "html": body}).encode()
+    req = urllib.request.Request(
+        "https://api.resend.com/emails", data=payload, method="POST",
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            log.info("notify email sent to %s (HTTP %s)", to, r.status)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+        detail = exc.read().decode()[:200] if hasattr(exc, "read") else ""
+        log.warning("notify email failed: %s %s", exc, detail)
+
+
 def run(dry_run: bool = False) -> dict:
     INBOX.mkdir(parents=True, exist_ok=True)
     seen = _load_seen()
@@ -196,6 +235,7 @@ def run(dry_run: bool = False) -> dict:
 
     if not dry_run:
         _save_seen(seen)
+        _send_email(new_posts)
     return summary
 
 
