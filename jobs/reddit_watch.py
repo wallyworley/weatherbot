@@ -26,7 +26,7 @@ import re
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -185,7 +185,14 @@ def _send_email(new_posts: list[Post]) -> None:
     payload = json.dumps({"from": sender, "to": [to], "subject": subject, "html": body}).encode()
     req = urllib.request.Request(
         "https://api.resend.com/emails", data=payload, method="POST",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            # Resend sits behind Cloudflare, which 403s (code 1010) the bare
+            # Python-urllib User-Agent. Send an explicit UA so we look like a
+            # normal API client.
+            "User-Agent": _UA,
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
