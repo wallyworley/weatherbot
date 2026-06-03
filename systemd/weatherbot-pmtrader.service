@@ -1,0 +1,15 @@
+[Unit]
+Description=weather_bot Polymarket trader monitor + strategy learner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/weather_bot
+EnvironmentFile=/opt/weather_bot/.env
+ExecStart=/opt/weather_bot/.venv/bin/python -m weather_bot.jobs.polymarket_trader_watch
+StandardOutput=append:/var/log/weather_bot/pmtrader.log
+StandardError=append:/var/log/weather_bot/pmtrader.log
+TimeoutStartSec=5min

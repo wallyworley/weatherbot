@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer for weather_bot Polymarket trader monitor (every 3h)
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=3h
+Persistent=true
+Unit=weatherbot-pmtrader.service
+
+[Install]
+WantedBy=timers.target
