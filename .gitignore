@@ -25,3 +25,6 @@ data/*.parquet
 .vscode/
 *.swp
 memory/
+research/reddit_inbox/*.md
+research/reddit_inbox/.seen.json
+research/reddit_inbox/_notify_queue.jsonl

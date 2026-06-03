@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer for weather_bot Reddit watcher (every 30 min)
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=30min
+Persistent=true
+Unit=weatherbot-reddit.service
+
+[Install]
+WantedBy=timers.target

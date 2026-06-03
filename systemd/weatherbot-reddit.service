@@ -1,0 +1,15 @@
+[Unit]
+Description=weather_bot Reddit watcher (capture new weather/prediction-market posts to inbox)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/weather_bot
+EnvironmentFile=/opt/weather_bot/.env
+ExecStart=/opt/weather_bot/.venv/bin/python -m weather_bot.jobs.reddit_watch
+StandardOutput=append:/var/log/weather_bot/reddit_watch.log
+StandardError=append:/var/log/weather_bot/reddit_watch.log
+TimeoutStartSec=5min
