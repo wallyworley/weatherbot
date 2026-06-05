@@ -1,45 +1,49 @@
 # 6/9 re-evaluation — consolidated follow-ups
 
-Items to check on or after 2026-06-09, gathered across the 2026-06-03 session.
-Most are env-tunable; none touch real money (paper mode).
+Items gathered 2026-06-03; **frame corrected 2026-06-05.** Mostly env-tunable;
+none touch real money (paper mode).
 
-## The frame for this whole re-eval
+> **CORRECTION 2026-06-05 — read this first.** An earlier version of the frame
+> below claimed the Polymarket trader's edge is "buy cheap, **sell the intraday
+> rally**." **That is false.** His public activity (verified on the VPS store:
+> `research/pm_trader/`) is **1,303 trades, all BUY, 0 SELL**; he exits via
+> REDEEM/MERGE and **holds to resolution**. He is a *selection* player, not an
+> executor. The authoritative write-up is
+> [`docs/bot_performance_evaluation_2026_06_04.md`](bot_performance_evaluation_2026_06_04.md);
+> where this doc and that one disagree, that one wins. The frame is rewritten
+> accordingly below.
 
-The two external sources we brought in are not strategies to choose between —
-they are the **two halves of one winning system**, and the bot is currently weak
-at both:
+## The frame for this whole re-eval (corrected)
 
-- **Prilo WeatherEdge = the forecaster.** Edge = being right about the temperature
-  *distribution*: regime conditioning (Miami humidity runs hot, Chicago lake-breeze
-  suppresses, SFO marine cap), correct σ, and the discipline to sit out the (many)
-  days with no edge. This is the **entry-selection / pricing** half.
-- **The Polymarket trader = the trader.** Edge = almost pure *execution*: buy the
-  cheap bracket, **sell the intraday rally**, never hold to settlement. This is the
-  **trade-management / exit** half.
+Both external sources we brought in **win on the same thing: selection** — being
+right about *which brackets are underpriced* — held to resolution. They are not
+two different halves; they are two confirmations of one point.
 
-They are bound by one mechanism that our own data also points at: **the daily high
-is revealed gradually through the day, and the edge lives in that reveal, not at
-settlement** (Prilo: "current peak so far is the #1 mover, σ collapses as obs come
-in"; the trader: buys before the reveal, sells during it; our backtest: overnight
-cheap entries profit, post-reveal afternoon entries bleed).
+- **Prilo WeatherEdge = forecaster.** Edge = the temperature *distribution*: regime
+  conditioning (Miami humidity runs hot, Chicago lake-breeze suppresses, SFO marine
+  cap), correct σ, and the discipline to sit out the many no-edge days.
+- **The Polymarket trader = selection + structure.** Verified buy-only barbell
+  (median entry ~5¢, but ~43% of buys are favorites too), **held to resolution**,
+  winners redeemed at $1, across a hugely diversified book of city-days. Every
+  weather position is `negativeRisk=true`; profits are realized through
+  Polymarket's redeem/merge accounting (exact per-position mechanics **not fully
+  reconstructable** — do not over-interpret). He does **not** trade in and out.
 
-Prilo tells you *which* cheap bracket will rally; the trader tells you to *buy it
-cheap and sell the rally*. They multiply. Our bot does neither well — regime-blind
-on the forecast side (so its disagreements are noise = winner's curse), and it
-holds cheap tails to zero on the execution side (take-profit fires ~15%).
+**So the lesson is singular and blunt: the edge is in SELECTION, and our bot fails
+exactly there** — it bets where it disagrees with the market (winner's curse) and
+is wrong there (0 of 43 held bets won since 06-01; see eval doc §2). Neither trader
+hands us a mechanical trick to copy. And the structures differ: Polymarket negRisk
+brackets ≠ Kalshi temperature buckets, so we cannot port the trader's book.
 
-**Tension, resolved:** Prilo says "wait for morning obs"; the trader + our data say
-"overnight cheap entries profit." These are two bet *types* — a confident
-*directional* bet should wait for obs; a cheap *convex* bet is fine early **only
-because you sell the rally**. So `YES_TAIL_GATE` is treating the wrong thing: cheap
-tails aren't the problem, cheap tails *held to zero* are. Regime-filter them + fix
-the exit, don't just block them.
+**On the exit / "sell the rally" idea:** that was *our own* observation from *our*
+snapshots (16 of 43 held losers rallied before decaying), **not** something either
+trader does. It is a modest damage-limiter (~23% of losers), not an edge. Treat it
+as a band-aid while we fix selection — not as the main event.
 
-**The test to anchor every 6/9 decision:** *Does this change help us be right about
-the regime (Prilo) or harvest the reveal (the trader)?* If it does neither, it's a
-stopgap around a bot that wasn't built for the reveal — and most of the gates we've
-been stacking are exactly that. The two big levers (a regime layer; a reliable
-sell-the-rally exit) are the main event; everything below is supporting detail.
+**The test to anchor every 6/9 decision:** *Does this change improve our SELECTION
+(being right about which bracket), or is it just a band-aid (exit tuning, stop-loss,
+station pausing)?* Selection is the only thing that creates an edge; everything else
+limits damage on a book that doesn't yet have one.
 
 ## A. Calibration / entry changes shipped 2026-05-29 (verify they worked)
 
@@ -66,25 +70,27 @@ cohort. This is the REVERSE of "wait for morning obs."
 - If still bleeding after a week: candidate **"no-new-opens 09:00–15:00 local" gate**
   (data now justifies it).
 
-## C. Lessons from the Polymarket trader (jobs/polymarket_trader_watch.py)
+## C. Lessons from the Polymarket trader (jobs/polymarket_trader_watch.py) — corrected
 
-The studied trader is +$150K realized on weather. **Decoded strategy: buy ~1¢ tail
-brackets, SELL the intraday rally** (100% of his profitable positions resolved NO
-at settlement yet booked gains). His favorite-buying (0.70+) LOSES.
+**Verified facts (VPS store `research/pm_trader/`, 2026-06-05):** 1,303 trades, all
+BUY, 0 SELL; 526 positions (502 weather), all `negativeRisk=true`; ~93% of decided
+weather positions positive by Polymarket-reported realizedPnl; net ≈ **+$146,695**.
+Edge concentrated in cheap Yes: **under-10¢ = 425 positions, 365/365 decided
+positive, +$152,218**; the 50¢+ buckets are collectively negative (90–100¢ ≈
+−$5,715). He **holds to resolution** (exits via REDEEM/MERGE) — no exit trick.
 
-**The key reframe for us:** the cheap-tail YES strategy is a WINNER *iff you have a
-reliable intraday exit*. Our cheap-tail YES lost (−$189, held 0/95) because our
-take-profit fires only ~15% of the time — we buy the tail but fail to sell the
-rally. `YES_TAIL_GATE` blocks the *entry* (treats the symptom); his edge says the
-real lever is the **exit**.
-
-- Re-examine the **take-profit mechanism** (threshold 0.70, slippage haircut,
-  book-size gate): is it too slow/conservative to catch 1¢→20-50¢ tail spikes?
-- Consider an A/B: relax `YES_TAIL_GATE` on a sleeve WITH an aggressive
-  sell-the-rally exit, vs. keep blocking. Needs the exit fixed first.
-- CAVEAT: transferability depends on Kalshi intraday liquidity to exit into;
-  Polymarket may be deeper. Verify before sizing.
-- `STRATEGY_NOTES.md` (on VPS, regenerated every 3h) is the living study.
+**What this means for our bot:**
+- It **strengthens** the finding that our problem is **selection**, not trade
+  management. He is right about which cheap brackets are underpriced; we are not.
+- It does **not** justify mechanically copying him into Kalshi — negativeRisk
+  multi-bracket structure ≠ Kalshi temperature buckets. No direct port.
+- The negRisk realizedPnl accounting is **not fully reconstructable** from public
+  data; the study notes correctly warn against over-interpreting it.
+- Action: use the study as a *selection* benchmark (which city-days / brackets does
+  a proven selector load up on, vs. what we price), **not** as an execution recipe.
+- `STRATEGY_NOTES.md` (regenerated every 3h) is the living study. Export for an
+  outside reviewer: `STRATEGY_NOTES.md`, `positions_store.json`, `trades.jsonl`
+  from `/opt/weather_bot/research/pm_trader/` (gitignored — not visible in the repo).
 
 ## D. Polymarket cross-check (research/polymarket_crosscheck.py)
 
@@ -99,6 +105,11 @@ Central Park / Midway / Denver Intl).
   model is the likely outlier — investigate KATL distribution/bias.
 - **Expand the verified map**: read the rules for KDFW, KAUS, KSEA, KPHX, KBOS,
   KLAX, KHOU and enable only confirmed same-station cities. Don't guess.
+- **A cross-venue entry gate is NOT yet validated.** The trader store is his
+  activity/positions, not a clean historical Polymarket-vs-Kalshi same-station
+  panel. To justify a gate we need the cross-check tool's same-station snapshots
+  *accumulated over time* on the (currently only 2) comparable cities, then a
+  backtest. Until then this is a research signal, not a trading rule.
 
 ## E. New monitors now running (VPS timers)
 
