@@ -1541,7 +1541,7 @@ def _format_guidance_table(df: pd.DataFrame) -> pd.DataFrame:
             out[col] = out[col].map(lambda x: f"{float(x):.0f}°" if pd.notna(x) else "—")
     cols = [
         "city", "station", "nbm_p50", "nws_grid", "pfm", "lamp", "mav",
-        "high_so_far", "truth_tmax", "trusted_spread_f", "spread_f",
+        "high_so_far", "truth_tmax", "trusted_spread_f",
     ]
     return out[[c for c in cols if c in out.columns]].rename(columns={
         "city": "City",
@@ -1554,7 +1554,6 @@ def _format_guidance_table(df: pd.DataFrame) -> pd.DataFrame:
         "high_so_far": "High so far",
         "truth_tmax": "Final high",
         "trusted_spread_f": "Official spread",
-        "spread_f": "All-source spread",
     })
 
 
