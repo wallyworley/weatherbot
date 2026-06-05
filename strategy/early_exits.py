@@ -44,6 +44,12 @@ log = logging.getLogger(__name__)
 _MAX_SNAPSHOT_AGE_SECONDS = int(os.getenv("EARLY_EXIT_MAX_SNAPSHOT_AGE_S", "60"))
 _SLIPPAGE_HAIRCUT_CENTS   = int(os.getenv("EARLY_EXIT_SLIPPAGE_CENTS",     "2"))
 _REQUIRE_BOOK_SIZE        = os.getenv("EARLY_EXIT_REQUIRE_BOOK_SIZE", "true").lower() == "true"
+# Stop-loss: exit a held position when progress falls to <= this (negative) of
+# max gain. 2026-06-05: added after the rally diagnostic showed ~40% of held
+# losers never rally (pure decay to $0) — a stop caps that downside. Default 0
+# = DISABLED (only a value < 0 activates it). Set EARLY_EXIT_STOP_LOSS=-0.50 to
+# cut positions that reach -50% of max gain. Same exit path/guards as take-profit.
+_STOP_LOSS_THRESHOLD      = float(os.getenv("EARLY_EXIT_STOP_LOSS", "0"))
 
 
 @dataclass(frozen=True)
@@ -55,7 +61,9 @@ class ExitSummary:
 
 
 def process_early_exits(threshold: float = 0.85) -> ExitSummary:
-    """Scan open paper fills and execute early-exit take-profit trades.
+    """Scan open paper fills and execute early exits — take-profit (progress
+    >= threshold) and, when EARLY_EXIT_STOP_LOSS < 0, stop-loss (progress <=
+    that stop). Both use the same sell path and guards.
 
     For each open fill:
       1. Pull the latest market_snapshot for the ticker.
@@ -155,12 +163,18 @@ def process_early_exits(threshold: float = 0.85) -> ExitSummary:
                 continue
 
         # Progress check -------------------------------------------------
+        # Exit on EITHER take-profit (progress >= threshold) or stop-loss
+        # (progress <= a negative stop, when enabled). Same sell path/guards.
         entry_price = float(r["price"])
         max_gain = 1.0 - entry_price
         gain = float(exit_bid) - entry_price
         progress = gain / max_gain if max_gain > 0 else 0.0
-        if progress < threshold:
+        is_take_profit = progress >= threshold
+        is_stop_loss = _STOP_LOSS_THRESHOLD < 0 and progress <= _STOP_LOSS_THRESHOLD
+        if not (is_take_profit or is_stop_loss):
             continue
+        exit_kind = "TAKE_PROFIT" if is_take_profit else "STOP_LOSS"
+        exit_thresh = threshold if is_take_profit else _STOP_LOSS_THRESHOLD
 
         # Guard 3: slippage haircut on logged exit price -----------------
         # Kalshi prices in dollars; cents → 0.01 each.
@@ -176,18 +190,18 @@ def process_early_exits(threshold: float = 0.85) -> ExitSummary:
             exit_price=effective_exit,
             exit_fees=exit_fees,
             exit_snapshot_ts=snap_ts,
-            exit_reason=f"TAKE_PROFIT_{threshold:.2f}",
+            exit_reason=f"{exit_kind}_{exit_thresh:.2f}",
         )
         exited += 1
 
         gross_pnl = (effective_exit - entry_price) * contracts
         net_pnl = gross_pnl - entry_fees - exit_fees
         log.info(
-            "TAKE PROFIT TRIGGERED: Fill %d %s %s early-exited @%.3f "
+            "%s TRIGGERED: Fill %d %s %s early-exited @%.3f "
             "(observed bid %.3f, haircut %d¢, entry %.3f) progress=%.1f%% "
             "contracts=%d (book size=%s, snap age=%.0fs) | "
             "Gross=$%+.2f EntryFees=$%.2f ExitFees=$%.2f Net=$%+.2f",
-            r["id"], r["ticker"], r["side"],
+            exit_kind.replace("_", " "), r["id"], r["ticker"], r["side"],
             effective_exit, float(exit_bid), _SLIPPAGE_HAIRCUT_CENTS,
             entry_price, progress * 100.0, contracts,
             avail_size if avail_size is not None else "?", age_s,
