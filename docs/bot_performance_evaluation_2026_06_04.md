@@ -139,6 +139,13 @@ See open item in §7.)
 - **Net: the bot does not currently have a demonstrated edge.** It's paper, so
   nothing is bleeding real money — the cost is wasted learning.
 
+> **ACTIVATED 2026-06-05:** A1 (take-profit → 0.35), A2 (stop-loss
+> `EARLY_EXIT_STOP_LOSS=-0.50`), and B3 (whitelist dropped) are now live on the
+> VPS (paper). The user chose to keep trading rather than go observation-only
+> (paper has no cost; goal is to watch the new exit logic work). These are
+> damage-limiters + abandoning the failed axis — **not** a validated edge. C
+> (selection) and D (prove offline) remain open. Revert: `.env.bak_20260605`.
+
 ## 7. Recommended concrete steps
 
 **A. Do now — reversible, reduces some bleed (explicitly band-aids):**
