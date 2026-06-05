@@ -1,0 +1,15 @@
+[Unit]
+Description=weather_bot exit-change before/after audit (held-loser bleed tracking)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/weather_bot
+EnvironmentFile=/opt/weather_bot/.env
+ExecStart=/opt/weather_bot/.venv/bin/python -m weather_bot.jobs.exit_change_audit --days 14
+StandardOutput=append:/var/log/weather_bot/exit_audit.log
+StandardError=append:/var/log/weather_bot/exit_audit.log
+TimeoutStartSec=5min

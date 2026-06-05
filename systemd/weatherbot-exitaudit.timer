@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily timer for the exit-change before/after audit
+
+[Timer]
+OnCalendar=*-*-* 15:30:00 UTC
+Persistent=true
+Unit=weatherbot-exitaudit.service
+
+[Install]
+WantedBy=timers.target
