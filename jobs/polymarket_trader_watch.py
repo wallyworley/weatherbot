@@ -210,18 +210,18 @@ def analyze(positions: list[dict]) -> tuple[str, dict]:
     cheap_share = cheap_pnl / realized_total * 100
     worthless_share = (exited_worthless / len(winners) * 100) if winners else 0.0
     decoded = (
-        "## Strategy decoded\n\n"
-        f"He buys **cheap tail brackets** (median entry ${med_entry:.2f}; "
-        f"{len(cheap)} of {len(wx)} positions entered below 10¢) and **sells the "
-        f"intraday rally** rather than holding to settlement: **{worthless_share:.0f}%** "
-        f"of his profitable positions ended at curPrice≈0 — the bracket ultimately "
-        f"resolved NO — yet booked positive realized P&L. "
-        f"**{'Essentially all' if cheap_share >= 99 else f'{cheap_share:.0f}%'}** of "
-        f"his net realized P&L comes from sub-10¢ entries (the higher-price buckets "
-        f"net a small loss). The edge: buy a bracket "
-        f"the morning forecast prices near zero, exit when intraday obs make it "
-        f"briefly likely and its price spikes. (win% below = % of decided positions "
-        f"with realized P&L > 0, i.e. exit-inclusive — NOT settlement outcome.)\n\n"
+        "## Strategy decoded (from activity: buy-only, exits via REDEEM/MERGE)\n\n"
+        f"**Buy-only barbell**, held to resolution. Median entry ${med_entry:.2f}; "
+        f"{len(cheap)} of {len(wx)} positions entered below 10¢, but a sizable share "
+        f"are favorites (>50¢) too. He does **not sell** (0 SELL trades in the activity "
+        f"feed) — he holds to settlement and exits via REDEEM (winning shares pay $1; "
+        f"cheap winners 20-100x) and MERGE on the negative-risk bracket structure. "
+        f"His edge is **SELECTION** (buying brackets underpriced vs true probability) + "
+        f"heavy **diversification** across many city-days, held to resolution — NOT "
+        f"trading in and out. NOTE: the exact per-position realizedPnl on negRisk "
+        f"markets (positive P&L on curPrice≈0 positions) involves merge accounting not "
+        f"fully derivable from this data — do not over-interpret. win% below = "
+        f"exit-inclusive realized P&L > 0.\n\n"
     )
 
     md = (
