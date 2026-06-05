@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from weather_bot.config import Station
 from weather_bot.data import official_guidance_fetcher as og
 
@@ -40,6 +42,50 @@ TMP  79 75 72 70
 
     assert [r["valid_time"].day for r in rows] == [5, 6, 6, 6]
     assert [r["valid_time"].hour for r in rows] == [21, 0, 3, 6]
+
+
+def test_parse_mav_fixed_width_three_digit_temperatures():
+    station = Station("KPHX", "Phoenix Sky Harbor", 33.4352, -112.0101, "America/Phoenix")
+    run_time = datetime(2026, 6, 5, 12, tzinfo=timezone.utc)
+    text = """
+ KPHX   GFS MOS GUIDANCE    6/05/2026  1200 UTC
+ HR   18 21 00 03 06 09 12 15 18 21 00 03 06 09 12 15 18 21 00 06 12
+ TMP  99106107101 93 88 81 85 96103104100 92 87 82 85 94101102 90 80
+"""
+    rows = og.parse_hourly_temp_guidance(text, station, "MAV", run_time)
+
+    assert len(rows) == 21
+    assert [r["value"] for r in rows[:5]] == [99.0, 106.0, 107.0, 101.0, 93.0]
+    assert max(r["value"] for r in rows) == 107.0
+
+
+def test_lamp_candidate_cycles_use_temperature_half_hour_products(monkeypatch):
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 6, 5, 19, 54, tzinfo=tz)
+
+    monkeypatch.setattr(og, "datetime", FrozenDateTime)
+    cycles = og._candidate_cycles("LAMP")
+
+    assert cycles[0] == datetime(2026, 6, 5, 19, 30, tzinfo=timezone.utc)
+    assert all(c.minute == 30 for c in cycles)
+    assert [c.hour for c in cycles[:3]] == [19, 18, 17]
+
+
+@pytest.mark.parametrize("source", ["MAV", "LAMP"])
+def test_parse_hourly_guidance_ignores_blocks_without_tmp(source):
+    station = Station("KPHX", "Phoenix Sky Harbor", 33.4352, -112.0101, "America/Phoenix")
+    run_time = datetime(2026, 6, 5, 19, tzinfo=timezone.utc)
+    marker = "GFS LAMP GUIDANCE" if source == "LAMP" else "GFS MOS GUIDANCE"
+    text = f"""
+ KPHX   {marker}   6/05/2026  1900 UTC
+ UTC  20 21 22
+ CIG   8  8  8
+ VIS   7  7  7
+ OBV   N  N  N
+"""
+    assert og.parse_hourly_temp_guidance(text, station, source, run_time) == []
 
 
 def test_parse_pfm_mxmn_best_effort():

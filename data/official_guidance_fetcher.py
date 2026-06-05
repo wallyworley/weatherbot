@@ -352,12 +352,13 @@ def _candidate_cycles(source: str, run_time: datetime | None = None) -> list[dat
     now = datetime.now(tz=timezone.utc)
     if source == "LAMP":
         # Full LAMP alphanumeric temperature bulletins are on the :30 cycles;
-        # some :00 files are flight-category-only and lack TMP rows.
+        # :00 files are commonly flight-category-only and lack TMP rows.
         base = now.replace(second=0, microsecond=0)
-        minute = 30 if base.minute >= 30 else 0
-        base = base.replace(minute=minute)
-        base -= timedelta(minutes=30)
-        return [base - timedelta(minutes=30 * i) for i in range(0, 6)]
+        if base.minute >= 30:
+            base = base.replace(minute=30)
+        else:
+            base = (base - timedelta(hours=1)).replace(minute=30)
+        return [base - timedelta(hours=i) for i in range(0, 6)]
     base = _model_cycle(now, 6)
     return [base - timedelta(hours=6 * i) for i in range(0, 4)]
 
@@ -437,8 +438,62 @@ def _station_text_block(text: str, station: Station, source: str) -> str | None:
     return "\n".join(lines[start:end])
 
 
-def _row_ints(line: str) -> list[int]:
+def _row_ints(line: str, expected: int | None = None) -> list[int]:
+    """Parse a MOS/LAMP row.
+
+    MOS rows are fixed-width after the label. Hot stations can have 3-digit
+    temperatures, so values may appear visually concatenated:
+    ``TMP  99106107101`` means 99, 106, 107, 101. Regex tokenization would turn
+    that into one absurd integer. Prefer 3-character fields when we know how
+    many values the row should carry or when a token is suspiciously long.
+    """
+    tokens = re.findall(r"-?\d+|M", line)
+    use_fixed = (
+        expected is not None
+        or any(len(token.lstrip("-")) > 3 for token in tokens if token != "M")
+    )
+    if use_fixed and len(line) > 4:
+        if expected is not None and len(line) >= expected * 3:
+            body = line[-expected * 3:]
+        else:
+            m = re.match(r"^\s*\S+\s(.*)$", line)
+            body = m.group(1) if m else line[4:]
+        values: list[int] = []
+        for i in range(0, len(body), 3):
+            token = body[i:i + 3].strip()
+            if not token or token == "M":
+                continue
+            try:
+                values.append(int(token))
+            except ValueError:
+                continue
+        if expected is None or len(values) >= expected:
+            return values[:expected] if expected is not None else values
     return [int(x) for x in re.findall(r"-?\d+", line)]
+
+
+def _row_value_spans(anchor_line: str) -> list[tuple[int, int]]:
+    """Return fixed-width value spans implied by a MOS/LAMP hour row."""
+    spans = [m.span() for m in re.finditer(r"\d+", anchor_line)]
+    starts = [max(0, start - 1) for start, _ in spans]
+    out: list[tuple[int, int]] = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else start + 3
+        out.append((start, end))
+    return out
+
+
+def _row_ints_at_spans(line: str, spans: list[tuple[int, int]]) -> list[int]:
+    values: list[int] = []
+    for start, end in spans:
+        token = line[start:end].strip()
+        if not token or token == "M":
+            continue
+        try:
+            values.append(int(token))
+        except ValueError:
+            values.append(int(token[-3:]))
+    return values
 
 
 def parse_hourly_temp_guidance(
@@ -452,14 +507,16 @@ def parse_hourly_temp_guidance(
     if not block:
         return []
     hours: list[int] = []
+    hour_spans: list[tuple[int, int]] = []
     temps: list[int] = []
     for line in block.splitlines():
         parts = line.strip().split()
         label = parts[0].upper() if parts else ""
         if label in {"HR", "UTC"}:
             hours = _row_ints(line)
+            hour_spans = _row_value_spans(line)
         elif label == "TMP":
-            temps = _row_ints(line)
+            temps = _row_ints_at_spans(line, hour_spans) if hour_spans else _row_ints(line)
     if not hours or not temps:
         return []
     n = min(len(hours), len(temps))
