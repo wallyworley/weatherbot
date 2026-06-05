@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer for weather_bot official NWS/NCEP guidance collector
+
+[Timer]
+OnBootSec=7min
+OnUnitInactiveSec=1h
+Persistent=true
+Unit=weatherbot-official-guidance.service
+
+[Install]
+WantedBy=timers.target

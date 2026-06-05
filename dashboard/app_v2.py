@@ -1507,6 +1507,230 @@ def page_new_cities() -> None:
 
 
 # ---------------------------------------------------------------------------
+# PAGE: FORECAST LAB
+# ---------------------------------------------------------------------------
+def _forecast_lab_station_codes(scope: str) -> list[str]:
+    trade = queries.trade_eligible_stations()
+    fetch = queries.fetch_stations()
+    neighbors = queries.neighbor_stations()
+    if scope == "Trading stations":
+        return trade
+    if scope == "Fetch stations":
+        return fetch
+    if scope == "Neighbors":
+        return neighbors
+    codes = []
+    seen = set()
+    for code in fetch + neighbors:
+        if code not in seen:
+            codes.append(code)
+            seen.add(code)
+    return codes
+
+
+def _format_guidance_table(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    out = df.copy()
+    out["city"] = out["station"].map(t.friendly_station)
+    for col in ["nbm_p50", "nws_grid", "pfm", "lamp", "mav", "high_so_far", "truth_tmax", "spread_f"]:
+        if col in out.columns:
+            out[col] = out[col].map(lambda x: f"{float(x):.0f}°" if pd.notna(x) else "—")
+    cols = [
+        "city", "station", "nbm_p50", "nws_grid", "pfm", "lamp", "mav",
+        "high_so_far", "truth_tmax", "spread_f",
+    ]
+    return out[[c for c in cols if c in out.columns]].rename(columns={
+        "city": "City",
+        "station": "Station",
+        "nbm_p50": "NBM p50",
+        "nws_grid": "NWS grid",
+        "pfm": "PFM",
+        "lamp": "LAMP peak",
+        "mav": "MAV peak",
+        "high_so_far": "High so far",
+        "truth_tmax": "Final high",
+        "spread_f": "Source spread",
+    })
+
+
+def page_forecast_lab() -> None:
+    st.title("Forecast Lab")
+    st.caption(
+        "Research monitor for the new official-guidance lane. This page answers: "
+        "is data arriving, where do forecast centers disagree, and which source "
+        "has been closest to the final high recently?"
+    )
+
+    c1, c2, c3 = st.columns([1.1, 1, 1])
+    with c1:
+        scope = st.selectbox(
+            "Station universe",
+            ["Trading stations", "Fetch stations", "Neighbors", "Fetch + neighbors"],
+            index=0,
+        )
+    with c2:
+        valid_choice = st.selectbox("Forecast date", ["Today", "Tomorrow"], index=0)
+    with c3:
+        hours = st.selectbox("Collector window", [6, 12, 24, 48], index=2)
+
+    target_date = _et_now().date() + timedelta(days=1 if valid_choice == "Tomorrow" else 0)
+    station_codes = _forecast_lab_station_codes(scope)
+
+    tabs = st.tabs(["Monitor", "Centers", "Accuracy", "What To Watch"])
+
+    with tabs[0]:
+        section("Collector health", "Freshness and volume by source in the selected window.")
+        try:
+            health = queries.guidance_source_health(hours=hours)
+        except Exception as e:
+            st.error(f"Could not load guidance health: {e}")
+            health = pd.DataFrame()
+        if health.empty:
+            st.warning("No official guidance rows found in this window.")
+        else:
+            cards = st.columns(min(5, len(health)))
+            for idx, (_, row) in enumerate(health.iterrows()):
+                with cards[idx % len(cards)]:
+                    lag = float(row["lag_min"]) if pd.notna(row.get("lag_min")) else None
+                    color = "#dc2626" if lag is not None and lag > 180 else None
+                    big_card(
+                        str(row["source"]),
+                        f"{int(row['stations'])} stations",
+                        f"{int(row['rows'])} rows · lag {lag:.0f}m" if lag is not None else f"{int(row['rows'])} rows",
+                        value_color=color,
+                    )
+            hshow = health.copy()
+            if "latest_ingest" in hshow.columns:
+                hshow["latest_ingest"] = pd.to_datetime(hshow["latest_ingest"], utc=True).dt.strftime("%Y-%m-%d %H:%M UTC")
+            st.dataframe(hshow, hide_index=True, use_container_width=True)
+
+        section("Station coverage", "Rows by station/source. Missing cells are where the source did not publish or did not parse.")
+        try:
+            cov = queries.guidance_station_coverage(hours=hours)
+        except Exception as e:
+            st.error(f"Could not load station coverage: {e}")
+            cov = pd.DataFrame()
+        if not cov.empty:
+            view = cov[cov["station"].isin(station_codes)].copy()
+            if view.empty:
+                st.info("No coverage rows for this station universe.")
+            else:
+                pivot = view.pivot_table(index="station", columns="source", values="rows", aggfunc="sum").fillna(0)
+                st.dataframe(pivot.astype(int), use_container_width=True)
+        else:
+            st.info("No coverage rows yet.")
+
+    with tabs[1]:
+        section(
+            f"Forecast centers for {target_date}",
+            "The binding problem is the temperature center. Large disagreement is where the research should look first.",
+        )
+        try:
+            centers = queries.guidance_center_board(target_date, station_codes)
+        except Exception as e:
+            st.error(f"Could not load center board: {e}")
+            centers = pd.DataFrame()
+        if centers.empty:
+            st.info("No center rows available for this date/universe.")
+        else:
+            centers = centers.copy()
+            source_cols = [c for c in ["nbm_p50", "nws_grid", "pfm", "lamp", "mav"] if c in centers.columns]
+            if source_cols:
+                source_values = centers[source_cols].apply(pd.to_numeric, errors="coerce")
+                source_count = source_values.notna().sum(axis=1)
+                centers["spread_f"] = source_values.max(axis=1) - source_values.min(axis=1)
+                centers.loc[source_count < 2, "spread_f"] = np.nan
+            scored = centers[centers["spread_f"].notna()].sort_values("spread_f", ascending=False)
+            top_disagreements = scored.head(5)
+            if not top_disagreements.empty:
+                st.markdown("**Largest source disagreements**")
+                for _, row in top_disagreements.iterrows():
+                    st.write(
+                        f"- **{t.friendly_station(row['station'])}**: "
+                        f"{float(row['spread_f']):.1f}° spread across available centers"
+                    )
+
+            chart_cols = ["station", "nbm_p50", "nws_grid", "pfm", "lamp", "mav"]
+            long = centers[[c for c in chart_cols if c in centers.columns]].melt(
+                id_vars="station", var_name="source", value_name="center_f"
+            )
+            long = long[long["center_f"].notna()]
+            if not long.empty:
+                long["city"] = long["station"].map(t.friendly_station)
+                fig = px.scatter(
+                    long,
+                    x="center_f",
+                    y="city",
+                    color="source",
+                    labels={"center_f": "Forecast center (°F)", "city": ""},
+                    height=max(320, 34 * long["station"].nunique()),
+                )
+                fig.update_layout(margin=dict(l=10, r=10, t=10, b=10))
+                st.plotly_chart(fig, use_container_width=True)
+
+            st.dataframe(_format_guidance_table(centers), hide_index=True, use_container_width=True)
+
+    with tabs[2]:
+        section(
+            "Recent source accuracy",
+            "This is center MAE/bias vs CLI/daily truth. It is not the strict morning market-relative gate, but it tells us which inputs deserve scoring.",
+        )
+        days = st.selectbox("Accuracy window", [3, 7, 14, 30], index=1)
+        try:
+            acc = queries.guidance_accuracy(days_back=days)
+        except Exception as e:
+            st.error(f"Could not load guidance accuracy: {e}")
+            acc = pd.DataFrame()
+        if acc.empty:
+            st.info("No completed truth overlap yet.")
+        else:
+            acc = acc[acc["station"].isin(station_codes)].copy()
+            if acc.empty:
+                st.info("No accuracy rows for this station universe.")
+            else:
+                by_source = (acc.groupby("source", as_index=False)
+                               .agg(n=("n", "sum"),
+                                    mae_f=("mae_f", "mean"),
+                                    bias_f=("bias_f", "mean"),
+                                    median_abs_err_f=("median_abs_err_f", "mean"))
+                               .sort_values("mae_f"))
+                st.markdown("**Source leaderboard**")
+                st.dataframe(by_source.round(2), hide_index=True, use_container_width=True)
+
+                heat = acc.pivot_table(index="station", columns="source", values="mae_f", aggfunc="mean")
+                if not heat.empty:
+                    heat = heat.sort_index()
+                    fig = px.imshow(
+                        heat.astype(float),
+                        color_continuous_scale="RdYlGn_r",
+                        aspect="auto",
+                        labels=dict(color="MAE °F"),
+                    )
+                    fig.update_layout(height=max(260, 34 * len(heat)), margin=dict(l=10, r=10, t=10, b=10))
+                    st.plotly_chart(fig, use_container_width=True)
+
+                st.dataframe(acc.round(2), hide_index=True, use_container_width=True)
+
+    with tabs[3]:
+        section("Suggested monitoring rules")
+        st.markdown(
+            """
+            - **Collection health**: source lag over 3 hours or station coverage below expected should page us before morning scoring.
+            - **Center disagreement**: any trading station with source spread ≥4°F goes on the watchlist for manual review and later segmentation.
+            - **Source promotion**: a source must improve morning Brier/RPS versus the market out of sample before it changes sizing or live probabilities.
+            - **Neighbor role**: neighbor guidance should explain gradients and regimes; it should not directly settle or trade markets.
+            - **Weekly review**: run the strict ablation scorer after each few days of new guidance data and compare `nws_grid_center`, `pfm_center`, `lamp_peak_center`, and `mav_center`.
+            """
+        )
+        st.code(
+            ".venv/bin/python -m weather_bot.research.morning_center_ablation "
+            "--days 45 --variants logged_model,nws_grid_center,pfm_center,lamp_peak_center,mav_center --workers 8",
+            language="bash",
+        )
+
+
+# ---------------------------------------------------------------------------
 # PAGE: ENGINE ROOM
 # ---------------------------------------------------------------------------
 def page_engine_room() -> None:
@@ -1638,6 +1862,7 @@ PAGES = {
     "Today": page_today,
     "Trade Log": page_trade_log,
     "How is the bot doing?": page_bot_health,
+    "Forecast Lab": page_forecast_lab,
     "New cities": page_new_cities,
     "Engine Room": page_engine_room,
 }

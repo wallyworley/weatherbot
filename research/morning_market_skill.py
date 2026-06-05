@@ -69,6 +69,7 @@ class Row:
     yes_win: int
     model_p: float
     raw_model_p: float | None
+    center_blend_p: float | None
     market_p: float
     local_hour: int
     market_bucket: str
@@ -77,6 +78,11 @@ class Row:
     model_vote_bucket: str
     risk_label: str
     boundary_bucket: str
+    nbm_p25: float | None
+    nbm_p50: float | None
+    nbm_p75: float | None
+    hrrr_tmax: float | None
+    gfs_tmax: float | None
 
 
 def _bucket_prob(p: float) -> str:
@@ -182,7 +188,11 @@ def _fetch_window(window: Window, days: int, pick: str, var: str | None) -> list
                    EXTRACT(HOUR FROM (s.ts AT TIME ZONE st.tz))::int AS local_hour,
                    mo.raw AS metar_raw,
                    mo.temp_f AS obs_temp_f,
-                   nbm.value AS nbm_p50
+                   nbm.p25 AS nbm_p25,
+                   nbm.p50 AS nbm_p50,
+                   nbm.p75 AS nbm_p75,
+                   hrrr.pred AS hrrr_tmax,
+                   gfs.pred AS gfs_tmax
               FROM signal s
               JOIN kalshi_market km ON km.ticker = s.ticker
               JOIN stations st ON st.code = km.station
@@ -198,17 +208,58 @@ def _fetch_window(window: Window, days: int, pick: str, var: str | None) -> list
                      LIMIT 1
               ) mo ON true
               LEFT JOIN LATERAL (
-                    SELECT pf.value
+                    SELECT MAX(pf.value) FILTER (WHERE pf.percentile = 25) AS p25,
+                           MAX(pf.value) FILTER (WHERE pf.percentile = 50) AS p50,
+                           MAX(pf.value) FILTER (WHERE pf.percentile = 75) AS p75
                       FROM prob_forecast pf
                      WHERE pf.station = km.station
                        AND pf.valid_date = km.valid_date
                        AND pf.var = km.var
                        AND pf.model = 'NBM_QMD'
-                       AND pf.percentile = 50
-                       AND pf.run_time <= s.ts
-                     ORDER BY pf.run_time DESC
-                     LIMIT 1
+                       AND pf.run_time = (
+                           SELECT MAX(pf2.run_time)
+                             FROM prob_forecast pf2
+                            WHERE pf2.station = km.station
+                              AND pf2.valid_date = km.valid_date
+                              AND pf2.var = km.var
+                              AND pf2.model = 'NBM_QMD'
+                              AND pf2.run_time <= s.ts
+                       )
               ) nbm ON true
+              LEFT JOIN LATERAL (
+                    SELECT MAX(df.value)::float AS pred
+                      FROM det_forecast df
+                     WHERE df.station = km.station
+                       AND df.model = 'HRRR'
+                       AND df.var = 'TMP_2M'
+                       AND (df.valid_time AT TIME ZONE st.tz)::date = km.valid_date
+                       AND df.run_time = (
+                           SELECT MAX(df2.run_time)
+                             FROM det_forecast df2
+                            WHERE df2.station = km.station
+                              AND df2.model = 'HRRR'
+                              AND df2.var = 'TMP_2M'
+                              AND (df2.valid_time AT TIME ZONE st.tz)::date = km.valid_date
+                              AND df2.run_time <= s.ts
+                       )
+              ) hrrr ON true
+              LEFT JOIN LATERAL (
+                    SELECT MAX(df.value)::float AS pred
+                      FROM det_forecast df
+                     WHERE df.station = km.station
+                       AND df.model = 'GFS'
+                       AND df.var = 'TMP_2M'
+                       AND (df.valid_time AT TIME ZONE st.tz)::date = km.valid_date
+                       AND df.run_time = (
+                           SELECT MAX(df2.run_time)
+                             FROM det_forecast df2
+                            WHERE df2.station = km.station
+                              AND df2.model = 'GFS'
+                              AND df2.var = 'TMP_2M'
+                              AND (df2.valid_time AT TIME ZONE st.tz)::date = km.valid_date
+                              AND df2.run_time <= s.ts
+                       )
+              ) gfs ON true
              WHERE km.valid_date >= CURRENT_DATE - (%(days)s || ' days')::interval
                AND km.valid_date < CURRENT_DATE
                {var_filter}
@@ -248,6 +299,7 @@ def _fetch_window(window: Window, days: int, pick: str, var: str | None) -> list
             yes_win=int(r["yes_win"]),
             model_p=float(r["model_p"]),
             raw_model_p=_raw_prob_from_notes(r.get("notes")),
+            center_blend_p=None,
             market_p=float(r["market_p"]),
             local_hour=int(r["local_hour"]),
             market_bucket=f"market:{_bucket_prob(float(r['market_p']))}",
@@ -256,8 +308,79 @@ def _fetch_window(window: Window, days: int, pick: str, var: str | None) -> list
             model_vote_bucket=_model_vote_bucket(r),
             risk_label=_risk_label(r),
             boundary_bucket=_boundary_bucket(r),
+            nbm_p25=float(r["nbm_p25"]) if r.get("nbm_p25") is not None else None,
+            nbm_p50=float(r["nbm_p50"]) if r.get("nbm_p50") is not None else None,
+            nbm_p75=float(r["nbm_p75"]) if r.get("nbm_p75") is not None else None,
+            hrrr_tmax=float(r["hrrr_tmax"]) if r.get("hrrr_tmax") is not None else None,
+            gfs_tmax=float(r["gfs_tmax"]) if r.get("gfs_tmax") is not None else None,
         ))
     return out
+
+
+def _parse_center_blend(spec: str | None) -> dict[str, float] | None:
+    if not spec:
+        return None
+    weights: dict[str, float] = {}
+    for part in spec.split(","):
+        if not part.strip():
+            continue
+        model, sep, value = part.partition("=")
+        if not sep:
+            raise ValueError(f"Bad --center-blend part {part!r}; expected MODEL=WEIGHT")
+        model = model.strip().upper()
+        if model not in {"NBM", "HRRR", "GFS"}:
+            raise ValueError(f"Unsupported center-blend model {model!r}; use NBM, HRRR, or GFS")
+        weights[model] = float(value)
+    if not weights or sum(v for v in weights.values() if v > 0) <= 0:
+        raise ValueError("--center-blend must include at least one positive weight")
+    return weights
+
+
+def _normal_cdf(x: float, mu: float, sigma: float) -> float:
+    sigma = max(float(sigma), 0.25)
+    return 0.5 * (1.0 + math.erf((float(x) - mu) / (sigma * math.sqrt(2.0))))
+
+
+def _normal_prob_between(mu: float, sigma: float, lo: float | None, hi: float | None) -> float:
+    lo_cdf = 0.0 if lo is None else _normal_cdf(lo, mu, sigma)
+    hi_cdf = 1.0 if hi is None else _normal_cdf(hi, mu, sigma)
+    return max(0.0, min(1.0, hi_cdf - lo_cdf))
+
+
+def _center_blend_probability(r: Row, weights: dict[str, float]) -> float | None:
+    points = {
+        "NBM": r.nbm_p50,
+        "HRRR": r.hrrr_tmax,
+        "GFS": r.gfs_tmax,
+    }
+    usable_weights = {
+        model: weight
+        for model, weight in weights.items()
+        if weight > 0 and points.get(model) is not None
+    }
+    total_weight = sum(usable_weights.values())
+    if total_weight <= 0:
+        return None
+    usable_weights = {model: weight / total_weight for model, weight in usable_weights.items()}
+    mu = sum(usable_weights[model] * float(points[model]) for model in usable_weights)
+
+    sigma = None
+    if r.nbm_p25 is not None and r.nbm_p75 is not None and r.nbm_p75 > r.nbm_p25:
+        sigma = (r.nbm_p75 - r.nbm_p25) / 1.349
+    if sigma is None:
+        vals = [float(points[m]) for m in usable_weights]
+        if len(vals) >= 2:
+            vbar = mean(vals)
+            sigma = math.sqrt(mean((v - vbar) ** 2 for v in vals)) * 1.35
+    sigma = max(1.5, sigma if sigma is not None else 2.5)
+    return _normal_prob_between(mu, sigma, r.lower_f, r.upper_f)
+
+
+def _add_center_blend_probabilities(rows: list[Row], weights: dict[str, float] | None) -> None:
+    if not weights:
+        return
+    for r in rows:
+        r.center_blend_p = _center_blend_probability(r, weights)
 
 
 def _brier_decomposition(
@@ -296,30 +419,35 @@ def _brier_decomposition(
     }
 
 
-def _metrics(rows: list[Row]) -> dict | None:
-    if not rows:
+def _metrics_for(rows: list[Row], prob: Callable[[Row], float | None]) -> dict | None:
+    usable = [(r, p) for r in rows if (p := prob(r)) is not None]
+    if not usable:
         return None
-    n = len(rows)
-    model_brier = mean((r.model_p - r.yes_win) ** 2 for r in rows)
-    market_brier = mean((r.market_p - r.yes_win) ** 2 for r in rows)
+    n = len(usable)
+    model_brier = mean((p - r.yes_win) ** 2 for r, p in usable)
+    market_brier = mean((r.market_p - r.yes_win) ** 2 for r, _ in usable)
     skill = 1.0 - model_brier / market_brier if market_brier > 0 else float("nan")
-    base = mean(r.yes_win for r in rows)
-    model_decomp = _brier_decomposition(rows, lambda r: r.model_p)
-    market_decomp = _brier_decomposition(rows, lambda r: r.market_p)
+    base = mean(r.yes_win for r, _ in usable)
+    model_decomp = _brier_decomposition(rows, prob)
+    market_decomp = _brier_decomposition([r for r, _ in usable], lambda r: r.market_p)
     return {
         "n": n,
         "model_brier": model_brier,
         "market_brier": market_brier,
         "skill": skill,
         "base": base,
-        "model_mean": mean(r.model_p for r in rows),
-        "market_mean": mean(r.market_p for r in rows),
-        "edge_abs": mean(abs(r.model_p - r.market_p) for r in rows),
+        "model_mean": mean(p for _, p in usable),
+        "market_mean": mean(r.market_p for r, _ in usable),
+        "edge_abs": mean(abs(p - r.market_p) for r, p in usable),
         "model_rel": model_decomp["reliability"] if model_decomp else float("nan"),
         "model_res": model_decomp["resolution"] if model_decomp else float("nan"),
         "market_rel": market_decomp["reliability"] if market_decomp else float("nan"),
         "market_res": market_decomp["resolution"] if market_decomp else float("nan"),
     }
+
+
+def _metrics(rows: list[Row]) -> dict | None:
+    return _metrics_for(rows, lambda r: r.model_p)
 
 
 def _rps_by_market(rows: list[Row], prob: Callable[[Row], float | None]) -> dict | None:
@@ -369,8 +497,9 @@ def _rps_by_market(rows: list[Row], prob: Callable[[Row], float | None]) -> dict
     return {"n_markets": len(rps_vals), "skipped": skipped, "rps": mean(rps_vals)}
 
 
-def _rps_metrics(rows: list[Row]) -> dict | None:
-    model = _rps_by_market(rows, lambda r: r.model_p)
+def _rps_metrics(rows: list[Row], prob: Callable[[Row], float | None] | None = None) -> dict | None:
+    prob = prob or (lambda r: r.model_p)
+    model = _rps_by_market(rows, prob)
     market = _rps_by_market(rows, lambda r: r.market_p)
     if not model or not market:
         return None
@@ -381,8 +510,8 @@ def _rps_metrics(rows: list[Row]) -> dict | None:
     }
 
 
-def _print_rps(rows: list[Row], brier_skill: float) -> None:
-    r = _rps_metrics(rows)
+def _print_rps(rows: list[Row], brier_skill: float, prob: Callable[[Row], float | None] | None = None) -> None:
+    r = _rps_metrics(rows, prob)
     if not r:
         return
     print("\nOrdinal RPS (distance-aware: rewards being near the right bucket)")
@@ -407,6 +536,22 @@ def _print_rps(rows: list[Row], brier_skill: float) -> None:
         verdict = ("Mixed: partial center error + under-confidence — segment by station to localize "
                    "before committing a lever.")
     print(f"  → {verdict}")
+
+
+def _print_center_blend(rows: list[Row], weights: dict[str, float] | None) -> None:
+    if not weights:
+        return
+    m = _metrics_for(rows, lambda r: r.center_blend_p)
+    if not m:
+        print("\nCenter-blend shadow model: no scored rows")
+        return
+    label = "CENTER_BLEND " + ",".join(f"{k}={v:g}" for k, v in weights.items())
+    print("\nResearch shadow: fixed center blend (uncalibrated)")
+    print("------------------------------------------------")
+    _print_metric(label, m)
+    print("  Fast shadow score: NBM p25/p75 define spread; as-of NBM/HRRR/GFS define center.")
+    print("  Existing empirical calibration is not applied; use this to rank center levers.")
+    _print_rps(rows, m["skill"], lambda r: r.center_blend_p)
 
 
 def _print_metric(label: str, m: dict) -> None:
@@ -484,7 +629,13 @@ def main() -> None:
     ap.add_argument("--morning-end", default="09:00")
     ap.add_argument("--settlement-start", default="17:00")
     ap.add_argument("--settlement-end", default="18:00")
+    ap.add_argument(
+        "--center-blend",
+        default=None,
+        help="Research-only fixed center blend, e.g. NBM=0.35,HRRR=0.40,GFS=0.25",
+    )
     args = ap.parse_args()
+    center_blend_weights = _parse_center_blend(args.center_blend)
 
     windows = [
         Window("morning", args.morning_start, args.morning_end),
@@ -492,6 +643,7 @@ def main() -> None:
     ]
     for window in windows:
         rows = _fetch_window(window, args.days, args.pick, args.var)
+        _add_center_blend_probabilities(rows, center_blend_weights)
         print("\n" + "=" * 88)
         print(
             f"{window.name.upper()} MARKET-RELATIVE SKILL "
@@ -505,6 +657,7 @@ def main() -> None:
         _print_metric("OVERALL", overall)
         print("skill = 1 - model_brier / market_brier; positive means model beats market.")
         _print_rps(rows, overall["skill"])
+        _print_center_blend(rows, center_blend_weights)
         _print_raw_vs_calibrated(rows)
 
         _print_groups("By Station", rows, lambda r: r.station, max(5, args.min_n // 2), args.limit)

@@ -88,6 +88,42 @@ def upsert_ensemble_forecast(rows: Iterable[dict]):
         conn.commit()
 
 
+def upsert_forecast_guidance(rows: Iterable[dict]):
+    """Upsert official / station-specific forecast guidance rows.
+
+    The table intentionally stores heterogeneous sources in one shape so the
+    ablation harness can compare them as alternate forecast centers without
+    giving any source special live-trading privileges.
+    """
+    sql = """
+    INSERT INTO forecast_guidance
+        (station, source, run_time, valid_time, valid_date, lead_hr, var, value, units, raw)
+    VALUES
+        (%(station)s, %(source)s, %(run_time)s, %(valid_time)s, %(valid_date)s,
+         %(lead_hr)s, %(var)s, %(value)s, %(units)s, %(raw)s::jsonb)
+    ON CONFLICT (station, source, run_time, valid_time, var) DO UPDATE SET
+        valid_date = EXCLUDED.valid_date,
+        lead_hr = EXCLUDED.lead_hr,
+        value = EXCLUDED.value,
+        units = EXCLUDED.units,
+        raw = EXCLUDED.raw,
+        ingested_at = now()
+    """
+    prepared = []
+    for row in rows:
+        r = dict(row)
+        r.setdefault("units", "degF")
+        r.setdefault("raw", None)
+        if isinstance(r.get("raw"), (dict, list)):
+            r["raw"] = json.dumps(r["raw"])
+        prepared.append(r)
+    if not prepared:
+        return
+    with connect() as conn, conn.cursor() as cur:
+        cur.executemany(sql, prepared)
+        conn.commit()
+
+
 def latest_nbm_percentiles(station: str, valid_date: date, var: str = "TMAX_DAILY") -> list[dict]:
     sql = """
     SELECT percentile, value, run_time
@@ -197,6 +233,73 @@ def hrrr_tmax_as_of(station: str, valid_date: date, as_of: datetime) -> float | 
 
 def gfs_tmax_as_of(station: str, valid_date: date, as_of: datetime) -> float | None:
     return det_tmax_as_of(station, valid_date, "GFS", as_of)
+
+
+def guidance_value_as_of(
+    station: str,
+    valid_date: date,
+    source: str,
+    var: str,
+    as_of: datetime,
+) -> float | None:
+    """Latest daily guidance value available at `as_of` for a source/var."""
+    sql = """
+    SELECT value
+      FROM forecast_guidance
+     WHERE station = %s
+       AND source = %s
+       AND valid_date = %s
+       AND var = %s
+       AND run_time <= %s
+     ORDER BY run_time DESC, valid_time DESC
+     LIMIT 1
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, (station, source, valid_date, var, as_of))
+        row = cur.fetchone()
+        return float(row["value"]) if row else None
+
+
+def guidance_tmax_as_of(
+    station: str,
+    valid_date: date,
+    source: str,
+    as_of: datetime,
+) -> float | None:
+    """Latest TMAX center for a guidance source at `as_of`.
+
+    Prefer explicit TMAX_DAILY rows. If a source only has hourly TMP_2M rows
+    (for example LAMP text), reduce the latest run to the station-local daily
+    maximum. OBS_TRACKER stores high-so-far under OBS_TMAX_SO_FAR and is not a
+    forecast center, so callers should query that var directly when needed.
+    """
+    direct = guidance_value_as_of(station, valid_date, source, "TMAX_DAILY", as_of)
+    if direct is not None:
+        return direct
+    tz = STATIONS[station].tz
+    sql = """
+    WITH latest AS (
+        SELECT MAX(run_time) AS rt
+          FROM forecast_guidance
+         WHERE station = %s
+           AND source = %s
+           AND var = 'TMP_2M'
+           AND (valid_time AT TIME ZONE %s)::date = %s
+           AND run_time <= %s
+    )
+    SELECT MAX(value) AS tmax
+      FROM forecast_guidance, latest
+     WHERE station = %s
+       AND source = %s
+       AND var = 'TMP_2M'
+       AND (valid_time AT TIME ZONE %s)::date = %s
+       AND run_time = latest.rt
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, (station, source, tz, valid_date, as_of,
+                          station, source, tz, valid_date))
+        row = cur.fetchone()
+        return float(row["tmax"]) if row and row["tmax"] is not None else None
 
 
 def station_bias_as_of(

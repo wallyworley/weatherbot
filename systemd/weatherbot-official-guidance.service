@@ -1,0 +1,15 @@
+[Unit]
+Description=weather_bot official NWS/NCEP guidance collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/weather_bot
+EnvironmentFile=/opt/weather_bot/.env
+ExecStart=/opt/weather_bot/.venv/bin/python -m weather_bot.jobs.pull_official_guidance
+StandardOutput=append:/var/log/weather_bot/official_guidance.log
+StandardError=append:/var/log/weather_bot/official_guidance.log
+TimeoutStartSec=6min

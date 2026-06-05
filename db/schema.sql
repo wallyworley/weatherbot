@@ -96,6 +96,33 @@ CREATE TABLE IF NOT EXISTS atmosphere_signals (
 );
 CREATE INDEX IF NOT EXISTS idx_atmos_valid ON atmosphere_signals (station, valid_time DESC);
 
+-- Official / station-specific forecast guidance captured point-in-time.
+-- This is the research lane for testing whether the market is leaning on
+-- NWS/NCEP products that our NBM/HRRR/GFS stack is missing:
+--   NWS_GRID    api.weather.gov forecastGridData / NDFD-style grid values
+--   NWS_PFM     Point Forecast Matrix MX/MN guidance
+--   LAMP        GFS LAMP station hourly guidance
+--   MAV         GFS MOS station guidance
+--   OBS_TRACKER high-so-far / settlement-mechanics context
+CREATE TABLE IF NOT EXISTS forecast_guidance (
+    station       TEXT NOT NULL REFERENCES stations(code),
+    source        TEXT NOT NULL,
+    run_time      TIMESTAMPTZ NOT NULL,
+    valid_time    TIMESTAMPTZ NOT NULL,
+    valid_date    DATE NOT NULL,
+    lead_hr       INT,
+    var           TEXT NOT NULL,
+    value         DOUBLE PRECISION NOT NULL,
+    units         TEXT NOT NULL DEFAULT 'degF',
+    raw           JSONB,
+    ingested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (station, source, run_time, valid_time, var)
+);
+CREATE INDEX IF NOT EXISTS idx_guidance_valid
+    ON forecast_guidance (station, source, valid_date, var, run_time DESC);
+CREATE INDEX IF NOT EXISTS idx_guidance_ingested
+    ON forecast_guidance (source, ingested_at DESC);
+
 -- NWS Daily Climate Report (CLI) — Kalshi NHIGH settlement authority.
 -- Forecaster-reviewed, more authoritative than METAR-derived daily extremes.
 -- 30-day comparison vs METAR showed METAR undercounts CLI TMAX by 0.5-1°F

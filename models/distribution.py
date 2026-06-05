@@ -235,6 +235,41 @@ def _hrrr_blend_weight(hour_local: int) -> float:
     return 0.95
 
 
+def _configured_morning_center_blend_weights(
+    station: str,
+    var: str,
+    lead_day: int,
+    hour_local: int,
+) -> dict[str, float] | None:
+    """Optional paper/research morning center policy.
+
+    Returns explicit center-blend weights when config asks us to bypass the
+    normal same-day HRRR policy. None preserves current production behavior.
+    """
+    if var != "TMAX_DAILY" or lead_day != 0:
+        return None
+
+    from weather_bot import config
+
+    if not (config.MORNING_CENTER_START_HOUR <= hour_local < config.MORNING_CENTER_END_HOUR):
+        return None
+
+    policy = config.MORNING_CENTER_POLICY
+    if policy in {"", "current", "production", "off"}:
+        return None
+    if policy in {"nbm_only", "no_hrrr"}:
+        return {"NBM": 1.0}
+    if policy == "nbm_gfs_50_50":
+        return {"NBM": 0.5, "GFS": 0.5}
+    if policy == "station_gfs_50_50":
+        if station in set(config.MORNING_CENTER_GFS_STATIONS):
+            return {"NBM": 0.5, "GFS": 0.5}
+        return {"NBM": 1.0}
+
+    log.warning("Unknown MORNING_CENTER_POLICY=%s; preserving current behavior", policy)
+    return None
+
+
 def build_station_distribution(
     station: str,
     target_date: date,
@@ -242,6 +277,7 @@ def build_station_distribution(
     now_utc: datetime | None = None,
     apply_bias: bool = True,
     as_of: datetime | None = None,
+    center_blend_weights: dict[str, float] | None = None,
 ) -> PiecewiseCDF | None:
     """Assemble NBM CDF + bias correction + optional HRRR blend for a station-day.
 
@@ -254,6 +290,11 @@ def build_station_distribution(
     same forecasts available when the signal originally fired. Station bias
     rows have no history in the current schema; replay uses the current
     bias table and the harness flags this as a known approximation.
+
+    `center_blend_weights` is a research-only override for testing alternate
+    meteorological centers, e.g. {"NBM": 0.35, "HRRR": 0.40, "GFS": 0.25}.
+    When supplied, the production HRRR/GFS shift policy is bypassed and the
+    CDF center is shifted to the normalized weighted point-model mean.
     """
     rows = (persistence.nbm_percentiles_as_of(station, target_date, as_of, var=var)
             if as_of is not None else
@@ -387,10 +428,56 @@ def build_station_distribution(
     import pytz
     tz = pytz.timezone(STATIONS[station].tz)
     hr_local = now.astimezone(tz).hour
+    effective_center_blend_weights = (
+        center_blend_weights
+        if center_blend_weights is not None
+        else _configured_morning_center_blend_weights(station, var, lead_day, hr_local)
+    )
+
+    # Research-only center blend. This is intentionally opt-in so production
+    # callers keep the existing HRRR/GFS policy.
+    if effective_center_blend_weights and var == "TMAX_DAILY":
+        nbm_median = cdf.median()
+        points: dict[str, float | None] = {"NBM": nbm_median}
+
+        if effective_center_blend_weights.get("HRRR", 0) > 0:
+            hrrr_val = (persistence.hrrr_tmax_as_of(station, target_date, as_of)
+                        if as_of is not None else
+                        persistence.latest_hrrr_tmax(station, target_date))
+            if hrrr_val is not None:
+                hrrr_bias = persistence.get_station_bias(station, "HRRR", var, month, 0)
+                if hrrr_bias:
+                    hrrr_val -= float(hrrr_bias["mean_bias_f"])
+            points["HRRR"] = hrrr_val
+
+        if effective_center_blend_weights.get("GFS", 0) > 0:
+            gfs_val = (persistence.gfs_tmax_as_of(station, target_date, as_of)
+                       if as_of is not None else
+                       persistence.latest_gfs_tmax(station, target_date))
+            if gfs_val is not None:
+                gfs_bias = persistence.get_station_bias(station, "GFS", var, month, max(lead_day, 0))
+                if gfs_bias:
+                    gfs_val -= float(gfs_bias["mean_bias_f"])
+            points["GFS"] = gfs_val
+
+        weights = {
+            model: float(weight)
+            for model, weight in effective_center_blend_weights.items()
+            if weight > 0 and points.get(model) is not None
+        }
+        total_weight = sum(weights.values())
+        if total_weight > 0:
+            weights = {model: weight / total_weight for model, weight in weights.items()}
+            target_center = sum(weights[model] * float(points[model]) for model in weights)
+            cdf.shift += target_center - nbm_median
+            log.info(
+                "Research center blend %s %s: weights=%s center=%.1f shift=%+.2f",
+                station, target_date, weights, target_center, target_center - nbm_median,
+            )
 
     # Same-day HRRR blend.
     hrrr_used = False
-    if lead_day == 0 and var == "TMAX_DAILY":
+    if effective_center_blend_weights is None and lead_day == 0 and var == "TMAX_DAILY":
         hrrr_val = (persistence.hrrr_tmax_as_of(station, target_date, as_of)
                     if as_of is not None else
                     persistence.latest_hrrr_tmax(station, target_date))
@@ -411,7 +498,7 @@ def build_station_distribution(
     # so a modest constant weight is safe. Lower weight than HRRR: GFS lacks the
     # boundary-layer obs that make same-day HRRR so accurate.
     _GFS_WEIGHT = 0.30
-    if var == "TMAX_DAILY" and (lead_day >= 1 or (lead_day == 0 and not hrrr_used)):
+    if effective_center_blend_weights is None and var == "TMAX_DAILY" and (lead_day >= 1 or (lead_day == 0 and not hrrr_used)):
         gfs_val = (persistence.gfs_tmax_as_of(station, target_date, as_of)
                    if as_of is not None else
                    persistence.latest_gfs_tmax(station, target_date))

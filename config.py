@@ -256,6 +256,26 @@ KALSHI_FEE_COEFF = 0.07
 REQUIRE_AGREEMENT_N = int(os.getenv("REQUIRE_AGREEMENT_N", "0"))
 
 # ---------------------------------------------------------------------------
+# Morning forecast-center policy (research/paper candidate)
+# ---------------------------------------------------------------------------
+# 2026-06-05 RPS + exact PIT ablation found the morning deficit is mean-center
+# error, not calibration/spread. Broad morning HRRR/GFS blends still lose to
+# the market, but no-HRR/NBM-only and a small station-specific GFS blend reduce
+# damage versus logged production:
+#   45d 06-09 local, calibrated: logged skill -0.36, rebuilt -0.29,
+#   NBM-only -0.30, station_gfs_50_50 -0.28. Still NOT alpha.
+# Default remains current production behavior. Set to station_gfs_50_50 in
+# paper mode to collect out-of-sample evidence before any sizing discussion.
+MORNING_CENTER_POLICY = os.getenv("MORNING_CENTER_POLICY", "current").lower()
+MORNING_CENTER_START_HOUR = int(os.getenv("MORNING_CENTER_START_HOUR", "6"))
+MORNING_CENTER_END_HOUR = int(os.getenv("MORNING_CENTER_END_HOUR", "9"))
+MORNING_CENTER_GFS_STATIONS = [
+    s.strip().upper()
+    for s in os.getenv("MORNING_CENTER_GFS_STATIONS", "KAUS,KDCA,KLAS,KLAX,KPHX,KMSP").split(",")
+    if s.strip()
+]
+
+# ---------------------------------------------------------------------------
 # Risk / sizing
 # ---------------------------------------------------------------------------
 BANKROLL_USD = float(os.getenv("BANKROLL_USD", "1000"))

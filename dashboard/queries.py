@@ -875,6 +875,239 @@ def open_positions_with_obs() -> pd.DataFrame:
     """)
 
 
+def guidance_source_health(hours: int = 24) -> pd.DataFrame:
+    """Collector health for official guidance sources.
+
+    One row per source with freshness, row volume, station coverage, and valid
+    date span. This answers: "is the new research data arriving?"
+    """
+    return _df("""
+        SELECT source,
+               COUNT(*) AS rows,
+               COUNT(DISTINCT station) AS stations,
+               COUNT(DISTINCT station || ':' || valid_date::text) AS station_days,
+               MAX(ingested_at) AS latest_ingest,
+               ROUND(EXTRACT(EPOCH FROM (now() - MAX(ingested_at))) / 60.0, 1) AS lag_min,
+               MIN(valid_date) AS min_valid_date,
+               MAX(valid_date) AS max_valid_date
+          FROM forecast_guidance
+         WHERE ingested_at >= now() - (%s || ' hours')::interval
+         GROUP BY source
+         ORDER BY source
+    """, (hours,))
+
+
+def guidance_station_coverage(hours: int = 24) -> pd.DataFrame:
+    """Station/source coverage matrix for recent official guidance rows."""
+    return _df("""
+        SELECT station,
+               source,
+               COUNT(*) AS rows,
+               MAX(ingested_at) AS latest_ingest,
+               ROUND(EXTRACT(EPOCH FROM (now() - MAX(ingested_at))) / 60.0, 1) AS lag_min,
+               MIN(valid_date) AS min_valid_date,
+               MAX(valid_date) AS max_valid_date
+          FROM forecast_guidance
+         WHERE ingested_at >= now() - (%s || ' hours')::interval
+         GROUP BY station, source
+         ORDER BY station, source
+    """, (hours,))
+
+
+def guidance_center_board(target_date, station_codes: list[str]) -> pd.DataFrame:
+    """Current daily-high center board by station/source for one valid date."""
+    if not station_codes:
+        return pd.DataFrame()
+    return _df("""
+    WITH targets AS (
+        SELECT UNNEST(%s::text[]) AS station
+    ),
+    nbm AS (
+        SELECT pf.station, pf.value AS nbm_p50, pf.run_time AS nbm_run_time
+          FROM prob_forecast pf
+          JOIN (
+              SELECT station, MAX(run_time) AS rt
+                FROM prob_forecast
+               WHERE valid_date = %s AND var = 'TMAX_DAILY' AND percentile = 50
+               GROUP BY station
+          ) lr ON lr.station = pf.station AND lr.rt = pf.run_time
+         WHERE pf.valid_date = %s AND pf.var = 'TMAX_DAILY' AND pf.percentile = 50
+    ),
+    guidance_daily AS (
+        SELECT fg.station, fg.source, fg.value, fg.run_time
+          FROM forecast_guidance fg
+          JOIN (
+              SELECT station, source, MAX(run_time) AS rt
+                FROM forecast_guidance
+               WHERE valid_date = %s
+                 AND var = 'TMAX_DAILY'
+                 AND source IN ('NWS_GRID','NWS_PFM')
+               GROUP BY station, source
+          ) lr ON lr.station = fg.station AND lr.source = fg.source AND lr.rt = fg.run_time
+         WHERE fg.valid_date = %s AND fg.var = 'TMAX_DAILY'
+    ),
+    guidance_hourly AS (
+        SELECT fg.station, fg.source, MAX(fg.value) AS value, MAX(fg.run_time) AS run_time
+          FROM forecast_guidance fg
+          JOIN (
+              SELECT station, source, MAX(run_time) AS rt
+                FROM forecast_guidance
+               WHERE valid_date = %s
+                 AND var = 'TMP_2M'
+                 AND source IN ('LAMP','MAV')
+               GROUP BY station, source
+          ) lr ON lr.station = fg.station AND lr.source = fg.source AND lr.rt = fg.run_time
+         WHERE fg.valid_date = %s AND fg.var = 'TMP_2M'
+         GROUP BY fg.station, fg.source
+    ),
+    wide_guidance AS (
+        SELECT station,
+               MAX(value) FILTER (WHERE source='NWS_GRID') AS nws_grid,
+               MAX(run_time) FILTER (WHERE source='NWS_GRID') AS nws_grid_run,
+               MAX(value) FILTER (WHERE source='NWS_PFM') AS pfm,
+               MAX(run_time) FILTER (WHERE source='NWS_PFM') AS pfm_run,
+               MAX(value) FILTER (WHERE source='LAMP') AS lamp,
+               MAX(run_time) FILTER (WHERE source='LAMP') AS lamp_run,
+               MAX(value) FILTER (WHERE source='MAV') AS mav,
+               MAX(run_time) FILTER (WHERE source='MAV') AS mav_run
+          FROM (
+              SELECT * FROM guidance_daily
+              UNION ALL
+              SELECT * FROM guidance_hourly
+          ) g
+         GROUP BY station
+    ),
+    obs AS (
+        SELECT m.station, MAX(m.temp_f) AS high_so_far
+          FROM metar_obs m
+          JOIN stations st ON st.code = m.station
+         WHERE (m.obs_time AT TIME ZONE st.tz)::date = %s
+         GROUP BY m.station
+    ),
+    truth AS (
+        SELECT st.code AS station,
+               COALESCE(c.tmax_f, d.tmax_f) AS truth_tmax
+          FROM stations st
+          LEFT JOIN cli_obs c ON c.station = st.code AND c.local_date = %s
+          LEFT JOIN daily_obs d ON d.station = st.code AND d.local_date = %s
+    )
+    SELECT t.station,
+           s.name,
+           nbm.nbm_p50,
+           wg.nws_grid,
+           wg.pfm,
+           wg.lamp,
+           wg.mav,
+           obs.high_so_far,
+           truth.truth_tmax,
+           src.spread_f,
+           nbm.nbm_run_time,
+           wg.nws_grid_run,
+           wg.pfm_run,
+           wg.lamp_run,
+           wg.mav_run
+      FROM targets t
+      JOIN stations s ON s.code = t.station
+      LEFT JOIN nbm ON nbm.station = t.station
+      LEFT JOIN wide_guidance wg ON wg.station = t.station
+      LEFT JOIN obs ON obs.station = t.station
+      LEFT JOIN truth ON truth.station = t.station
+      LEFT JOIN LATERAL (
+          SELECT CASE WHEN COUNT(v) >= 2 THEN MAX(v) - MIN(v) END AS spread_f
+            FROM (VALUES
+                (nbm.nbm_p50),
+                (wg.nws_grid),
+                (wg.pfm),
+                (wg.lamp),
+                (wg.mav)
+            ) vals(v)
+           WHERE v IS NOT NULL
+      ) src ON TRUE
+     ORDER BY spread_f DESC NULLS LAST, t.station
+    """, (
+        station_codes, target_date, target_date,
+        target_date, target_date,
+        target_date, target_date,
+        target_date, target_date, target_date,
+    ))
+
+
+def guidance_accuracy(days_back: int = 14) -> pd.DataFrame:
+    """Recent center accuracy by source vs CLI/daily truth.
+
+    Uses latest available run per source/station/valid_date. This is not the
+    strict morning market-relative scorer; it is a collection monitor and early
+    source-ranking view.
+    """
+    return _df("""
+    WITH truth AS (
+        SELECT s.code AS station,
+               d::date AS valid_date,
+               COALESCE(c.tmax_f, obs.tmax_f) AS truth_tmax
+          FROM stations s
+          CROSS JOIN generate_series(
+              (now() AT TIME ZONE 'America/New_York')::date - (%s || ' days')::interval,
+              (now() AT TIME ZONE 'America/New_York')::date - INTERVAL '1 day',
+              INTERVAL '1 day'
+          ) d
+          LEFT JOIN cli_obs c ON c.station = s.code AND c.local_date = d::date
+          LEFT JOIN daily_obs obs ON obs.station = s.code AND obs.local_date = d::date
+         WHERE COALESCE(c.tmax_f, obs.tmax_f) IS NOT NULL
+    ),
+    nbm AS (
+        SELECT pf.station, pf.valid_date, 'NBM'::text AS source, pf.value AS pred
+          FROM prob_forecast pf
+          JOIN (
+              SELECT station, valid_date, MAX(run_time) AS rt
+                FROM prob_forecast
+               WHERE var='TMAX_DAILY' AND percentile=50
+               GROUP BY station, valid_date
+          ) lr ON lr.station=pf.station AND lr.valid_date=pf.valid_date AND lr.rt=pf.run_time
+         WHERE pf.var='TMAX_DAILY' AND pf.percentile=50
+    ),
+    guidance_daily AS (
+        SELECT fg.station, fg.valid_date, fg.source, fg.value AS pred
+          FROM forecast_guidance fg
+          JOIN (
+              SELECT station, source, valid_date, MAX(run_time) AS rt
+                FROM forecast_guidance
+               WHERE var='TMAX_DAILY' AND source IN ('NWS_GRID','NWS_PFM')
+               GROUP BY station, source, valid_date
+          ) lr ON lr.station=fg.station AND lr.source=fg.source
+              AND lr.valid_date=fg.valid_date AND lr.rt=fg.run_time
+         WHERE fg.var='TMAX_DAILY'
+    ),
+    guidance_hourly AS (
+        SELECT fg.station, fg.valid_date, fg.source, MAX(fg.value) AS pred
+          FROM forecast_guidance fg
+          JOIN (
+              SELECT station, source, valid_date, MAX(run_time) AS rt
+                FROM forecast_guidance
+               WHERE var='TMP_2M' AND source IN ('LAMP','MAV')
+               GROUP BY station, source, valid_date
+          ) lr ON lr.station=fg.station AND lr.source=fg.source
+              AND lr.valid_date=fg.valid_date AND lr.rt=fg.run_time
+         WHERE fg.var='TMP_2M'
+         GROUP BY fg.station, fg.valid_date, fg.source
+    ),
+    preds AS (
+        SELECT * FROM nbm
+        UNION ALL SELECT * FROM guidance_daily
+        UNION ALL SELECT * FROM guidance_hourly
+    )
+    SELECT p.station,
+           p.source,
+           COUNT(*) AS n,
+           ROUND(AVG(ABS(p.pred - t.truth_tmax))::numeric, 2) AS mae_f,
+           ROUND(AVG(p.pred - t.truth_tmax)::numeric, 2) AS bias_f,
+           ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ABS(p.pred - t.truth_tmax))::numeric, 2) AS median_abs_err_f
+      FROM preds p
+      JOIN truth t ON t.station=p.station AND t.valid_date=p.valid_date
+     GROUP BY p.station, p.source
+     ORDER BY mae_f ASC, n DESC
+    """, (days_back,))
+
+
 def trade_eligible_stations() -> list[str]:
     from weather_bot.config import ACTIVE_TRADE_STATIONS
     return list(ACTIVE_TRADE_STATIONS)
@@ -883,3 +1116,15 @@ def trade_eligible_stations() -> list[str]:
 def fetch_stations() -> list[str]:
     from weather_bot.config import ACTIVE_FETCH_STATIONS
     return list(ACTIVE_FETCH_STATIONS)
+
+
+def neighbor_stations() -> list[str]:
+    from weather_bot.config import NEIGHBOR_STATIONS
+    codes: list[str] = []
+    seen = set()
+    for neighbors in NEIGHBOR_STATIONS.values():
+        for station in neighbors:
+            if station.code not in seen:
+                codes.append(station.code)
+                seen.add(station.code)
+    return codes

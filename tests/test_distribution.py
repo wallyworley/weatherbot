@@ -6,6 +6,7 @@ import numpy as np
 from weather_bot.models.distribution import (
     PiecewiseCDF,
     build_cdf_from_percentiles,
+    _configured_morning_center_blend_weights,
     lead_day_for_station,
     lead_day_variance_multiplier,
     max_widen_factor_for_lead,
@@ -91,3 +92,31 @@ def test_lead_day_variance_schedule_is_lead_aware():
     # corrupt the already-calibrated low buckets. See distribution.py docstring.
     assert max_widen_factor_for_lead(0) == 1.10
     assert max_widen_factor_for_lead(1) == 1.35
+
+
+def test_morning_center_policy_defaults_to_current(monkeypatch):
+    from weather_bot import config
+
+    monkeypatch.setattr(config, "MORNING_CENTER_POLICY", "current")
+
+    assert _configured_morning_center_blend_weights("KAUS", "TMAX_DAILY", 0, 7) is None
+
+
+def test_morning_center_policy_station_gfs_is_morning_tmax_only(monkeypatch):
+    from weather_bot import config
+
+    monkeypatch.setattr(config, "MORNING_CENTER_POLICY", "station_gfs_50_50")
+    monkeypatch.setattr(config, "MORNING_CENTER_GFS_STATIONS", ["KAUS"])
+    monkeypatch.setattr(config, "MORNING_CENTER_START_HOUR", 6)
+    monkeypatch.setattr(config, "MORNING_CENTER_END_HOUR", 9)
+
+    assert _configured_morning_center_blend_weights("KAUS", "TMAX_DAILY", 0, 7) == {
+        "NBM": 0.5,
+        "GFS": 0.5,
+    }
+    assert _configured_morning_center_blend_weights("KNYC", "TMAX_DAILY", 0, 7) == {
+        "NBM": 1.0,
+    }
+    assert _configured_morning_center_blend_weights("KAUS", "TMAX_DAILY", 0, 10) is None
+    assert _configured_morning_center_blend_weights("KAUS", "TMIN_DAILY", 0, 7) is None
+    assert _configured_morning_center_blend_weights("KAUS", "TMAX_DAILY", 1, 7) is None
