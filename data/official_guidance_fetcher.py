@@ -218,7 +218,6 @@ def _aliases(station: Station) -> set[str]:
     aliases = {station.code.upper(), station.code[1:].upper(), name}
     if words:
         aliases.add(" ".join(words[:2]))
-        aliases.add(words[0])
     replacements = {
         "INTL": "INTERNATIONAL",
         "NATL": "NATIONAL",
@@ -234,12 +233,16 @@ def _aliases(station: Station) -> set[str]:
     return {a for a in aliases if len(a) >= 3}
 
 
+def _alias_in_head(alias: str, head: str) -> bool:
+    return re.search(rf"(?<![A-Z0-9]){re.escape(alias)}(?![A-Z0-9])", head) is not None
+
+
 def _select_pfm_block(text: str, station: Station) -> str | None:
     blocks = re.split(r"\n\$\$\s*\n?", text)
     aliases = _aliases(station)
     for block in blocks:
         head = "\n".join(block.splitlines()[:8]).upper()
-        if any(alias in head for alias in aliases):
+        if any(_alias_in_head(alias, head) for alias in aliases):
             return block
     return None
 

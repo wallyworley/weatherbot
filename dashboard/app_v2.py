@@ -1533,12 +1533,15 @@ def _format_guidance_table(df: pd.DataFrame) -> pd.DataFrame:
         return df
     out = df.copy()
     out["city"] = out["station"].map(t.friendly_station)
-    for col in ["nbm_p50", "nws_grid", "pfm", "lamp", "mav", "high_so_far", "truth_tmax", "spread_f"]:
+    for col in [
+        "nbm_p50", "nws_grid", "pfm", "lamp", "mav",
+        "high_so_far", "truth_tmax", "trusted_spread_f", "spread_f",
+    ]:
         if col in out.columns:
             out[col] = out[col].map(lambda x: f"{float(x):.0f}°" if pd.notna(x) else "—")
     cols = [
         "city", "station", "nbm_p50", "nws_grid", "pfm", "lamp", "mav",
-        "high_so_far", "truth_tmax", "spread_f",
+        "high_so_far", "truth_tmax", "trusted_spread_f", "spread_f",
     ]
     return out[[c for c in cols if c in out.columns]].rename(columns={
         "city": "City",
@@ -1550,7 +1553,8 @@ def _format_guidance_table(df: pd.DataFrame) -> pd.DataFrame:
         "mav": "MAV peak",
         "high_so_far": "High so far",
         "truth_tmax": "Final high",
-        "spread_f": "Source spread",
+        "trusted_spread_f": "Official spread",
+        "spread_f": "All-source spread",
     })
 
 
@@ -1651,21 +1655,31 @@ def page_forecast_lab() -> None:
             st.info("No center rows available for this date/universe.")
         else:
             centers = centers.copy()
+            trusted_cols = [c for c in ["nws_grid", "lamp", "mav"] if c in centers.columns]
+            if trusted_cols:
+                trusted_values = centers[trusted_cols].apply(pd.to_numeric, errors="coerce")
+                trusted_count = trusted_values.notna().sum(axis=1)
+                centers["trusted_spread_f"] = trusted_values.max(axis=1) - trusted_values.min(axis=1)
+                centers.loc[trusted_count < 2, "trusted_spread_f"] = np.nan
             source_cols = [c for c in ["nbm_p50", "nws_grid", "pfm", "lamp", "mav"] if c in centers.columns]
             if source_cols:
                 source_values = centers[source_cols].apply(pd.to_numeric, errors="coerce")
                 source_count = source_values.notna().sum(axis=1)
                 centers["spread_f"] = source_values.max(axis=1) - source_values.min(axis=1)
                 centers.loc[source_count < 2, "spread_f"] = np.nan
-            scored = centers[centers["spread_f"].notna()].sort_values("spread_f", ascending=False)
+            scored = centers[centers["trusted_spread_f"].notna()].sort_values("trusted_spread_f", ascending=False)
             top_disagreements = scored.head(5)
             if not top_disagreements.empty:
-                st.markdown("**Largest source disagreements**")
+                st.markdown("**Largest official guidance disagreements**")
                 for _, row in top_disagreements.iterrows():
                     st.write(
                         f"- **{t.friendly_station(row['station'])}**: "
-                        f"{float(row['spread_f']):.1f}° spread across available centers"
+                        f"{float(row['trusted_spread_f']):.1f}° spread across NWS Grid/LAMP/MAV"
                     )
+                st.caption(
+                    "NBM and PFM remain in the table for context. The headline spread excludes them because "
+                    "NBM can be from a different information state and PFM block matching is still experimental."
+                )
 
             chart_cols = ["station", "nbm_p50", "nws_grid", "pfm", "lamp", "mav"]
             long = centers[[c for c in chart_cols if c in centers.columns]].melt(

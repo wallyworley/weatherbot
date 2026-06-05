@@ -112,6 +112,23 @@ $$
     assert rows[2]["valid_date"].isoformat() == "2026-06-06"
 
 
+def test_parse_pfm_does_not_match_broad_first_word_alias():
+    station = Station("KSFO", "San Francisco Intl", 37.6213, -122.3790, "America/Los_Angeles")
+    issued = datetime(2026, 6, 5, 18, tzinfo=timezone.utc)
+    text = """
+FOUS56 KMTR 051800
+PFMMTR
+
+SAN JOSE-CA
+1100 AM PDT FRI JUN 5 2026
+DATE             FRI 06/05/26
+MAX/MIN                      91          56
+$$
+"""
+
+    assert og.parse_pfm_mxmn(text, station, issued) == []
+
+
 def test_nws_grid_temperature_conversion(monkeypatch):
     station = Station("KZZZ", "Test", 30.0, -90.0, "America/Chicago")
 

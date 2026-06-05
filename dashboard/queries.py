@@ -1040,6 +1040,7 @@ def guidance_center_board(target_date, station_codes: list[str]) -> pd.DataFrame
            wg.mav,
            obs.high_so_far,
            truth.truth_tmax,
+           trusted_src.trusted_spread_f,
            src.spread_f,
            nbm.nbm_run_time,
            wg.nws_grid_run,
@@ -1052,6 +1053,15 @@ def guidance_center_board(target_date, station_codes: list[str]) -> pd.DataFrame
       LEFT JOIN wide_guidance wg ON wg.station = t.station
       LEFT JOIN obs ON obs.station = t.station
       LEFT JOIN truth ON truth.station = t.station
+      LEFT JOIN LATERAL (
+          SELECT CASE WHEN COUNT(v) >= 2 THEN MAX(v) - MIN(v) END AS trusted_spread_f
+            FROM (VALUES
+                (wg.nws_grid),
+                (wg.lamp),
+                (wg.mav)
+            ) vals(v)
+           WHERE v IS NOT NULL
+      ) trusted_src ON TRUE
       LEFT JOIN LATERAL (
           SELECT CASE WHEN COUNT(v) >= 2 THEN MAX(v) - MIN(v) END AS spread_f
             FROM (VALUES
