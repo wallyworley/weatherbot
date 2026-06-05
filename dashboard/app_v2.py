@@ -1621,6 +1621,22 @@ def page_forecast_lab() -> None:
         else:
             st.info("No coverage rows yet.")
 
+        section("Kalshi station guardrail", "Live Kalshi markets must have recent official guidance for their settlement stations.")
+        try:
+            gaps = queries.guidance_kalshi_coverage_gaps(hours=max(3, int(hours)))
+        except Exception as e:
+            st.error(f"Could not load Kalshi coverage guardrail: {e}")
+            gaps = pd.DataFrame()
+        if gaps.empty:
+            st.info("No live Kalshi stations found in the local market table.")
+        else:
+            bad = gaps[gaps["status"] != "OK"].copy()
+            if bad.empty:
+                st.success("All live Kalshi stations have recent NWS Grid, LAMP, and MAV guidance.")
+            else:
+                st.warning(f"{len(bad)} live Kalshi station(s) are missing required recent guidance.")
+                st.dataframe(bad, hide_index=True, use_container_width=True)
+
     with tabs[1]:
         section(
             f"Forecast centers for {target_date}",

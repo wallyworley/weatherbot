@@ -914,6 +914,46 @@ def guidance_station_coverage(hours: int = 24) -> pd.DataFrame:
     """, (hours,))
 
 
+def guidance_kalshi_coverage_gaps(hours: int = 3) -> pd.DataFrame:
+    """Live Kalshi stations with missing recent official-guidance coverage."""
+    return _df("""
+    WITH kalshi AS (
+        SELECT DISTINCT station
+          FROM kalshi_market
+         WHERE status IN ('open', 'active')
+    ),
+    guidance AS (
+        SELECT station,
+               BOOL_OR(source = 'NWS_GRID') AS has_nws_grid,
+               BOOL_OR(source = 'NWS_PFM') AS has_pfm,
+               BOOL_OR(source = 'LAMP') AS has_lamp,
+               BOOL_OR(source = 'MAV') AS has_mav,
+               BOOL_OR(source = 'OBS_TRACKER') AS has_obs_tracker,
+               MAX(ingested_at) AS latest_ingest
+          FROM forecast_guidance
+         WHERE ingested_at >= now() - (%s || ' hours')::interval
+         GROUP BY station
+    )
+    SELECT k.station,
+           COALESCE(g.has_nws_grid, false) AS has_nws_grid,
+           COALESCE(g.has_pfm, false) AS has_pfm,
+           COALESCE(g.has_lamp, false) AS has_lamp,
+           COALESCE(g.has_mav, false) AS has_mav,
+           COALESCE(g.has_obs_tracker, false) AS has_obs_tracker,
+           g.latest_ingest,
+           CASE
+             WHEN g.station IS NULL THEN 'NO_GUIDANCE'
+             WHEN NOT COALESCE(g.has_nws_grid, false) THEN 'MISSING_NWS_GRID'
+             WHEN NOT COALESCE(g.has_lamp, false) THEN 'MISSING_LAMP'
+             WHEN NOT COALESCE(g.has_mav, false) THEN 'MISSING_MAV'
+             ELSE 'OK'
+           END AS status
+      FROM kalshi k
+      LEFT JOIN guidance g ON g.station = k.station
+     ORDER BY status DESC, k.station
+    """, (hours,))
+
+
 def guidance_center_board(target_date, station_codes: list[str]) -> pd.DataFrame:
     """Current daily-high center board by station/source for one valid date."""
     if not station_codes:
