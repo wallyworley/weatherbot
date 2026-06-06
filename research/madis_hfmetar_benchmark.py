@@ -66,6 +66,7 @@ def fetch_direct_madis() -> dict[str, Obs]:
     """
     try:
         from netCDF4 import Dataset
+        import numpy as np
     except ImportError as exc:
         raise SystemExit("netCDF4 is required for direct MADIS parsing. Install it only if we choose to operationalize this benchmark.") from exc
 
@@ -93,7 +94,7 @@ def fetch_direct_madis() -> dict[str, Obs]:
             if len(station) != 4:
                 continue
             raw_temp = temps[idx]
-            if getattr(raw_temp, "mask", False) is True:
+            if np.ma.is_masked(raw_temp):
                 continue
             try:
                 temp_k = float(raw_temp)
