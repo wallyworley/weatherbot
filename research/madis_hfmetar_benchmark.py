@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -91,11 +92,14 @@ def fetch_direct_madis() -> dict[str, Obs]:
             station = _decode_station_id(station_ids[idx])
             if len(station) != 4:
                 continue
+            raw_temp = temps[idx]
+            if getattr(raw_temp, "mask", False) is True:
+                continue
             try:
-                temp_k = float(temps[idx])
+                temp_k = float(raw_temp)
             except Exception:
                 continue
-            if not 180 < temp_k < 340:
+            if not math.isfinite(temp_k) or not 180 < temp_k < 340:
                 continue
             obs_time = None
             if obs_times is not None:
@@ -134,7 +138,7 @@ def main() -> None:
 
     stations = [s.strip().upper() for s in args.stations.split(",") if s.strip()]
     direct = fetch_direct_madis()
-    print(f"{'station':<8}{'madis_age':>10}{'iem_age':>10}{'madis_f':>10}{'iem_f':>10}{'delta':>9}{'verdict':>12}")
+    print(f"{'station':<8}{'madis_age':>10}{'iem_age':>10}{'madis_f':>10}{'iem_f':>10}{'delta':>9}{'verdict':>24}")
     for station in stations:
         madis = direct.get(station)
         iem = fetch_iem_latest(station, args.iem_hours)
@@ -143,15 +147,16 @@ def main() -> None:
         delta = None
         if madis and iem and madis.temp_f is not None and iem.temp_f is not None:
             delta = madis.temp_f - iem.temp_f
-        verdict = "OK"
+        flags = []
         if madis is None:
-            verdict = "NO_MADIS"
-        elif iem is None:
-            verdict = "NO_IEM"
-        elif madis_age is not None and iem_age is not None and madis_age + 1 < iem_age:
-            verdict = "MADIS_FASTER"
-        elif delta is not None and abs(delta) > 1.1:
-            verdict = "TEMP_DIFF"
+            flags.append("NO_MADIS")
+        if iem is None:
+            flags.append("NO_IEM")
+        if madis is not None and iem is not None and madis_age is not None and iem_age is not None and madis_age + 1 < iem_age:
+            flags.append("MADIS_FASTER")
+        if delta is not None and abs(delta) > 1.1:
+            flags.append("TEMP_DIFF")
+        verdict = ",".join(flags) if flags else "OK"
         print(
             f"{station:<8}"
             f"{madis_age:>10.1f}" if madis_age is not None else f"{station:<8}{'--':>10}",
@@ -162,7 +167,7 @@ def main() -> None:
             f"{madis.temp_f:>10.1f}" if madis and madis.temp_f is not None else f"{'--':>10}",
             f"{iem.temp_f:>10.1f}" if iem and iem.temp_f is not None else f"{'--':>10}",
             f"{delta:>9.1f}" if delta is not None else f"{'--':>9}",
-            f"{verdict:>12}",
+            f"{verdict:>24}",
             sep="",
         )
 
