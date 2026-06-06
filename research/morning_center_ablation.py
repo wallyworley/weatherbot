@@ -25,10 +25,13 @@ import json
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Callable
 
+import pytz
+
+from weather_bot.config import STATIONS
 from weather_bot.data import persistence
 from weather_bot.models.distribution import build_station_distribution, lead_day_for_station
 from weather_bot.research.morning_market_skill import (
@@ -51,6 +54,7 @@ class Variant:
     weights: dict[str, float] | None
     station_weights: dict[str, dict[str, float]] | None = None
     guidance_source: str | None = None
+    deb_sources: tuple[str, ...] | None = None
 
 
 def _variant_key(weights: dict[str, float] | None) -> tuple[tuple[str, float], ...] | None:
@@ -78,6 +82,11 @@ def _variants(station_gfs: set[str], include: set[str] | None = None) -> list[Va
         Variant("pfm_center", None, guidance_source="NWS_PFM"),
         Variant("lamp_peak_center", None, guidance_source="LAMP"),
         Variant("mav_center", None, guidance_source="MAV"),
+        Variant(
+            "deb_recent_mae_center",
+            {"NBM": 1.0},
+            deb_sources=("NBM", "HRRR", "GFS", "NWS_GRID", "LAMP", "MAV"),
+        ),
     ])
     if include:
         variants = [variant for variant in variants if variant.name in include]
@@ -90,12 +99,134 @@ def _weights_for(row: Row, variant: Variant) -> dict[str, float] | None:
     return variant.weights
 
 
+def _same_local_time_asof(station: str, target: date, template_asof: datetime) -> datetime:
+    tz = pytz.timezone(STATIONS[station].tz)
+    local_template = template_asof.astimezone(tz)
+    local_cutoff = tz.localize(
+        datetime.combine(
+            target,
+            time(
+                local_template.hour,
+                local_template.minute,
+                local_template.second,
+                local_template.microsecond,
+            ),
+        )
+    )
+    return local_cutoff.astimezone(timezone.utc)
+
+
+def _truth_tmax(station: str, target: date) -> float | None:
+    sql = """
+    SELECT COALESCE(c.tmax_f, d.tmax_f) AS tmax
+      FROM stations s
+      LEFT JOIN cli_obs c ON c.station = s.code AND c.local_date = %s
+      LEFT JOIN daily_obs d ON d.station = s.code AND d.local_date = %s
+     WHERE s.code = %s
+    """
+    with persistence.connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, (target, target, station))
+        row = cur.fetchone()
+        return float(row["tmax"]) if row and row["tmax"] is not None else None
+
+
+def _source_center_as_of(station: str, target: date, source: str, as_of: datetime) -> float | None:
+    source = source.upper()
+    try:
+        if source == "NBM":
+            rows = persistence.nbm_percentiles_as_of(station, target, as_of, var="TMAX_DAILY")
+            for row in rows:
+                if int(row["percentile"]) == 50:
+                    return float(row["value"])
+            return None
+        if source == "HRRR":
+            val = persistence.hrrr_tmax_as_of(station, target, as_of)
+            return float(val) if val is not None else None
+        if source == "GFS":
+            val = persistence.gfs_tmax_as_of(station, target, as_of)
+            return float(val) if val is not None else None
+        if source in {"NWS_GRID", "NWS_PFM", "LAMP", "MAV"}:
+            val = persistence.guidance_tmax_as_of(station, target, source, as_of)
+            return float(val) if val is not None else None
+    except Exception as exc:
+        print(f"warning: {source} center failed for {station} {target} {as_of}: {exc}", file=sys.stderr)
+    return None
+
+
+_DEB_CENTER_CACHE: dict[tuple, float | None] = {}
+_TRUTH_CACHE: dict[tuple[str, date], float | None] = {}
+
+
+def _deb_recent_mae_center(
+    station: str,
+    target: date,
+    as_of: datetime,
+    sources: tuple[str, ...],
+    lookback_days: int,
+    min_samples: int,
+) -> float | None:
+    """Recent inverse-MAE center blend, computed point-in-time.
+
+    For each prior day, source errors are measured using the same station-local
+    time of day as `as_of`, then compared against CLI/daily truth. This avoids
+    letting late-day guidance choose the morning weights.
+    """
+    key = (station, target, as_of, sources, lookback_days, min_samples)
+    if key in _DEB_CENTER_CACHE:
+        return _DEB_CENTER_CACHE[key]
+
+    current: dict[str, float] = {}
+    for source in sources:
+        value = _source_center_as_of(station, target, source, as_of)
+        if value is not None:
+            current[source] = value
+    if not current:
+        _DEB_CENTER_CACHE[key] = None
+        return None
+
+    errors: dict[str, list[float]] = {source: [] for source in current}
+    for offset in range(1, lookback_days + 1):
+        hist_date = target.fromordinal(target.toordinal() - offset)
+        tkey = (station, hist_date)
+        if tkey not in _TRUTH_CACHE:
+            _TRUTH_CACHE[tkey] = _truth_tmax(station, hist_date)
+        truth = _TRUTH_CACHE[tkey]
+        if truth is None:
+            continue
+        hist_asof = _same_local_time_asof(station, hist_date, as_of)
+        for source in current:
+            value = _source_center_as_of(station, hist_date, source, hist_asof)
+            if value is not None:
+                errors[source].append(abs(value - truth))
+
+    maes: dict[str, float] = {}
+    for source, vals in errors.items():
+        if len(vals) >= min_samples:
+            maes[source] = sum(vals) / len(vals)
+
+    if not maes:
+        center = sum(current.values()) / len(current)
+        _DEB_CENTER_CACHE[key] = center
+        return center
+
+    inv = {source: 1.0 / (mae + 0.1) for source, mae in maes.items() if source in current}
+    denom = sum(inv.values())
+    if denom <= 0:
+        center = sum(current.values()) / len(current)
+    else:
+        center = sum(current[source] * weight for source, weight in inv.items()) / denom
+    _DEB_CENTER_CACHE[key] = center
+    return center
+
+
 def _score_variant(
     rows: list[Row],
     variant: Variant,
     apply_calibrator: bool,
     workers: int = 1,
     event_asof: bool = True,
+    deb_lookback_days: int = 21,
+    deb_min_samples: int = 3,
 ) -> tuple[dict | None, dict | None, int]:
     if variant.name == "logged_model":
         return _metrics_for(rows, lambda r: r.model_p), _rps_metrics(rows, lambda r: r.model_p), 0
@@ -138,13 +269,23 @@ def _score_variant(
                 as_of=as_of_ts,
                 center_blend_weights=weights,
             )
-            if cdf is not None and variant.guidance_source is not None:
-                center = persistence.guidance_tmax_as_of(
-                    row.station,
-                    row.valid_date,
-                    variant.guidance_source,
-                    as_of_ts,
-                )
+            if cdf is not None and (variant.guidance_source is not None or variant.deb_sources is not None):
+                if variant.deb_sources is not None:
+                    center = _deb_recent_mae_center(
+                        row.station,
+                        row.valid_date,
+                        as_of_ts,
+                        variant.deb_sources,
+                        deb_lookback_days,
+                        deb_min_samples,
+                    )
+                else:
+                    center = persistence.guidance_tmax_as_of(
+                        row.station,
+                        row.valid_date,
+                        variant.guidance_source,
+                        as_of_ts,
+                    )
                 if center is None:
                     cdf = None
                 else:
@@ -294,8 +435,10 @@ def main() -> None:
         default="",
         help=("Comma-separated subset: logged_model,rebuilt_prod,nbm_only,gfs_only,"
               "nbm_gfs_50_50,station_gfs_50_50,nws_grid_center,pfm_center,"
-              "lamp_peak_center,mav_center"),
+              "lamp_peak_center,mav_center,deb_recent_mae_center"),
     )
+    ap.add_argument("--deb-lookback-days", type=int, default=21)
+    ap.add_argument("--deb-min-samples", type=int, default=3)
     ap.add_argument("--max-rows", type=int, default=0, help="Debug cap on bucket rows after window fetch.")
     ap.add_argument("--workers", type=int, default=1, help="Parallel PIT distribution builders.")
     ap.add_argument(
@@ -334,6 +477,8 @@ def main() -> None:
             apply_calibrator,
             workers=max(1, args.workers),
             event_asof=not args.row_asof,
+            deb_lookback_days=args.deb_lookback_days,
+            deb_min_samples=args.deb_min_samples,
         )
         results[variant.name] = {"metrics": metrics, "rps": rps, "misses": misses}
         line = _summary_line(variant.name, metrics, rps, misses)
@@ -356,6 +501,8 @@ def main() -> None:
         "rows": len(rows),
         "event_asof": not args.row_asof,
         "station_gfs": sorted(station_gfs),
+        "deb_lookback_days": args.deb_lookback_days,
+        "deb_min_samples": args.deb_min_samples,
         "results": results,
         "lines": lines,
         "interpretation": interpretation,

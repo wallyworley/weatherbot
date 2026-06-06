@@ -1,7 +1,7 @@
 """Pull official NWS/NCEP guidance into forecast_guidance.
 
 Research-only: this does not alter live trading or sizing. Run hourly for
-NWS_GRID/LAMP/OBS_TRACKER and every 3-6h is enough for MAV/PFM.
+NWS_GRID/LAMP/OBS_TRACKER/TAF and every 3-6h is enough for MAV/PFM.
 """
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ def main() -> None:
     )
     ap.add_argument(
         "--sources",
-        default="NWS_GRID,NWS_PFM,LAMP,MAV,OBS_TRACKER",
-        help="Comma-separated subset of NWS_GRID,NWS_PFM,LAMP,MAV,OBS_TRACKER",
+        default="NWS_GRID,NWS_PFM,LAMP,MAV,OBS_TRACKER,TAF",
+        help="Comma-separated subset of NWS_GRID,NWS_PFM,LAMP,MAV,OBS_TRACKER,TAF",
     )
     ap.add_argument(
         "--no-neighbors",

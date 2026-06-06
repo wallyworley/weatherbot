@@ -178,6 +178,19 @@ Every forecast source or blend must pass the same evaluation ladder:
 
 ## Near-term tasks
 
+Status update 2026-06-06:
+
+- `deb_recent_mae_center` is now a shadow variant in
+  `research/morning_center_ablation.py`. It uses recent point-in-time source
+  MAE to blend available centers and must still pass morning market-relative
+  Brier/RPS out of sample before any production use.
+- `TAF` is now collected as research features in `forecast_guidance`, with
+  `TAF_SUPPRESSION_SCORE` and `TAF_WIND_SHIFT_SCORE`. It is a regime feature,
+  not a temperature center.
+- `research/madis_hfmetar_benchmark.py` compares direct NOAA MADIS HFMETAR
+  against the existing IEM recent feed for latency, missingness, and latest
+  temperature agreement.
+
 ### 1. Finish source-by-source PIT scoring
 
 Create or extend the ablation scorer so these variants are first-class:

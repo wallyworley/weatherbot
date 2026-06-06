@@ -129,6 +129,27 @@ $$
     assert og.parse_pfm_mxmn(text, station, issued) == []
 
 
+def test_parse_taf_features_scores_suppression_and_wind_shift():
+    station = Station("KLAX", "Los Angeles Intl", 33.9381, -118.3889, "America/Los_Angeles")
+    payload = {
+        "issueTime": "2026-06-05T12:00:00Z",
+        "validTimeFrom": "2026-06-05T12:00:00Z",
+        "validTimeTo": "2026-06-06T18:00:00Z",
+        "rawTAF": (
+            "TAF KLAX 051120Z 0512/0618 25008KT P6SM FEW010 "
+            "TEMPO 0515/0518 BKN008 FM052000 08012KT P6SM SHRA BKN020="
+        ),
+    }
+
+    rows = og.parse_taf_features(payload, station)
+
+    assert {r["source"] for r in rows} == {"TAF"}
+    assert {r["valid_date"].isoformat() for r in rows} == {"2026-06-05", "2026-06-06"}
+    scores = {(r["var"], r["valid_date"].isoformat()): r["value"] for r in rows}
+    assert scores[("TAF_SUPPRESSION_SCORE", "2026-06-05")] == 2.5
+    assert scores[("TAF_WIND_SHIFT_SCORE", "2026-06-05")] == 2.0
+
+
 def test_nws_grid_temperature_conversion(monkeypatch):
     station = Station("KZZZ", "Test", 30.0, -90.0, "America/Chicago")
 

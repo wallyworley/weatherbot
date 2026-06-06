@@ -1,15 +1,16 @@
 """Official NWS/NCEP guidance collector for the alpha research lane.
 
-Adds five externally sourced inputs without changing live trading behavior:
+Adds externally sourced inputs without changing live trading behavior:
 
 1. NWS_GRID    api.weather.gov forecastGridData / NDFD-style maxTemperature
 2. NWS_PFM     Point Forecast Matrix MX/MN text product
 3. LAMP        GFS LAMP station hourly temperature guidance
 4. MAV         GFS MOS station hourly temperature guidance
 5. OBS_TRACKER high-so-far observation context from the existing METAR store
+6. TAF         airport terminal-forecast disruption features, not a temp center
 
 Rows land in forecast_guidance and are consumed by research ablations as
-alternate meteorological centers.
+alternate meteorological centers or segmentation features.
 """
 from __future__ import annotations
 
@@ -32,6 +33,7 @@ NWS_API = "https://api.weather.gov"
 USER_AGENT = "weather_bot/0.1 (official-guidance research; contact: local)"
 
 NOMADS_HTTPS = "https://nomads.ncep.noaa.gov/pub/data/nccf/com"
+AVIATION_WEATHER_TAF_URL = "https://aviationweather.gov/api/data/taf"
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,28 @@ def _valid_date_for_tz(tz_name: str, dt: datetime) -> date:
 
 def _lead_hr(run_time: datetime, valid_time: datetime) -> int:
     return int((valid_time - run_time).total_seconds() // 3600)
+
+
+def _parse_api_time(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except Exception:
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        try:
+            return datetime.fromtimestamp(float(text), tz=timezone.utc)
+        except Exception:
+            return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
 
 
 def _to_f(value: float | int | None, unit_code: str | None = None) -> float | None:
@@ -546,6 +570,116 @@ def parse_hourly_temp_guidance(
     return rows
 
 
+_TAF_WX_TOKENS = re.compile(r"\b(?:TS|SHRA|RA|SN|FZRA|DZ|FG|BR|BKN|OVC|CB|TCU)\b", re.I)
+_TAF_HEAVY_TOKENS = re.compile(r"\b(?:TS|SHRA|FZRA|CB|OVC|FG)\b", re.I)
+_TAF_CHANGE_TOKENS = re.compile(r"\b(?:TEMPO|BECMG|PROB30|PROB40|FM\d{6})\b", re.I)
+_TAF_WIND_DIR = re.compile(r"\b(\d{3})(\d{2,3})(?:G\d{2,3})?KT\b")
+
+
+def _taf_feature_scores(raw_taf: str) -> tuple[float, float]:
+    """Return (suppression_score, wind_shift_score) from raw TAF text.
+
+    TAF does not give a high-temperature forecast. These compact scores are
+    only research segmentation features for cloud/precip/disruption and
+    boundary-layer wind regime changes around the airport.
+    """
+    text = raw_taf or ""
+    suppression = 0.0
+    if _TAF_WX_TOKENS.search(text):
+        suppression += 1.0
+    if _TAF_HEAVY_TOKENS.search(text):
+        suppression += 1.0
+    if _TAF_CHANGE_TOKENS.search(text):
+        suppression += 0.5
+
+    dirs = [int(m.group(1)) for m in _TAF_WIND_DIR.finditer(text) if int(m.group(1)) <= 360]
+    wind_shift = 0.0
+    for i, d1 in enumerate(dirs):
+        for d2 in dirs[i + 1:]:
+            delta = abs(d1 - d2)
+            delta = min(delta, 360 - delta)
+            if delta >= 60:
+                wind_shift = 1.0
+            if delta >= 100:
+                wind_shift = 2.0
+    return suppression, wind_shift
+
+
+def _overlapped_local_dates(station: Station, start: datetime, end: datetime) -> list[date]:
+    tz = pytz.timezone(station.tz)
+    local_start = start.astimezone(tz).date()
+    local_end = (end - timedelta(seconds=1)).astimezone(tz).date() if end > start else local_start
+    days = []
+    cur = local_start
+    while cur <= local_end:
+        days.append(cur)
+        cur += timedelta(days=1)
+    return days
+
+
+def parse_taf_features(payload: dict, station: Station) -> list[dict]:
+    raw_taf = payload.get("rawTAF") or payload.get("rawTaf") or payload.get("raw_text") or ""
+    if not raw_taf:
+        return []
+    issued = (
+        _parse_api_time(payload.get("issueTime"))
+        or _parse_api_time(payload.get("issue_time"))
+        or _utc_now_hour()
+    )
+    valid_from = (
+        _parse_api_time(payload.get("validTimeFrom"))
+        or _parse_api_time(payload.get("valid_time_from"))
+        or issued
+    )
+    valid_to = (
+        _parse_api_time(payload.get("validTimeTo"))
+        or _parse_api_time(payload.get("valid_time_to"))
+        or (valid_from + timedelta(hours=24))
+    )
+    suppression, wind_shift = _taf_feature_scores(raw_taf)
+    rows: list[dict] = []
+    for local_date in _overlapped_local_dates(station, valid_from, valid_to):
+        vt = _local_noon_for_station(station, local_date)
+        for var, value in (
+            ("TAF_SUPPRESSION_SCORE", suppression),
+            ("TAF_WIND_SHIFT_SCORE", wind_shift),
+        ):
+            rows.append({
+                "station": station.code,
+                "source": "TAF",
+                "run_time": issued,
+                "valid_time": vt,
+                "valid_date": local_date,
+                "lead_hr": _lead_hr(issued, vt),
+                "var": var,
+                "value": float(value),
+                "units": "score",
+                "raw": {
+                    "parser": "taf_feature_scores",
+                    "raw_taf": raw_taf,
+                    "valid_from": valid_from.isoformat(),
+                    "valid_to": valid_to.isoformat(),
+                },
+            })
+    return rows
+
+
+def fetch_taf_features(station: Station) -> list[dict]:
+    if not station.is_asos:
+        return []
+    r = requests.get(
+        AVIATION_WEATHER_TAF_URL,
+        params={"ids": station.code, "format": "json", "hours": 24},
+        headers={"User-Agent": USER_AGENT},
+        timeout=25,
+    )
+    r.raise_for_status()
+    payload = r.json() or []
+    if not isinstance(payload, list) or not payload:
+        return []
+    return parse_taf_features(payload[0], station)
+
+
 def fetch_obs_tracker(station: Station, now: datetime | None = None) -> list[dict]:
     """Store high-so-far for today from the existing METAR/HFMETAR table."""
     now = now or datetime.now(tz=timezone.utc)
@@ -588,7 +722,7 @@ def run(
 ) -> int:
     lookup = station_lookup(include_neighbors=include_neighbors)
     stations = list(stations or default_station_codes(include_neighbors=include_neighbors))
-    source_set = {s.strip().upper() for s in (sources or ["NWS_GRID", "NWS_PFM", "LAMP", "MAV", "OBS_TRACKER"])}
+    source_set = {s.strip().upper() for s in (sources or ["NWS_GRID", "NWS_PFM", "LAMP", "MAV", "OBS_TRACKER", "TAF"])}
     all_rows: list[dict] = []
     persistence.bootstrap_stations()
 
@@ -615,6 +749,8 @@ def run(
                             row["raw"] = {**(row.get("raw") or {}), "url": product.url}
                 elif source == "OBS_TRACKER":
                     rows = fetch_obs_tracker(station)
+                elif source == "TAF":
+                    rows = fetch_taf_features(station)
                 else:
                     log.warning("Unknown official guidance source %s", source)
                     rows = []
