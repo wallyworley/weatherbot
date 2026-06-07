@@ -1,5 +1,14 @@
 # Market-Relative Forecast Center Benchmark - 2026-06-07
 
+> ⚠️ **SUPERSEDED METHOD (kept for the record).** This run used the **legacy
+> `latest_per_bucket`** selection, which stitches each bucket's last live quote
+> across a median ~9 h window at lead 0 and overstates the CRPS/center magnitude
+> (~40% / ~20%). The **canonical** selection is now `coherent_snapshot` (default
+> in `research/market_relative_center_benchmark.py`); under it the direction is
+> unchanged but the deltas are Brier **+0.0684**, RPS **+0.0688**, CRPS **+0.286 F**.
+> See `MARKET_BASELINE_AUDIT.md`. Reproduce the legacy numbers with
+> `--selection latest_per_bucket`.
+
 _generated 2026-06-07 00:12 UTC_
 
 Window: last 3650 completed valid dates; variable `TMAX_DAILY`; lead days 0-7.

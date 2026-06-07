@@ -494,9 +494,15 @@ def build_station_distribution(
                          station, target_date, hrrr_val, w, w * (hrrr_val - nbm_median))
 
     # GFS blend — multi-day (lead >= 1) and same-day fallback when HRRR unavailable.
-    # GFS consistently beats NBM at all stations (MAE 1.05-1.24°F vs 1.56-2.85°F),
-    # so a modest constant weight is safe. Lower weight than HRRR: GFS lacks the
-    # boundary-layer obs that make same-day HRRR so accurate.
+    # CORRECTION (2026-06-06 audit): the prior claim here that "GFS consistently
+    # beats NBM (MAE 1.05-1.24°F vs 1.56-2.85°F)" was a point-in-time artifact —
+    # it came from Open-Meteo's archived best-available GFS compared against
+    # run-time-stamped NBM. Under strict as-of alignment NBM BEATS GFS at the
+    # actual benchmark events (lead0 1.57 vs 1.82°F; lead1 1.65 vs 2.18°F). This
+    # constant 0.30 weight is therefore NOT justified by GFS superiority; it is
+    # pending research-only re-derivation as a decorrelation-only blend and is
+    # left unchanged here only to preserve current behavior.
+    # See docs/research/DEFECT_GFS_BLEND.md.
     _GFS_WEIGHT = 0.30
     if effective_center_blend_weights is None and var == "TMAX_DAILY" and (lead_day >= 1 or (lead_day == 0 and not hrrr_used)):
         gfs_val = (persistence.gfs_tmax_as_of(station, target_date, as_of)

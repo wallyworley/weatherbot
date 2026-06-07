@@ -1,0 +1,161 @@
+# Experiment Plan — Next
+
+**Date:** 2026-06-06
+**Status:** Pre-registration (per `WEATHERBOT_EXPERIMENT_REGISTRY.md` discipline)
+**Constraint:** All experiments are research-only behind flags or in non-production
+harnesses. Nothing here may change live probabilities, sizing, or trade entry. No
+new trading strategies, no Kelly/TP/SL tuning, no gates, no ensemble promotion, no
+new production weather models. Promotion requires `WEATHERBOT_PROMOTION_CRITERIA.md`.
+
+The market baseline is **confirmed**, and the audit + independent analyst review
+(2026-06-06) support the stronger statement: WeatherBot's current forecast
+distribution is **materially worse** than the market-implied distribution, even
+after correcting the benchmark's biggest methodological flaw. The plan therefore
+prioritizes (a) hardening the benchmark, (b) validating mechanical fixes as
+damage-reduction, and (c) the one decisive open question —
+**can any forecast center beat the market out of sample?**
+
+---
+
+## Canonical action order (agreed — auditor + analyst review, 2026-06-06)
+
+This is the single authoritative sequence. Lock the ruler before changing anything
+it measures; fix wrong-direction model mechanics before hygiene.
+
+0. ✅ **Lock the benchmark** — coherent-snapshot is now canonical + frozen
+   regression test added (9 tests). *(EXP-A1, A2 — DONE 2026-06-06)*
+1. **METAR vs CLI floor** — research-only fix/test. ← **NEXT** *(EXP-B1)*
+2. **HRRR weight curve** — test `w=0` or a much lower coarse curve, research-only. *(EXP-B2)*
+3. **GFS blend** — correct the false "GFS beats NBM" premise in code/docs, re-test
+   GFS as decorrelation only. *(EXP-B3)*
+4. **Calibrator** — rebuild from all-forecasts-vs-CLI and restore ladder
+   normalization. *(EXP-B4)*
+5. **Reliability metric** — replace the dormant invalid metric. *(EXP-B5)*
+
+Running continuously alongside: **EXP-C1** (can any center beat the market OOS),
+evaluated against the stopping rule. EXP-C2 only if C1 shows a positive-skill center.
+
+> Step 3's code-comment correction is the one production-file touch that does not
+> change behavior; everything else is research-only behind flags or in harnesses.
+
+---
+
+## P0 — Harden the benchmark (do first; everything else depends on it) — ✅ DONE 2026-06-06
+
+### EXP-A1 — Adopt coherent-snapshot selection — ✅ DONE
+- **Hypothesis:** The production benchmark's latest-per-bucket selection is
+  time-incoherent (median 9.2 h spread at lead 0) and overstates CRPS/center by ~40%.
+- **Action taken:** `coherent_snapshot` is now the **default/canonical** selection
+  inside `research/market_relative_center_benchmark.py` (`collect_coherent_snapshot_rows`);
+  the legacy `latest_per_bucket` is kept behind `--selection latest_per_bucket` for
+  audit. `snapshot_market_benchmark.py` now delegates to the canonical collector
+  (one implementation). Report header states the selection + snapshot diagnostics.
+- **Result:** canonical run reproduces the audit's coherent numbers exactly —
+  weighted Brier **+0.0684**, RPS **+0.0688**, CRPS **+0.286 F**, 561/561 events,
+  34/34 market-better groups, median intra-snapshot spread 0.01 h. Legacy flag still
+  reproduces the original report (+0.0645/+0.0668/+0.454).
+- **Overfitting risk:** Low. **Leakage controls:** none needed (descriptive).
+
+### EXP-A2 — Frozen regression fixture — ✅ DONE
+- **Action taken:** `tests/test_market_relative_center_benchmark.py` extended with
+  hand-computed frozen scoring values (Brier 0.08/0.02, RPS 0.04/0.01, CRPS 0.16/0.04,
+  center 71.0) plus selection tests (latest-window pick, min-buckets, ticker dedup,
+  drop-when-insufficient) and a normalization-repair test. **9 tests pass**, DB-free.
+- **Pass:** CI/local now catches scoring or selection regressions.
+
+---
+
+## P0 — Mechanical fix validations (damage reduction, not edge)
+
+Each is gated on the **coherent-snapshot market benchmark**, lead-0 unless noted,
+out of sample (walk-forward where a parameter is fit). Pass = improves or neutralizes
+market-relative Brier/RPS with no leakage; fail = degrades or only helps in-sample.
+
+### EXP-B1 — CLI-consistent floor basis  *(DEFECT_METAR_CLI_FLOOR.md)*
+- **Variants (research flag):** soft floor (cap removed mass) · `floor = metar_max − δ`
+  with δ from the **prior** over-read distribution · floor disabled.
+- **Metrics:** Brier/RPS/CRPS/center MAE vs market; count of winner-zeroing events.
+- **Min sample:** all lead-0 events; report by station where n permits.
+- **Overfitting risk:** Medium (δ tuning) → use prior-only δ, walk-forward.
+
+### EXP-B2 — HRRR weight curve  *(DEFECT_HRRR_WEIGHT_CURVE.md)*
+- **Variants:** `w=0` (null) · flat low weight · re-derived by-hour curve (coarse
+  bands, station-pooled, walk-forward).
+- **Metrics:** market-relative Brier/RPS by hour band; center MAE by hour.
+- **Overfitting risk:** High → coarse bands, walk-forward, `w=0` as the benchmark to beat.
+
+### EXP-B3 — GFS blend re-derivation  *(DEFECT_GFS_BLEND.md)*
+- **First:** correct the false MAE claim in `models/distribution.py`.
+- **Variants:** GFS weight 0 · re-derived decorrelation weight (NBM+GFS[+ECMWF],
+  existing `det_forecast` data only, research-only, walk-forward).
+- **Pass:** beats NBM-only on market-relative Brier/RPS OOS (center-MAE gain alone is
+  insufficient).
+- **Overfitting risk:** Medium.
+
+### EXP-B4 — Calibrator rebuild  *(CALIBRATOR_REBUILD_REPORT.md)*
+- **Action:** Build all-forecasts-vs-CLI reliability (rebuild distributions for all
+  settled station-days, raw `prob_between`, bin by **raw**, walk-forward frozen).
+  Separately, renormalize calibrated bucket probs across the ladder.
+- **Metrics:** Brier, Log Loss, RPS, CRPS, market-relative skill.
+- **Pass:** OOS improvement, no market-relative degradation (§3 criteria).
+- **Overfitting risk:** High → coarse pooling, shrinkage, walk-forward.
+
+### EXP-B5 — Reliability metric replacement  *(RELIABILITY_METRIC_REPORT.md)*
+- **Action:** Replace `verification/metrics.py` reliability with true
+  predicted-vs-observed per-bucket curve + unit test; relabel dashboard "raw" chart.
+- **Overfitting risk:** None (correctness).
+
+---
+
+## P1 — The decisive question: can any center beat the market?
+
+### EXP-C1 — Market-relative morning forecast-center benchmark
+- **Hypothesis (to falsify):** No available center (NBM, GFS, HRRR, ECMWF,
+  bias-adjusted, regime-conditioned — all from existing data) beats the market-implied
+  center out of sample.
+- **Action:** Extend `morning_center_ablation.py` to a **walk-forward** market-relative
+  center scorer by station/lead/regime; include CLI-consistent observation conditioning.
+- **Metrics:** market-relative Brier/RPS/CRPS, center MAE; report skill with CIs.
+- **Pass (program-relevant):** any center reaches **positive** market-relative RPS and
+  Brier on ≥100 fresh station-days (preferred 250–500), ≥2 stations, ≥2 regimes.
+- **Overfitting risk:** Medium-High → pre-register variants; walk-forward; no slice mining.
+- **Leakage controls:** strict `run_time ≤ as_of`; truth = settlement only.
+
+### EXP-C2 — Disagreement right-vs-wrong research  *(blocked-from-deploy)*
+- **Hypothesis:** A pre-registered, signal-time-observable subset of model/market
+  disagreements is one where WeatherBot is more often closer to truth.
+- **Action:** Build the labeled dataset (model vs market closer to CLI), evaluate
+  pre-registered features (forecast recency, HRRR/NBM agreement, move-without-move,
+  lead, regime). **Do not deploy.**
+- **Pass:** subset beats market OOS with CIs excluding 0.
+- **Overfitting risk:** Very High → pre-register features before looking; OOS only.
+
+---
+
+## Pre-registered stopping rule (from the charter/criteria)
+
+Continue as trading research **only while** EXP-C1 is open and unfalsified. If, after
+**500 fresh station-days or 90 calendar days** (whichever first, i.e. ~2026-09-04), no
+center variant has cleared positive market-relative RPS **and** Brier out of sample on
+the required sample, **stop trading research and convert WeatherBot to
+observation-only analytics** (charter §7, criteria §8). Mechanical-fix experiments
+(EXP-B*) may complete regardless, as hygiene.
+
+## Sequencing
+
+Follows the canonical action order above:
+
+1. **EXP-A1, A2** — lock the benchmark (coherent-snapshot canonical + fixture) — days.
+2. **EXP-B1 → B2 → B3** — wrong-direction model mechanics (floor → HRRR → GFS),
+   each research-only and validated on the locked benchmark — ~1–2 weeks.
+3. **EXP-B4, B5** — hygiene (calibrator rebuild + normalization, reliability metric).
+4. **EXP-C1** — the decisive test; runs continuously, accumulating fresh
+   station-days, evaluated against the stopping rule.
+5. **EXP-C2** — only if C1 shows any positive-skill center.
+
+## What would justify changing trading logic (none met today)
+
+A change may touch production probabilities/sizing/entry **only** after a forecast
+variant clears EXP-C1's pass bar (positive market-relative RPS **and** Brier, OOS,
+≥100–250 fresh station-days, ≥2 stations/regimes, no leakage) **and** the mechanical
+prerequisites are fixed. Until then, paper mode remains mandatory.
