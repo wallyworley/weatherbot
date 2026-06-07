@@ -425,7 +425,7 @@ rule will be approached. No production change.
 
 ## EXP-2026-008 — Walk-Forward Conditioned Forecast Centers (EXP-C1b)
 
-**Status:** Pre-registered 2026-06-06 — **awaiting sign-off before build**
+**Status:** LOCKED — approved with amendments 2026-06-06; **building to spec**
 **Priority:** P1 (the charter's final OOS center test)
 
 Full locked pre-registration: `EXP_C1B_PREREGISTRATION.md`. Six fixed candidate centers
