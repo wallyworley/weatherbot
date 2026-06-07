@@ -141,16 +141,21 @@ market-relative Brier/RPS with no leakage; fail = degrades or only helps in-samp
 
 ## P1 — The decisive question: can any center beat the market?
 
-### EXP-C1 — Market-relative morning forecast-center benchmark
-- **Hypothesis (to falsify):** No available center (NBM, GFS, HRRR, ECMWF,
-  bias-adjusted, regime-conditioned — all from existing data) beats the market-implied
-  center out of sample.
-- **Action:** Extend `morning_center_ablation.py` to a **walk-forward** market-relative
-  center scorer by station/lead/regime; include CLI-consistent observation conditioning.
-- **Metrics:** market-relative Brier/RPS/CRPS, center MAE; report skill with CIs.
-- **Pass (program-relevant):** any center reaches **positive** market-relative RPS and
-  Brier on ≥100 fresh station-days (preferred 250–500), ≥2 stations, ≥2 regimes.
-- **Overfitting risk:** Medium-High → pre-register variants; walk-forward; no slice mining.
+### EXP-C1 — Market-relative forecast-center benchmark *(EXP-2026-007; EXP_C1_FORECAST_CENTER_BENCHMARK.md)*
+- **Hypothesis (to falsify):** No available center beats the market-implied center OOS.
+- **◑ First pass DONE 2026-06-06 (parameter-free centers):** `research/center_market_benchmark.py`
+  scored NBM / GFS / ECMWF / HRRR / NBM-GFS-ECMWF decorrelation blend market-relative by
+  lead, with paired CIs. **Result: NO center beats the market** — all positive
+  market-relative Brier+RPS at both leads. NBM-only is the best center at lead-1; nothing
+  beats it there; HRRR best at lead-0 (beats NBM, still loses to market). Decorrelation
+  blend ≈ NBM. (In-sample, pre-calibrator; deterministic centers raw — see report §7.)
+- **← NEXT: EXP-C1b (walk-forward — the remaining hope):** bias-corrected deterministic
+  centers; inverse-recent-MAE decorrelation weights; regime-conditioned weights;
+  CLI-obs-anchored centers. Walk-forward, ≥100 fresh station-days.
+- **Pass (program-relevant):** any center reaches **negative** market-relative Brier AND
+  RPS (CI excluding 0), OOS, ≥2 stations, ≥2 regimes.
+- **Overfitting risk:** Low for the parameter-free first pass (done); Medium-High for C1b →
+  pre-register, walk-forward, no slice mining.
 - **Leakage controls:** strict `run_time ≤ as_of`; truth = settlement only.
 
 ### EXP-C2 — Disagreement right-vs-wrong research  *(blocked-from-deploy)*

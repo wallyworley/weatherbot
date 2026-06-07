@@ -54,10 +54,16 @@ mechanical fixes can reduce self-inflicted damage but are unlikely to create edg
 4. **← NEXT** — Calibrator — rebuild from all-forecasts-vs-CLI; restore ladder normalization.
 5. Reliability metric — replace the dormant invalid metric.
 
-Running continuously: **can any forecast center beat the market out of sample?**
-(EXP-C1). Kill rule: if no center clears positive market-relative **RPS and Brier**
-OOS within **500 fresh station-days or 90 days (~2026-09-04)**, convert WeatherBot to
-**observation-only analytics**.
+**EXP-C1 — the decisive question: can any forecast center beat the market?**
+◑ **First pass done (2026-06-06): NO.** No parameter-free center (NBM, GFS, ECMWF, HRRR,
+NBM/GFS/ECMWF decorrelation blend) beats the market at either lead — all positive
+market-relative Brier+RPS. NBM-only is already the best center; nothing beats it at lead-1.
+Harness `research/center_market_benchmark.py`; full report `EXP_C1_FORECAST_CENTER_BENCHMARK.md`;
+registry EXP-2026-007. **Remaining hope = EXP-C1b (walk-forward):** bias-corrected
+deterministic centers, inverse-MAE/regime/obs-anchored centers. Kill rule: if no center
+clears positive market-relative **RPS and Brier** OOS within **500 fresh station-days or
+90 days (~2026-09-04)**, convert WeatherBot to **observation-only analytics** — the
+first-pass result moves us toward that call.
 
 ## Hard constraints (until the forecast gate is cleared)
 

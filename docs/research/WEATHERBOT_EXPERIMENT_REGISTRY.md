@@ -340,3 +340,83 @@ A pre-registered subset beats the market out of sample.
 ### Overfitting Risk
 
 Very high.
+
+---
+
+## EXP-2026-007 — Forecast-Center Market-Relative Benchmark (EXP-C1)
+
+**Status:** First pass COMPLETE 2026-06-06 — **no center beats market**; EXP-C1b (walk-forward) pending
+**Priority:** P1 (the decisive forecast-information question)
+
+### Hypothesis
+
+Some available forecast center (NBM, GFS, ECMWF, HRRR, multi-model decorrelation blend,
+bias-adjusted, regime-conditioned, or CLI-obs-conditioned) beats the Kalshi
+market-implied center out of sample on market-relative Brier and RPS.
+
+### Why This Matters
+
+This is the program's binding question (charter §3, Q3). B1–B3 showed mechanical center
+tweaks do not create edge; C1 asks whether any *center* can. If no center beats the
+market OOS, the kill rule applies (charter §7).
+
+### Data / Code
+
+- Coherent-snapshot benchmark events (lead 0–1), stored market mids, settlement truth.
+- `research/center_market_benchmark.py` (research-only; rebuild NBM-only PIT, set center
+  to each candidate keeping NBM shape, score market-relative).
+- Centers from `det_forecast` (GFS/ECMWF/HRRR) + `prob_forecast` (NBM).
+
+### Variants
+
+- **First pass (parameter-free, no walk-forward needed):** nbm_only (baseline,
+  bias-corrected), gfs_center, ecmwf_center, hrrr_center (lead-0), and a fixed
+  multi-model decorrelation blend (e.g. 0.5·NBM + 0.25·GFS + 0.25·ECMWF).
+- **Follow-on (require walk-forward — deferred):** bias-corrected deterministic centers,
+  inverse-recent-MAE decorrelation weights, regime-conditioned weights, CLI-obs-anchored
+  centers.
+
+### Metrics
+
+Market-relative Brier, RPS, CRPS, center MAE by lead; paired per-event CI vs market AND
+vs nbm_only.
+
+### Pass Criteria
+
+A center reaches **positive market-relative RPS and Brier** (i.e. negative dBrier_vs_mkt
+and dRPS_vs_mkt with paired CI excluding 0) on ≥100 fresh station-days (preferred
+250–500), ≥2 stations, ≥2 regimes, walk-forward, no leakage.
+
+### Failure / Kill
+
+If no center variant clears the bar after 500 fresh station-days or 90 days (~2026-09-04),
+the program converts to observation-only analytics (charter §7).
+
+### Leakage Controls
+
+Strict `run_time ≤ as_of` (= coherent-snapshot ts); truth = settlement only; any fitted
+weight (follow-on) trained strictly on prior days (walk-forward).
+
+### Overfitting Risk
+
+Low for the parameter-free first pass (no fitted params). Medium–High for the fitted /
+regime-conditioned follow-on — pre-register, walk-forward, no slice mining.
+
+### Known Limitation
+
+`station_bias` has only NBM rows, so GFS/ECMWF/HRRR centers are scored **raw**
+(un-bias-corrected) while NBM is bias-corrected — matching production, but a possible
+disadvantage to the deterministic centers. Bias-corrected deterministic centers are a
+walk-forward follow-on.
+
+### Result / Decision (first pass, 2026-06-06)
+
+**No available parameter-free center beats the market** at either lead (all positive
+market-relative Brier AND RPS, CIs in the wrong direction). NBM-only is the best center at
+lead-1 (+0.0231 Brier vs market); GFS/ECMWF/HRRR/decorrelation-blend are all worse than or
+equal to NBM at lead-1. HRRR is best at lead-0 (beats NBM there, consistent with EXP-B2)
+but still loses to market by +0.094. See `EXP_C1_FORECAST_CENTER_BENCHMARK.md`. **Decision:**
+the simple centers are exhausted with a clear negative; the remaining hope is the
+walk-forward follow-on (EXP-C1b: bias-corrected / inverse-MAE-decorrelation /
+regime-conditioned / obs-anchored centers). Realistic prior given B1–B3 + this: the kill
+rule will be approached. No production change.
