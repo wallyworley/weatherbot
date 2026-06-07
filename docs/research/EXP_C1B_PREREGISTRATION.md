@@ -125,9 +125,9 @@ A variant that ties market or nbm_only (CI includes 0) is **not** a pass.
 
 **Medium–High.** Mitigations baked in above: fixed 6-variant list locked at sign-off;
 report all incl. failures; coarse fixed trailing window (30d) and min-samples (8); a single
-pre-specified regime variable (|NBM−GFS|), no regime search; Bonferroni **or** chronological
-held-out replication required; robustness across stations+regimes required; no per-station
-free parameters.
+pre-specified regime variable (|NBM−GFS|), no regime search; **Bonferroni-6 required**
+(chronological held-out is a confirmation check only, not an alternate pass path — see §5.3);
+robustness across stations+regimes required; no per-station free parameters.
 
 ## 8. Known limitations (stated up front)
 

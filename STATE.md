@@ -2,8 +2,11 @@
 
 **Updated:** 2026-06-07
 **Trading status:** **Paper only. No live promotion.**
-**Program status:** Forecast-information research — **all edge tests negative; pivot to
-observation-only recommended (operator decision).**
+**Program status:** **DECISION (operator-approved 2026-06-07): pivot to observation-only
+analytics.** All edge tests negative (audit → B1–B3 → C1 → C1b); no market-relative forecast
+advantage found. Trading research is closed unless fresh future evidence reopens the gate.
+*(Decision is a program/governance status change; no production trading logic was changed —
+the bot was already paper-only.)*
 
 ---
 
@@ -73,9 +76,10 @@ backstop: 2026-09-04 / 500 fresh station-days. **Final call is the operator's.**
   obs-anchor) beats the market or reliably beats NBM-only. (`research/center_market_benchmark_wf.py`;
   `EXP_C1B_FORECAST_CENTER_WF.md`; `EXP_C1B_PREREGISTRATION.md`; EXP-2026-008.)
 
-**Pre-committed decision (C1b prereg §6): recommend the observation-only pivot** (charter §7).
-Kill-rule calendar backstop: **2026-09-04 / 500 fresh station-days**. **Final call is the
-operator's** — pivot now, or run the paper surface to the backstop date and then pivot.
+**DECISION (operator-approved 2026-06-07): pivot to observation-only analytics now** (charter
+§7; C1b prereg §6). The 2026-09-04 / 500-fresh-station-day kill rule remains only as governance
+confirmation — C1b was the last fair test. Trading logic unchanged (already paper-only); the
+gate reopens only on genuinely new forecast information.
 
 ## Hard constraints (until the forecast gate is cleared)
 
