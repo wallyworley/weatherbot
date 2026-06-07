@@ -222,10 +222,22 @@ High.
 
 ## EXP-2026-004 — GFS vs NBM Point-in-Time Re-Derivation
 
-**Status:** Proposed
+**Status:** Completed / **Revised** (2026-06-06)
 **Priority:** P0
 
-### Hypothesis
+### Result / Decision (2026-06-06)
+
+**Hypothesis CONFIRMED, but decision revised.** Under strict point-in-time alignment
+GFS does **not** beat NBM standalone (NBM p50 1.57/1.65 vs GFS 1.82/2.18 at lead 0/1) —
+the in-code "GFS beats NBM" claim was a source/alignment artifact, now **corrected in
+code**. BUT EXP-B3 (`research/gfs_blend_experiment.py`, distribution-level
+market-relative — like EXP-B2) shows a *partial* GFS blend is **net-helpful via
+decorrelation**: at lead-1 `gfs_off` (NBM-only) is worse than `prod_0.30` on all metrics
+(dBrier +0.0250 vs +0.0235); 0.30 is near-optimal; **full GFS (w=1) much worse**.
+**Decision: keep the 0.30 blend; no weight change.** Marginal; market gap unchanged.
+See `DEFECT_GFS_BLEND.md §9`.
+
+### Hypothesis (original — confirmed re: standalone MAE; blend decision revised, see Result)
 
 The claim that GFS beats NBM may be caused by point-in-time alignment or valid-time aggregation artifacts.
 

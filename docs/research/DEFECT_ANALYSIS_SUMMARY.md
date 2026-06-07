@@ -25,7 +25,7 @@ gap** — the binding constraint is forecast information / center resolution.
 |---|---|---|---|---|---|
 | **METAR vs CLI floor** | ✅ Yes | Wrong-direction (manufactures false divergence) | Floor > CLI truth on **20%** of lead-0 events; literal winner truncation on **2.1%**. EXP-B1: soft floor (in-sample) cuts `winner<5%` 7→1 and beats hard floor on all metrics — **damage reduction only**, market gap stays +0.0837 | Yes (lead-0 contributor) | **1** |
 | **HRRR weight curve** | ◑ Revised (EXP-B2) | Blend net-**helpful**; curve only mildly too aggressive 13–16h | **EXP-B2 refuted the "inferior model" read:** HRRR-off is *worse* overall (dBrier +0.0889→+0.1068; materially at 15–16h & ≥17h, ~flat at 13–14h). `cap_0.50` = small **Brier/RPS** damage-reduction (~−0.003 Brier), CRPS ~flat-to-worse; `flat_0.30` worsens RPS/CRPS/center. ≥17h high weight correct. (§3 point-MAE table true but incomplete) | Marginal | low (revised down) |
-| **GFS center blend** | ✅ Yes (false premise) | Justification false; small decorrelation help | PIT MAE: NBM 1.571/1.654 **beats** GFS 1.815/2.176 (lead 0/1); blend gives only ~3–8% center-MAE, no market skill | Marginal | **3** |
+| **GFS center blend** | ◑ Revised (EXP-B3) | False *justification* only; blend itself net-**helpful** | "GFS beats NBM" was false (PIT MAE NBM 1.57/1.65 beats GFS 1.82/2.18) **and is corrected in code**. But EXP-B3: a *partial* GFS blend beats NBM-only at lead-1 (dBrier +0.0250→+0.0235, all metrics) via decorrelation; 0.30 near-optimal; full GFS (w=1) much worse. **Keep the blend.** | Marginal | low (revised down) |
 | **Signal-log calibrator** | ✅ Yes (structural) | Circular; near-inert | Fires on 98.7% of signals, **net −0.4 pp**; 24.8% train/infer bin mismatch; breaks ladder normalization (prob-sum median 1.13, max 3.25) | No (net ~0) | 4 (correctness) |
 | **Invalid reliability metric** | ✅ Yes | N/A (measurement) | `empirical_freq` is a histogram density over a degenerate event; **dormant** (table stale since 2026-04-20) | No | 5 (correctness) |
 
@@ -36,10 +36,13 @@ gap** — the binding constraint is forecast information / center resolution.
   direction, concentrated at **lead 0** (coherent-snapshot lead-0 Brier +0.103 vs
   lead-1 +0.032). EXP-B1: a soft floor removes most of that self-inflicted damage
   in-sample (`winner<5%` 7→1) but does **not** close the market gap.
-- **HRRR was NOT a wrong-direction defect** (EXP-B2 correction). The afternoon HRRR
-  blend *improves* market-relative scores vs NBM-only; the production curve is only
-  mildly too aggressive at 13–16h (a ~0.003-Brier tweak). The earlier center-MAE read
-  overstated this. (The 06–09 morning ablation separately shows morning HRRR ≈ inert.)
+- **Neither the HRRR nor the GFS blend is a wrong-direction defect** (EXP-B2/B3
+  corrections). Both *partial* blends **improve** market-relative scores vs NBM-only via
+  error decorrelation, despite each model's worse standalone point-MAE. HRRR: the curve
+  is only mildly too aggressive at 13–16h (~0.003-Brier tweak). GFS: the 0.30 weight is
+  near-optimal at lead-1 (full GFS w=1 is much worse). The only real GFS issue was the
+  *false "GFS beats NBM" justification* (corrected in code). The earlier center-MAE reads
+  overstated both defects; **keep both blends**.
 - **They do not explain the whole gap.** The coherent-snapshot benchmark shows
   WeatherBot losing on **every** metric at **both** leads, and the morning ablation
   shows **NBM-only** still at market skill **−0.30**. Removing/limiting the defects
@@ -69,7 +72,8 @@ mechanics before hygiene. (Canonical version lives in `EXPERIMENT_PLAN_NEXT.md`.
 2. **HRRR weight curve** — *(EXP-B2 done: w=0 REJECTED — keep the blend; optional lower
    mid-afternoon weight (cap≈0.50) is a small Brier/RPS damage-reduction candidate,
    research-only / OOS)*.
-3. **GFS blend** — false claim corrected in code; re-test GFS as decorrelation-only. *(next)*
+3. **GFS blend** — *(EXP-B3 done: false claim corrected in code; blend is net-helpful via
+   decorrelation, 0.30 near-optimal — **keep it**, no weight change warranted)*.
 4. **Calibrator** — rebuild from all-forecasts-vs-CLI, walk-forward, binned by raw; restore ladder normalization.
 5. **Reliability metric** — replace with true predicted-vs-observed curve + test.
 
