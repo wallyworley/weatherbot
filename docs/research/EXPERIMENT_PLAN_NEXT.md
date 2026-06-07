@@ -32,9 +32,9 @@ it measures; fix wrong-direction model mechanics before hygiene.
    (w=0 loses); curve only mildly too aggressive 13–16h (~0.003-Brier tweak). **Keep
    the blend**; lower-mid-afternoon-weight is a low-priority candidate, not validated.
    Corrected the earlier point-MAE-based "defect" overstatement. *(EXP-B2)*
-3. ◑ **GFS blend** — EXP-B3 in-sample done: false premise corrected in code; the blend
-   is **net-helpful via decorrelation** (NBM-only worse at lead-1), 0.30 near-optimal,
-   full GFS much worse. **Keep the blend**; no weight change warranted. *(EXP-B3)*
+3. ◑ **GFS blend** — EXP-B3 in-sample done: false premise corrected in code; paired CI
+   shows the 0.30 blend is **statistically indistinguishable** from NBM-only at lead-1
+   (full GFS significantly worse). **Keep 0.30**; no weight change warranted. *(EXP-B3)*
 4. **Calibrator** — rebuild from all-forecasts-vs-CLI and restore ladder
    normalization. ← **NEXT** *(EXP-B4)*
 5. **Reliability metric** — replace the dormant invalid metric. *(EXP-B5)*
@@ -113,15 +113,16 @@ market-relative Brier/RPS with no leakage; fail = degrades or only helps in-samp
 - **Done:** false MAE claim corrected in `models/distribution.py` (comment-only).
 - **Harness:** `research/gfs_blend_experiment.py` (research-only; NBM-only center rebuilt
   PIT, GFS weight sweep, scored by lead). Pre-calibrator.
-- **Result (in-sample, lead-1 primary):** like HRRR, the GFS blend is **net-helpful via
-  decorrelation** — `gfs_off` (NBM-only) is *worse* than `prod_0.30` on all metrics
-  (dBrier +0.0250 vs +0.0235). 0.30 is **near-optimal** (0.15 ties; 0.50 worse;
-  **full GFS w=1 much worse** +0.0400, confirming GFS standalone < NBM). **Keep the blend.**
-- **Status: keep 0.30 (no weight change warranted; 0.15/0.30 within overlapping CIs).**
-  Damage-reduction marginal; lead-1 market gap stays +0.0235. Not a production change.
-  Any future weight change needs production-like re-score + walk-forward OOS. ECMWF
-  decorrelation deferred (research-only).
-- **Overfitting risk:** Low for "keep partial blend / full GFS loses"; Medium for re-tuning.
+- **Result (in-sample, lead-1 primary; paired CI added per reviewer):** the 0.30 blend is
+  **statistically indistinguishable** from NBM-only — paired `gfs_off − prod_0.30` ΔBrier
+  +0.0015, CI **[−0.0013, +0.0043] includes 0**. The point estimate slightly favors the
+  blend but is within noise. The **one established result: full GFS (w=1) is significantly
+  worse** (paired ΔBrier +0.0170, CI [+0.0106, +0.0234] excludes 0). 0.15 ≈ 0.30.
+- **Status: keep 0.30, no weight change** — defensible because the blend is *not harmful*
+  (≈ NBM-only) and high weights are worse; removing it has no established benefit either.
+  Marginal; lead-1 market gap stays +0.0235. Not a production change. ECMWF deferred.
+- **Overfitting risk:** Low for "full GFS loses / 0.30 not harmful"; claiming the blend
+  *improves* on NBM-only would overfit a within-noise point estimate.
 
 ### EXP-B4 — Calibrator rebuild  *(CALIBRATOR_REBUILD_REPORT.md)*
 - **Action:** Build all-forecasts-vs-CLI reliability (rebuild distributions for all

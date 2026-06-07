@@ -230,12 +230,13 @@ High.
 **Hypothesis CONFIRMED, but decision revised.** Under strict point-in-time alignment
 GFS does **not** beat NBM standalone (NBM p50 1.57/1.65 vs GFS 1.82/2.18 at lead 0/1) —
 the in-code "GFS beats NBM" claim was a source/alignment artifact, now **corrected in
-code**. BUT EXP-B3 (`research/gfs_blend_experiment.py`, distribution-level
-market-relative — like EXP-B2) shows a *partial* GFS blend is **net-helpful via
-decorrelation**: at lead-1 `gfs_off` (NBM-only) is worse than `prod_0.30` on all metrics
-(dBrier +0.0250 vs +0.0235); 0.30 is near-optimal; **full GFS (w=1) much worse**.
-**Decision: keep the 0.30 blend; no weight change.** Marginal; market gap unchanged.
-See `DEFECT_GFS_BLEND.md §9`.
+code**. EXP-B3 (`research/gfs_blend_experiment.py`, distribution-level market-relative,
+paired CIs) shows at lead-1 the 0.30 blend is **statistically indistinguishable** from
+NBM-only (paired ΔBrier +0.0015, CI [−0.0013,+0.0043] includes 0 — point estimate
+slightly favors the blend but within noise), while **full GFS (w=1) is significantly
+worse** (ΔBrier +0.0170, CI excludes 0). **Decision: keep the 0.30 blend; no weight
+change** (no established harm or benefit vs NBM-only; high weights worse). Market gap
+unchanged. See `DEFECT_GFS_BLEND.md §9`.
 
 ### Hypothesis (original — confirmed re: standalone MAE; blend decision revised, see Result)
 

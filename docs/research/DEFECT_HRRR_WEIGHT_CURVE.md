@@ -200,5 +200,14 @@ current curve), re-score through the production-like path (calibrator included),
 validate walk-forward without tuning the weight in-sample. A *fitted* by-hour curve
 remains deferred (high overfit risk); `cap_0.50`/`flat_0.30` bracket it.
 
-**Overfitting risk:** Low for the "keep the blend / w=0 loses" conclusion (robust
-overall and in the high-n 15–16h band). Medium–High for any fitted curve.
+**Statistical-rigor note (added after the EXP-B3 review):** the "w=0 loses" deltas here
+are *point estimates*; a paired per-event CI was not computed for EXP-B2 (it was for
+EXP-B3/GFS). The HRRR effect is large — `w0_nbm − prod_curve` is +0.0179 Brier overall
+(and +0.0203 at 15–16h, +0.0856 at ≥17h), i.e. **~12× the GFS effect (+0.0015)** whose
+paired CI just barely included 0 at n≈263 — so the HRRR conclusion is very likely
+statistically robust, but a paired CI/bootstrap should be added if this is ever
+promotion-relevant. The mid-afternoon `cap_0.50` improvement (~0.003 Brier) is small
+enough that it, like GFS, should NOT be treated as established without a paired CI.
+
+**Overfitting risk:** Low for the "keep the blend / w=0 loses" conclusion (large effect,
+robust overall and in the high-n 15–16h band). Medium–High for any fitted curve.

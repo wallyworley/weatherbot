@@ -46,10 +46,11 @@ mechanical fixes can reduce self-inflicted damage but are unlikely to create edg
    validated. Harness: `research/hrrr_weight_experiment.py`; results in
    `DEFECT_HRRR_WEIGHT_CURVE.md §9`. Market gap unchanged.
 3. ◑ **EXP-B3 in-sample experiment done (2026-06-06)** — GFS blend: false premise
-   already corrected in code; EXP-B3 shows the blend is **net-helpful via decorrelation**
-   (NBM-only is worse at lead-1: dBrier +0.0250 vs prod_0.30 +0.0235), 0.30 near-optimal,
-   full GFS (w=1) much worse. **Keep the blend; no weight change.** Same lesson as HRRR.
-   Harness: `research/gfs_blend_experiment.py`; results in `DEFECT_GFS_BLEND.md §9`.
+   already corrected in code; EXP-B3 paired CI shows the 0.30 blend is **statistically
+   indistinguishable** from NBM-only at lead-1 (ΔBrier +0.0015, CI [−0.0013,+0.0043]);
+   **full GFS (w=1) significantly worse**. **Keep 0.30; no weight change** (no harm; high
+   weights worse). Harness: `research/gfs_blend_experiment.py`; results in
+   `DEFECT_GFS_BLEND.md §9`.
 4. **← NEXT** — Calibrator — rebuild from all-forecasts-vs-CLI; restore ladder normalization.
 5. Reliability metric — replace the dormant invalid metric.
 

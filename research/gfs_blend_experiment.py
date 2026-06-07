@@ -106,6 +106,63 @@ def _agg(slist: list[EventScore]) -> dict | None:
     }
 
 
+def _subset(records, lead, gfs_only, pol):
+    out = []
+    for rec in records:
+        if rec["lead"] != lead:
+            continue
+        if gfs_only and not rec["gfs_avail"]:
+            continue
+        s = rec["scores"].get(pol)
+        if s is not None:
+            out.append(s)
+    return out
+
+
+def _paired(records, lead, gfs_only, pol, ref, metric):
+    """Paired mean + 95% CI of (pol - ref) for `metric` over events scored by both.
+
+    For Brier/RPS/CRPS the market term is identical across policies on a given event,
+    so (pol - ref) on diff_* equals the model-only difference. Positive mean = `ref`
+    (e.g. gfs_off) scored worse, i.e. the blend helped.
+    """
+    deltas = []
+    for rec in records:
+        if rec["lead"] != lead:
+            continue
+        if gfs_only and not rec["gfs_avail"]:
+            continue
+        a = rec["scores"].get(pol)
+        b = rec["scores"].get(ref)
+        if a is None or b is None:
+            continue
+        deltas.append(getattr(a, metric) - getattr(b, metric))
+    if not deltas:
+        return None
+    return {"n": len(deltas), "mean": _mean(deltas), "ci": _paired_ci(deltas)}
+
+
+def _policy_table(records, lead, gfs_only):
+    prod = _agg(_subset(records, lead, gfs_only, "prod_0.30"))
+    rows = [
+        "| policy (GFS w) | n | model Brier | dBrier_vs_mkt | dBrier 95% CI | dRPS_vs_mkt | dCRPS_vs_mkt | dCenterMAE_vs_mkt | vs_prod (Brier) |",
+        "|---|---:|---:|---:|---|---:|---:|---:|---:|",
+    ]
+    for pol in POLICIES:
+        r = _agg(_subset(records, lead, gfs_only, pol))
+        if r is None:
+            rows.append(f"| {pol} | 0 | | | | | | | |")
+            continue
+        ci = r["dBrier_ci"]
+        ci_txt = f"[{ci[0]:+.4f}, {ci[1]:+.4f}]" if ci[0] is not None else ""
+        vs_prod = (r["dBrier"] - prod["dBrier"]) if prod else 0.0
+        rows.append(
+            f"| {pol} | {r['n']} | {r['model_brier']:.4f} | {r['dBrier']:+.4f} | {ci_txt} | "
+            f"{r['dRPS']:+.4f} | {r['dCRPS']:+.3f} | {r['dCenterMAE']:+.2f} | {vs_prod:+.4f} |"
+        )
+    return rows
+
+
 def run(days: int = 3650, workers: int = 4) -> str:
     rows, _ = collect_coherent_snapshot_rows(days, max_lead_day=1, var="TMAX_DAILY",
                                              tick_minutes=10, min_buckets=3)
@@ -113,8 +170,7 @@ def run(days: int = 3650, workers: int = 4) -> str:
     for r in rows:
         events[(r.station, r.valid_date, r.lead_day)].append(r)
 
-    # scores[(lead, policy)] = list[EventScore]
-    scores: dict[tuple, list[EventScore]] = defaultdict(list)
+    records: list[dict] = []
     lead_n: dict[int, int] = defaultdict(int)
     gfs_avail_n: dict[int, int] = defaultdict(int)
     n_skipped = 0
@@ -130,14 +186,10 @@ def run(days: int = 3650, workers: int = 4) -> str:
             if res is None:
                 n_skipped += 1
                 continue
-            lead = res["lead"]
-            lead_n[lead] += 1
+            records.append(res)
+            lead_n[res["lead"]] += 1
             if res["gfs_avail"]:
-                gfs_avail_n[lead] += 1
-            for pol in POLICIES:
-                s = res["scores"][pol]
-                if s is not None:
-                    scores[(lead, pol)].append(s)
+                gfs_avail_n[res["lead"]] += 1
 
     lines = [
         f"# EXP-B3 — GFS Center-Blend Experiment - {date.today()}",
@@ -155,40 +207,54 @@ def run(days: int = 3650, workers: int = 4) -> str:
         "",
         f"Events: lead-0 = {lead_n.get(0,0)} (GFS available {gfs_avail_n.get(0,0)}); "
         f"lead-1 = {lead_n.get(1,0)} (GFS available {gfs_avail_n.get(1,0)}); skipped {n_skipped}.",
+        "",
+        "## Lead 1 (primary) — all events (production-like: missing GFS = no shift)",
+        "",
+        *_policy_table(records, 1, gfs_only=False),
+        "",
+        "## Lead 1 (primary) — GFS-available subset only (cleaner blend effect)",
+        "",
+        *_policy_table(records, 1, gfs_only=True),
+        "",
+        "### Lead-1 paired deltas vs prod_0.30 (GFS-available subset)",
+        "",
+        "Paired per-event (policy − prod_0.30); positive = policy worse than prod_0.30 "
+        "(so for `gfs_off`, positive = the 0.30 blend helped). CI is the 95% paired "
+        "normal-approx interval; a CI that includes 0 means the difference is **not "
+        "statistically established**.",
+        "",
+        "| policy − prod_0.30 | n | mean ΔBrier | 95% CI | mean ΔRPS | mean ΔCRPS |",
+        "|---|---:|---:|---|---:|---:|",
     ]
-
-    for lead in (1, 0):
-        lines += [
-            "",
-            f"## Lead {lead}" + (" (primary)" if lead == 1 else " (GFS fallback only)"),
-            "",
-            "| policy (GFS w) | n | model Brier | dBrier_vs_mkt | dBrier 95% CI | dRPS_vs_mkt | dCRPS_vs_mkt | dCenterMAE_vs_mkt | vs_prod (Brier) |",
-            "|---|---:|---:|---:|---|---:|---:|---:|---:|",
-        ]
-        prod = _agg(scores[(lead, "prod_0.30")])
-        for pol in POLICIES:
-            r = _agg(scores[(lead, pol)])
-            if r is None:
-                lines.append(f"| {pol} | 0 | | | | | | | |")
-                continue
-            ci = r["dBrier_ci"]
-            ci_txt = f"[{ci[0]:+.4f}, {ci[1]:+.4f}]" if ci[0] is not None else ""
-            vs_prod = (r["dBrier"] - prod["dBrier"]) if prod else 0.0
-            lines.append(
-                f"| {pol} | {r['n']} | {r['model_brier']:.4f} | {r['dBrier']:+.4f} | {ci_txt} | "
-                f"{r['dRPS']:+.4f} | {r['dCRPS']:+.3f} | {r['dCenterMAE']:+.2f} | {vs_prod:+.4f} |"
-            )
+    for pol in POLICIES:
+        if pol == "prod_0.30":
+            continue
+        pb = _paired(records, 1, True, pol, "prod_0.30", "diff_brier")
+        pr = _paired(records, 1, True, pol, "prod_0.30", "diff_rps")
+        pc = _paired(records, 1, True, pol, "prod_0.30", "diff_crps")
+        if pb is None:
+            continue
+        ci = pb["ci"]
+        ci_txt = f"[{ci[0]:+.4f}, {ci[1]:+.4f}]" if ci[0] is not None else ""
+        lines.append(
+            f"| {pol} − prod_0.30 | {pb['n']} | {pb['mean']:+.4f} | {ci_txt} | "
+            f"{pr['mean']:+.4f} | {pc['mean']:+.3f} |"
+        )
 
     lines += [
         "",
-        "Reading: `prod_0.30` is current behavior. The key question is whether any GFS "
-        "weight beats `gfs_off` (NBM-only) at lead-1 — if so, the GFS blend is net-helpful "
-        "via decorrelation (as HRRR was in EXP-B2), independent of the false standalone-MAE "
-        "premise; if `gfs_off` wins, the blend should be demoted. All deltas are IN-SAMPLE "
-        "and pre-calibrator; before any production change a candidate needs a production-like "
-        "re-score (calibrator) and walk-forward OOS validation, no in-sample weight tuning "
-        "(WEATHERBOT_PROMOTION_CRITERIA.md). ECMWF (also in det_forecast) is a possible "
-        "research-only decorrelation follow-on, not tested here.",
+        "## Lead 0 (GFS fallback only) — all events",
+        "",
+        *_policy_table(records, 0, gfs_only=False),
+        "",
+        "Reading: the key question is whether the 0.30 blend beats `gfs_off` (NBM-only) at "
+        "lead-1. The point estimates say yes (blend helps), but the **paired CI above is the "
+        "deciding statistic**: if `gfs_off − prod_0.30` ΔBrier has a CI spanning 0, the "
+        "improvement is a point-estimate, not statistically established. All deltas are "
+        "IN-SAMPLE and pre-calibrator; before any production change a candidate needs a "
+        "production-like re-score (calibrator) and walk-forward OOS validation, no in-sample "
+        "weight tuning (WEATHERBOT_PROMOTION_CRITERIA.md). ECMWF (also in det_forecast) is a "
+        "possible research-only decorrelation follow-on, not tested here.",
     ]
     return "\n".join(lines) + "\n"
 

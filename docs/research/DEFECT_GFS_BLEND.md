@@ -4,19 +4,21 @@
 **Defect class:** False *justification* (point-in-time artifact) for an otherwise OK blend
 **Severity:** Low (downgraded from Medium after EXP-B3; the false claim is already
 corrected in code)
-**Recommendation (revised):** **Keep the 0.30 GFS blend.** EXP-B3 shows a *partial*
-GFS blend improves market-relative scores vs NBM-only at lead-1 (decorrelation), and
-0.30 is near-optimal. The original in-code "GFS beats NBM" justification was false and
-is corrected; the **decision** (keep a modest GFS weight) stands on different grounds.
-Do not demote.
+**Recommendation (revised):** **Keep the 0.30 GFS blend; no weight change.** EXP-B3
+(§9) shows the 0.30 blend is **statistically indistinguishable** from NBM-only at lead-1
+(paired ΔBrier +0.0015, CI [−0.0013, +0.0043] — so no established harm *or* benefit),
+while **full GFS (w=1) is significantly worse** (the one established result). The
+original in-code "GFS beats NBM" justification was false and is corrected; keeping a
+modest weight is defensible because it is *not harmful*, not because the blend is proven
+better. Do not demote and do not increase the weight.
 
 > ⚠️ **Correction (same pattern as the HRRR report).** Sections 1–8 were written from a
 > standalone *point-in-time center-MAE* comparison (NBM beats GFS) and recommended
 > *demoting* the blend. **EXP-B3 (§9), distribution-level market-relative scoring — the
-> correct test — refutes the demotion:** a partial GFS blend (≈0.15–0.30) beats NBM-only
-> at lead-1 via error decorrelation, while *full* GFS (w=1.0) is much worse (consistent
-> with GFS's worse standalone MAE). Read §9 as authoritative; §3's MAE table is true but
-> incomplete (standalone ≠ blended value).
+> correct test — does not support demotion:** the 0.30 blend is statistically
+> indistinguishable from NBM-only at lead-1, while *full* GFS (w=1.0) is significantly
+> worse. The point estimate slightly favors the blend but is within noise. Read §9 as
+> authoritative; §3's MAE table is true but incomplete (standalone ≠ blended value).
 
 ---
 
@@ -77,9 +79,12 @@ skill (cross-check).
 ## 5. Exact conclusion
 
 > ⚠️ **Partly SUPERSEDED by §9 (EXP-B3).** The "GFS beats NBM standalone is false"
-> finding holds. But this section's claim that the blend "does nothing for
-> market-relative skill" is **wrong**: EXP-B3 shows the 0.30 blend *modestly improves*
-> market-relative Brier/RPS/CRPS/center vs NBM-only at lead-1. Keep the blend; see §9.
+> finding holds, and this section's read that the blend "does nothing for market-relative
+> skill" is essentially **correct** — EXP-B3's paired CI shows the 0.30 blend is
+> statistically indistinguishable from NBM-only at lead-1 (ΔBrier +0.0015, CI includes 0).
+> What is **not** supported is §5/§8's recommendation to *demote* the blend: demoting has
+> no established benefit, and *full* GFS (w=1) is significantly worse. Net: keep 0.30, no
+> change. See §9.
 
 **The claim "GFS beats NBM" is false under point-in-time alignment.** With matched
 run-time and valid-time aggregation, **NBM p50 beats GFS** at both lead 0 (1.571 vs
@@ -150,32 +155,50 @@ the event lead) and scored vs the **same** market mids on the canonical benchmar
 this regime is covered by EXP-B2. `gfs_off` Brier 0.1943 matches EXP-B2's `w0_nbm` — a
 consistency check.)
 
+The GFS-available-only subset (n=263) is essentially identical to the all-events table
+(n=270) — the 7 missing-GFS events score the same across policies, so the production-like
+table is not materially diluted.
+
+**Paired per-event deltas vs `prod_0.30` (lead-1, GFS-available subset, n=263)** — the
+deciding statistic for "does the blend help?". Positive = policy worse than `prod_0.30`.
+
+| policy − prod_0.30 | mean ΔBrier | 95% CI | mean ΔRPS | mean ΔCRPS |
+|---|---:|---|---:|---:|
+| **gfs_off − prod_0.30** | **+0.0015** | **[−0.0013, +0.0043]** (incl. 0) | +0.0013 | +0.013 |
+| gfs_0.15 − prod_0.30 | +0.0000 | [−0.0014, +0.0015] (incl. 0) | −0.0006 | −0.005 |
+| gfs_0.50 − prod_0.30 | +0.0017 | [−0.0002, +0.0037] (incl. 0) | +0.0049 | +0.044 |
+| **gfs_1.00 − prod_0.30** | **+0.0170** | **[+0.0106, +0.0234]** (excl. 0) | +0.0336 | +0.299 |
+
 **Findings:**
 
-1. **The GFS blend is net-helpful via decorrelation — same lesson as HRRR (EXP-B2).**
-   At lead-1, `prod_0.30` beats `gfs_off` (NBM-only) on **every** metric (dBrier +0.0235
-   vs +0.0250; RPS, CRPS, center all better). So the blend helps despite GFS's worse
-   *standalone* MAE — refuting §5's "does nothing for market-relative skill".
-2. **0.30 is near-optimal; the curve is concave in weight.** `gfs_0.15` ties `prod_0.30`
-   (marginally better CRPS/center), `gfs_0.50` is worse, and **`gfs_1.00` (full GFS
-   center) is much worse** (+0.0400) — consistent with GFS standalone < NBM. The benefit
-   comes from a *partial* blend, not from GFS being a better center.
-3. **The defect was the false justification, not the blend.** The "GFS beats NBM" claim
-   was false (corrected in code); the *decision* to carry a modest GFS weight is
-   independently supported by decorrelation.
-4. **Small, and no edge.** The lead-1 market gap is only +0.0235 (the model is close to
-   the market at lead-1), and the blend trims it by ~0.0015 Brier — the market still
-   wins. Marginal damage-reduction, not edge.
+1. **The 0.30 blend is statistically INDISTINGUISHABLE from NBM-only at lead-1.** The
+   point estimate favors the blend (`gfs_off` worse by +0.0015 Brier), but the paired CI
+   **[−0.0013, +0.0043] includes 0**. So "net-helpful via decorrelation" is a fair
+   *point-estimate* read, **not** a statistically established result. (This also tempers
+   §5: the blend doesn't clearly help *or* hurt at lead-1.)
+2. **The one established result: full GFS (w=1) is significantly WORSE** than 0.30 — paired
+   ΔBrier +0.0170, CI [+0.0106, +0.0234] excludes 0. Consistent with GFS standalone < NBM.
+   `gfs_0.15` ≈ `prod_0.30` (ΔBrier 0.0000); `gfs_0.50` ≈ prod (CI includes 0). The
+   weight response is flat from 0 to ~0.30 and then degrades — there is no statistically
+   distinguishable optimum in 0–0.30.
+3. **The defect was the false justification, not the blend.** "GFS beats NBM" was false
+   (corrected in code). The *decision* to carry a modest GFS weight is defensible because
+   it is **not harmful** (indistinguishable from NBM-only), not because the blend is a
+   proven improvement.
+4. **No edge.** The lead-1 market gap (+0.0235) is small but the market still wins, and
+   no weight in 0–0.50 changes that.
 
-**Recommendation (revised):** **Keep the 0.30 GFS blend** (do not demote). It is a small
-but consistent market-relative improvement over NBM-only at lead-1, and 0.30 is
-near-optimal. A weight change is **not** warranted (0.15 and 0.30 are tied within noise;
-CIs overlap heavily). If ever revisited: research flag, production-like re-score, and
-walk-forward OOS, no in-sample weight tuning. ECMWF decorrelation (existing
-`det_forecast` data) is a possible research-only follow-on.
+**Recommendation (revised):** **Keep the 0.30 GFS blend; make no weight change.** The
+justification is now: (a) at lead-1 the blend is statistically indistinguishable from
+NBM-only (no harm), and (b) high weights are significantly worse — so there is no reason
+to move the weight in either direction, and removing it has no established benefit either.
+If ever revisited: research flag, production-like re-score, walk-forward OOS, no in-sample
+tuning. ECMWF decorrelation (existing `det_forecast`) is a possible research-only follow-on.
 
-**Statistical limitations:** ~6 weeks, lead-1 n=270; pre-calibrator; weight differences
-(0.15 vs 0.30) are within overlapping CIs — treat 0.30 as fine, not precisely optimal.
+**Statistical limitations:** ~6 weeks; lead-1 n=263–270; **pre-calibrator**; the
+0↔0.30 weight differences sit within overlapping paired CIs — treat 0.30 as *fine*, not
+proven-optimal or proven-better-than-NBM-only. Only the "full GFS is worse" result is
+statistically established here.
 
-**Overfitting risk:** Low for "keep a partial GFS blend / full GFS loses". Medium for any
-fitted/again-tuned weight.
+**Overfitting risk:** Low for "full GFS loses / 0.30 is not harmful". Any claim that the
+blend *improves* on NBM-only would be overfitting to a within-noise point estimate.
