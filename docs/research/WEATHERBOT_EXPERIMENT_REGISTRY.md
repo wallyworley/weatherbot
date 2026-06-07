@@ -420,3 +420,17 @@ the simple centers are exhausted with a clear negative; the remaining hope is th
 walk-forward follow-on (EXP-C1b: bias-corrected / inverse-MAE-decorrelation /
 regime-conditioned / obs-anchored centers). Realistic prior given B1–B3 + this: the kill
 rule will be approached. No production change.
+
+---
+
+## EXP-2026-008 — Walk-Forward Conditioned Forecast Centers (EXP-C1b)
+
+**Status:** Pre-registered 2026-06-06 — **awaiting sign-off before build**
+**Priority:** P1 (the charter's final OOS center test)
+
+Full locked pre-registration: `EXP_C1B_PREREGISTRATION.md`. Six fixed candidate centers
+(`gfs_bc`, `ecmwf_bc`, `hrrr_bc`, `invmae_blend_bc`, `regime_agree`, `obs_anchor_l0`),
+walk-forward (prior-day-trained only), scored market-relative on the canonical benchmark.
+Pass = beats market AND nbm_only on Brier+RPS, Bonferroni(6) or chronological held-out,
+robust across ≥2 stations/regimes, ≥100 station-days. No-pass ⇒ recommend observation-only
+pivot (charter §7). No production change either way. Builds nothing until approved.
