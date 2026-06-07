@@ -1,5 +1,10 @@
 # Weather Bot Backlog
 
+> Superseded for prioritization by
+> [`docs/research/WEATHERBOT_PRIORITY_BACKLOG.md`](docs/research/WEATHERBOT_PRIORITY_BACKLOG.md)
+> as of 2026-06-07. This file remains as historical backlog/context for older
+> HFMETAR, replay, and snapshot-completeness work.
+
 ## Next Highest-Leverage Work
 
 ### HFMETAR rollout — DONE phases 1+2+3 (2026-05-03)

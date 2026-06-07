@@ -1,5 +1,8 @@
 # Forecast Model Roadmap - 2026-06-05
 
+> Historical/model-roadmap context. The governing research charter and promotion
+> criteria now live in [`docs/research/`](research/).
+
 Purpose: document what we are doing, why we are doing it, and what we should
 add next after reviewing external weather-model guidance for prediction-market
 bots. This is an execution roadmap for `weather_bot`, not a claim that any new

@@ -2,7 +2,16 @@
 
 Probabilistic trading bot for Kalshi daily-temperature contracts. Builds a calibrated forecast distribution from NOAA NBM (probabilistic), HRRR, and GFS inputs, captures ECMWF/Open-Meteo true ensemble members as a shadow challenger lane, applies station-level bias correction, and computes per-bucket fair probabilities for Kalshi range markets. Sizes positions with a fractional Kelly under fee-aware EV.
 
-Runs in paper mode by default. Current trade scope is KNYC, KMDW, and KMIA, with the pre-trade bias gate blocking any station whose calibration is missing, thin, or stale.
+Runs in paper mode by default.
+
+**Current research posture (2026-06-07):** WeatherBot has no demonstrated
+market-relative forecast edge. The canonical research governance lives in
+[`docs/research/WEATHERBOT_RESEARCH_CHARTER.md`](docs/research/WEATHERBOT_RESEARCH_CHARTER.md),
+[`docs/research/MARKET_BASELINE_THESIS.md`](docs/research/MARKET_BASELINE_THESIS.md),
+and [`docs/research/WEATHERBOT_PROMOTION_CRITERIA.md`](docs/research/WEATHERBOT_PROMOTION_CRITERIA.md).
+Do not treat P&L, climatology-relative Brier, station whitelists, or sizing
+changes as promotion evidence unless market-relative forecast skill is positive
+out of sample.
 
 ## How it works
 
@@ -36,7 +45,10 @@ NOAA/Open-Meteo (NBM + HRRR + GFS + ECMWF + ensemble members)      METAR + NWS C
                 main.py             (signal orchestrator → paper_order → paper_fill)
 ```
 
-Settled fills get reconciled each morning via `jobs/settle_paper_fills.py`, preferring NWS CLI settlement observations and falling back to METAR-derived daily observations when CLI is not captured yet.
+Settled fills get reconciled each morning via `jobs/settle_paper_fills.py`,
+preferring Kalshi `expiration_value` when available and falling back to NWS CLI
+settlement observations. METAR-derived daily observations are not a settlement
+authority.
 
 ## Current calibration methodology
 
@@ -230,7 +242,8 @@ KALSHI_API_KEY_ID=your-uuid-here
 KALSHI_PRIVATE_KEY_PATH=/absolute/path/to/kalshi_private_key.pem
 KALSHI_BASE_URL=https://api.elections.kalshi.com/trade-api/v2
 
-# Paper mode is the default and intended state until calibration is proven
+# Paper mode is the default and intended state until market-relative forecast
+# skill is proven out of sample.
 PAPER_MODE=true
 PAPER_ORDER_MODE=true
 PAPER_ORDER_IMPROVEMENT_CENTS=1
@@ -455,9 +468,11 @@ Don't flip `PAPER_MODE=false` until:
 - [ ] 30+ days of clean NBM + METAR data
 - [ ] Bias tables populated with sample_size ≥ 10 per (month, lead)
 - [ ] 14+ days of signals logged with reliability diagram tracking
-- [ ] Brier score lower than climatology baseline
+- [ ] Brier/RPS/CRPS lower than the market-implied forecast out of sample
 - [ ] Aggregate paper P&L net of fees positive over 4 consecutive weeks
 - [ ] Daily expected-vs-realized edge diff stable (no large swings)
+- [ ] Promotion criteria in `docs/research/WEATHERBOT_PROMOTION_CRITERIA.md`
+      are satisfied
 
 ## NBM QMD note
 

@@ -1,5 +1,10 @@
 # Weather-bot performance evaluation — 2026-06-04
 
+> Historical performance review. For the current canonical research frame, use
+> [`docs/research/MARKET_BASELINE_THESIS.md`](research/MARKET_BASELINE_THESIS.md)
+> and
+> [`docs/research/MARKET_RELATIVE_CENTER_BENCHMARK_2026_06_07.md`](research/MARKET_RELATIVE_CENTER_BENCHMARK_2026_06_07.md).
+
 **Purpose:** independent review requested. The bot has been performing poorly;
 this evaluates *why*, using live data (paper mode), and evaluates two external
 weather traders we've been studying. Every claim below is tied to a query or

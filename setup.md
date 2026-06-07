@@ -1,6 +1,11 @@
 # Weather Bot — Setup & Run
 
-MVP for Kalshi daily-temperature contracts. Scope: KNYC, KMDW, and KMIA daily temperature markets, paper trading only.
+Kalshi daily-temperature research bot, paper trading only by default.
+
+Current research governance lives in `docs/research/`. The project should not
+be promoted to live trading unless it demonstrates positive market-relative
+forecast skill out of sample under
+`docs/research/WEATHERBOT_PROMOTION_CRITERIA.md`.
 
 ## 1. Environment
 
@@ -83,10 +88,11 @@ rather than these two lines if using `morning.sh`.)
 - [ ] 14 days of clean NBM + METAR data
 - [ ] Bias tables populated with sample_size >= 10 per (month, lead)
 - [ ] 7+ days of signals logged, reliability diagram plotted
-- [ ] Brier < baseline (climatology)
+- [ ] Brier/RPS/CRPS beat the market-implied forecast out of sample
 - [ ] Aggregate paper PnL net of fees > 0 over 4 weeks
+- [ ] Promotion criteria in `docs/research/WEATHERBOT_PROMOTION_CRITERIA.md` are satisfied
 
-Only flip `PAPER_MODE=false` in `.env` after all five boxes are checked.
+Only flip `PAPER_MODE=false` in `.env` after all boxes are checked.
 
 ## 7. Smoke tests
 

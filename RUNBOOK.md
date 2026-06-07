@@ -1,7 +1,17 @@
 # Weather Bot Runbook — Current Operating Instructions
 
-Single source of truth. Replaces `NEXT_STEPS.md`, `IMPLEMENTATION_SUMMARY.md`,
-and `ANALYSIS_2026-05-06.md` (archived under `docs/history/`).
+Operational runbook for the deployed paper bot. Research governance and
+promotion authority moved on 2026-06-07 to `docs/research/`.
+
+For forecast-skill claims, promotion criteria, experiment registration, and
+program kill criteria, use:
+
+- [`docs/research/WEATHERBOT_RESEARCH_CHARTER.md`](docs/research/WEATHERBOT_RESEARCH_CHARTER.md)
+- [`docs/research/MARKET_BASELINE_THESIS.md`](docs/research/MARKET_BASELINE_THESIS.md)
+- [`docs/research/WEATHERBOT_PROMOTION_CRITERIA.md`](docs/research/WEATHERBOT_PROMOTION_CRITERIA.md)
+
+The May calibration and profitability guidance below is retained as operational
+history, not as evidence that WeatherBot currently beats the market forecast.
 
 Last reviewed: 2026-05-17.
 
