@@ -1,7 +1,7 @@
 # Market Baseline Thesis
 
 **Date:** 2026-06-07
-**Status:** Canonical research input
+**Status:** Canonical research input — **benchmark audit complete (2026-06-06), thesis CONFIRMED**
 **Trading status:** Paper only / no live promotion
 
 ---
@@ -26,6 +26,35 @@ The central question is no longer:
 The central question is:
 
 > Can WeatherBot produce a forecast distribution that beats the market-implied distribution out of sample?
+
+---
+
+## 1a. Audit Outcome (2026-06-06)
+
+The §3 benchmark audit is **complete** and the thesis is **confirmed** — and, after
+the audit, supports a **stronger** statement than originally written:
+
+> WeatherBot's current forecast distribution is **materially worse** than the
+> market-implied distribution, even after correcting the benchmark's biggest
+> methodological flaw (time-incoherent bucket selection).
+
+Evidence (see `MARKET_BASELINE_AUDIT.md`):
+
+- Headline reproduced exactly; settlement/pairing/normalization/metrics correct;
+  561/561 events have exactly one winner (no selection bias); no leakage.
+- The one real defect — buckets sampled across a median 9.2 h window at lead 0 — was
+  corrected via coherent-snapshot re-scoring (`research/snapshot_market_benchmark.py`).
+  The market **still wins** on Brier, RPS, CRPS and center MAE; the Brier/RPS gaps
+  *widen* slightly and only the CRPS magnitude shrinks (~40%).
+- The full production stack is **neutral-to-negative vs clean NBM**, and clean NBM
+  still loses to the market — so the binding constraint is **forecast center /
+  resolution**, not calibration or trading strategy.
+
+Three mechanical defects (METAR/CLI floor, HRRR weight curve, GFS blend premise) are
+confirmed and contribute to the lead-0 deficit but do **not** explain it; two
+(calibrator, reliability metric) are correctness issues with ~zero effect on the gap.
+See `DEFECT_ANALYSIS_SUMMARY.md`. Forward plan and stopping rule:
+`EXPERIMENT_PLAN_NEXT.md`.
 
 ---
 

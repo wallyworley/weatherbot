@@ -4,9 +4,15 @@ Scores WeatherBot's stored fair probabilities against Kalshi market-implied
 probabilities on the same station/date/lead-day bucket set. This is a research
 report only; it does not import or modify trading logic.
 
+Selection (2026-06-06 audit): the CANONICAL selection is `coherent_snapshot` —
+one point-in-time tick window per event in which >= min_buckets buckets were
+simultaneously live. The legacy `latest_per_bucket` selection stitched each
+bucket's last live quote across hours (median ~9 h spread at lead 0) and is kept
+only for audit/comparison. See docs/research/MARKET_BASELINE_AUDIT.md.
+
 Usage:
     python -m weather_bot.research.market_relative_center_benchmark --days 60
-    python -m weather_bot.jobs.market_relative_center_benchmark_report --days 60
+    python -m weather_bot.research.market_relative_center_benchmark --days 60 --selection latest_per_bucket
 """
 from __future__ import annotations
 
@@ -16,7 +22,7 @@ import math
 import statistics
 from collections import defaultdict
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -265,6 +271,146 @@ def collect_bucket_rows(days: int, max_lead_day: int, var: str) -> list[BucketRo
     ]
 
 
+def _floor_to_window(ts: datetime, minutes: int) -> datetime:
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    secs = int((ts.astimezone(timezone.utc) - epoch).total_seconds())
+    win = minutes * 60
+    return epoch + timedelta(seconds=(secs // win) * win)
+
+
+def collect_all_valid_rows(days: int, max_lead_day: int, var: str) -> list[BucketRow]:
+    """Every valid bucket signal (not just the latest) in the window.
+
+    Unlike `collect_bucket_rows`, this keeps all signal ticks so a caller can
+    reconstruct a coherent point-in-time snapshot. Validity filters match the
+    benchmark: real settlement truth, a settled winner, probabilities in [0, 1],
+    and the requested lead range.
+    """
+    sql = f"""
+    SELECT s.ticker,
+           s.ts,
+           s.fair_prob::float AS model_p,
+           ((s.market_ask::float + s.market_bid::float) / 2.0) AS market_p,
+           km.station,
+           km.valid_date,
+           km.var,
+           km.lower_f::float AS lower_f,
+           km.upper_f::float AS upper_f,
+           {_REALIZED_SQL} AS truth_f,
+           {_YES_WIN_SQL} AS yes_win,
+           GREATEST(0, (km.valid_date - (s.ts AT TIME ZONE st.tz)::date)::int) AS lead_day
+      FROM signal s
+      JOIN kalshi_market km ON km.ticker = s.ticker
+      JOIN stations st ON st.code = km.station
+      LEFT JOIN cli_obs co ON co.station = km.station AND co.local_date = km.valid_date
+      LEFT JOIN daily_obs d ON d.station = km.station AND d.local_date = km.valid_date
+     WHERE km.valid_date >= CURRENT_DATE - (%(days)s || ' days')::interval
+       AND km.valid_date < CURRENT_DATE
+       AND km.var = %(var)s
+       AND s.fair_prob IS NOT NULL
+       AND s.market_ask IS NOT NULL
+       AND s.market_bid IS NOT NULL
+    """
+    with persistence.connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, {"days": days, "var": var})
+        rows = cur.fetchall()
+
+    out: list[BucketRow] = []
+    for r in rows:
+        if r["truth_f"] is None or r["yes_win"] is None:
+            continue
+        if not (0.0 <= float(r["model_p"]) <= 1.0):
+            continue
+        if not (0.0 <= float(r["market_p"]) <= 1.0):
+            continue
+        lead = int(r["lead_day"])
+        if lead < 0 or lead > max_lead_day:
+            continue
+        out.append(
+            BucketRow(
+                station=r["station"],
+                valid_date=r["valid_date"],
+                var=r["var"],
+                lead_day=lead,
+                ticker=r["ticker"],
+                ts=r["ts"],
+                lower_f=float(r["lower_f"]) if r["lower_f"] is not None else None,
+                upper_f=float(r["upper_f"]) if r["upper_f"] is not None else None,
+                truth_f=float(r["truth_f"]),
+                yes_win=int(r["yes_win"]),
+                model_p=float(r["model_p"]),
+                market_p=float(r["market_p"]),
+            )
+        )
+    return out
+
+
+def coherent_snapshot_rows(
+    rows: list[BucketRow], tick_minutes: int = 10, min_buckets: int = 3
+) -> tuple[list[BucketRow], dict]:
+    """Reduce all-valid rows to one coherent point-in-time snapshot per event.
+
+    For each (station, valid_date, var, lead_day) event, pick the LATEST
+    `tick_minutes`-wide window in which at least `min_buckets` distinct buckets
+    were simultaneously live (the bot emits all buckets in synchronized ticks),
+    keeping the latest signal per bucket within that window. This scores a
+    distribution the model actually held at one instant, rather than buckets
+    stitched across hours as dead buckets lose their market quotes.
+    """
+    events: dict[tuple, dict[datetime, dict[str, BucketRow]]] = defaultdict(
+        lambda: defaultdict(dict)
+    )
+    for r in rows:
+        key = (r.station, r.valid_date, r.var, r.lead_day)
+        win = _floor_to_window(r.ts, tick_minutes)
+        cur = events[key][win].get(r.ticker)
+        if cur is None or r.ts > cur.ts:
+            events[key][win][r.ticker] = r
+
+    out: list[BucketRow] = []
+    n_total = 0
+    n_kept = 0
+    spreads: list[float] = []
+    for windows in events.values():
+        n_total += 1
+        chosen = None
+        for win in sorted(windows.keys(), reverse=True):
+            if len(windows[win]) >= min_buckets:
+                chosen = win
+                break
+        if chosen is None:
+            continue
+        n_kept += 1
+        bucket_rows = list(windows[chosen].values())
+        spreads.append(
+            (max(r.ts for r in bucket_rows) - min(r.ts for r in bucket_rows)).total_seconds()
+            / 3600.0
+        )
+        out.extend(bucket_rows)
+    diag = {
+        "events_total": n_total,
+        "events_with_snapshot": n_kept,
+        "median_intra_snapshot_spread_h": (
+            sorted(spreads)[len(spreads) // 2] if spreads else None
+        ),
+        "max_intra_snapshot_spread_h": (max(spreads) if spreads else None),
+    }
+    return out, diag
+
+
+def collect_coherent_snapshot_rows(
+    days: int,
+    max_lead_day: int,
+    var: str,
+    tick_minutes: int = 10,
+    min_buckets: int = 3,
+) -> tuple[list[BucketRow], dict]:
+    """Canonical selection: one coherent point-in-time snapshot per event."""
+    return coherent_snapshot_rows(
+        collect_all_valid_rows(days, max_lead_day, var), tick_minutes, min_buckets
+    )
+
+
 def score_event(rows: list[BucketRow]) -> EventScore | None:
     rows = sorted(rows, key=lambda r: (float("-inf") if r.lower_f is None else r.lower_f))
     if len(rows) < 3:
@@ -430,6 +576,10 @@ def render_markdown(
     days: int,
     max_lead_day: int,
     var: str,
+    selection: str = "coherent_snapshot",
+    tick_minutes: int = 10,
+    min_buckets: int = 3,
+    diag: dict | None = None,
 ) -> str:
     lead_groups: dict[int, list[EventScore]] = defaultdict(list)
     for score in scores:
@@ -439,19 +589,52 @@ def render_markdown(
         for lead, vals in sorted(lead_groups.items())
     ]
 
+    if selection == "latest_per_bucket":
+        method = (
+            "Method (LEGACY/AUDIT selection): one latest stored signal per bucket ticker "
+            "per station/date/lead day. NOTE: this stitches each bucket's last live quote "
+            "across hours (median ~9 h spread at lead 0), so it does not score a single "
+            "point-in-time distribution; prefer the canonical coherent-snapshot selection. "
+        )
+    else:
+        method = (
+            f"Method (CANONICAL): one coherent point-in-time snapshot per station/date/lead "
+            f"day — the latest {tick_minutes}-minute tick window in which at least "
+            f"{min_buckets} buckets were simultaneously live. "
+        )
+    method += (
+        "WeatherBot fair probabilities and market midpoints are normalized over the same "
+        "captured ordered bucket set before scoring. Brier is mean bucket Brier, RPS is "
+        "normalized ranked probability score, and CRPS is a discrete bucket-center "
+        "approximation in degrees F. For all deltas, negative means WeatherBot scored "
+        "better than the market."
+    )
+
     lines = [
         f"# Market-Relative Forecast Center Benchmark - {date.today()}",
         "",
         f"_generated {datetime.now(tz=timezone.utc):%Y-%m-%d %H:%M UTC}_",
         "",
-        f"Window: last {days} completed valid dates; variable `{var}`; lead days 0-{max_lead_day}.",
+        f"Window: last {days} completed valid dates; variable `{var}`; lead days 0-{max_lead_day}; "
+        f"selection `{selection}`.",
         "",
-        "Method: one latest stored signal per bucket ticker per station/date/lead day. "
-        "WeatherBot fair probabilities and market midpoints are normalized over the same captured "
-        "ordered bucket set before scoring. Brier is mean bucket Brier, RPS is normalized ranked "
-        "probability score, and CRPS is a discrete bucket-center approximation in degrees F. "
-        "For all deltas, negative means WeatherBot scored better than the market.",
+        method,
         "",
+    ]
+    if diag and diag.get("events_with_snapshot") is not None:
+        spread = diag.get("median_intra_snapshot_spread_h")
+        max_spread = diag.get("max_intra_snapshot_spread_h")
+        spread_txt = (
+            f"{spread:.2f} h (max {max_spread:.2f} h)"
+            if spread is not None and max_spread is not None
+            else "n/a"
+        )
+        lines.append(
+            f"Events with a usable coherent snapshot: {diag['events_with_snapshot']} / "
+            f"{diag['events_total']}. Median intra-snapshot bucket time spread: {spread_txt}."
+        )
+        lines.append("")
+    lines += [
         "## Evidence Statement",
         "",
         _evidence_statement("All scored station/lead groups", summaries),
@@ -525,19 +708,46 @@ def run(
     max_lead_day: int = 3,
     var: str = "TMAX_DAILY",
     out_dir: Path = Path("research/reports"),
+    selection: str = "coherent_snapshot",
+    tick_minutes: int = 10,
+    min_buckets: int = 3,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
-    rows = collect_bucket_rows(days=days, max_lead_day=max_lead_day, var=var)
+    diag: dict = {}
+    if selection == "latest_per_bucket":
+        rows = collect_bucket_rows(days=days, max_lead_day=max_lead_day, var=var)
+    else:
+        selection = "coherent_snapshot"
+        rows, diag = collect_coherent_snapshot_rows(
+            days=days,
+            max_lead_day=max_lead_day,
+            var=var,
+            tick_minutes=tick_minutes,
+            min_buckets=min_buckets,
+        )
     scores = score_events(rows)
     summaries = summarize(scores)
     stem = f"market_relative_center_benchmark_{date.today()}"
     report_path = out_dir / f"{stem}.md"
     event_csv, summary_csv = write_csvs(scores, summaries, out_dir, stem)
-    report_path.write_text(render_markdown(scores, summaries, days, max_lead_day, var))
+    report_path.write_text(
+        render_markdown(
+            scores,
+            summaries,
+            days,
+            max_lead_day,
+            var,
+            selection=selection,
+            tick_minutes=tick_minutes,
+            min_buckets=min_buckets,
+            diag=diag,
+        )
+    )
     return {
         "bucket_rows": len(rows),
         "events": len(scores),
         "summary_rows": len(summaries),
+        "selection": selection,
         "report_path": str(report_path),
         "event_csv": str(event_csv),
         "summary_csv": str(summary_csv),
@@ -550,8 +760,26 @@ def main() -> None:
     parser.add_argument("--max-lead-day", type=int, default=3)
     parser.add_argument("--var", choices=("TMAX_DAILY", "TMIN_DAILY"), default="TMAX_DAILY")
     parser.add_argument("--out-dir", type=Path, default=Path("research/reports"))
+    parser.add_argument(
+        "--selection",
+        choices=("coherent_snapshot", "latest_per_bucket"),
+        default="coherent_snapshot",
+        help="Bucket selection. coherent_snapshot (default, canonical) scores one "
+             "point-in-time tick per event; latest_per_bucket is the legacy/audit "
+             "selection that stitches each bucket's last quote across hours.",
+    )
+    parser.add_argument("--tick-minutes", type=int, default=10)
+    parser.add_argument("--min-buckets", type=int, default=3)
     args = parser.parse_args()
-    result = run(days=args.days, max_lead_day=args.max_lead_day, var=args.var, out_dir=args.out_dir)
+    result = run(
+        days=args.days,
+        max_lead_day=args.max_lead_day,
+        var=args.var,
+        out_dir=args.out_dir,
+        selection=args.selection,
+        tick_minutes=args.tick_minutes,
+        min_buckets=args.min_buckets,
+    )
     print(Path(result["report_path"]).read_text())
 
 
