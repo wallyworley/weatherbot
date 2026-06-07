@@ -24,8 +24,11 @@ it measures; fix wrong-direction model mechanics before hygiene.
 
 0. ✅ **Lock the benchmark** — coherent-snapshot is now canonical + frozen
    regression test added (9 tests). *(EXP-A1, A2 — DONE 2026-06-06)*
-1. **METAR vs CLI floor** — research-only fix/test. ← **NEXT** *(EXP-B1)*
-2. **HRRR weight curve** — test `w=0` or a much lower coarse curve, research-only. *(EXP-B2)*
+1. ◑ **METAR vs CLI floor** — EXP-B1 experiment done: soft floor wins (winner-zeroing
+   7→1, all metrics improved vs hard floor) but damage-reduction only; OOS validation
+   of the soft floor still pending before any production change. *(EXP-B1)*
+2. **HRRR weight curve** — test `w=0` or a much lower coarse curve, research-only.
+   ← **NEXT** *(EXP-B2)*
 3. **GFS blend** — correct the false "GFS beats NBM" premise in code/docs, re-test
    GFS as decorrelation only. *(EXP-B3)*
 4. **Calibrator** — rebuild from all-forecasts-vs-CLI and restore ladder
@@ -71,12 +74,19 @@ Each is gated on the **coherent-snapshot market benchmark**, lead-0 unless noted
 out of sample (walk-forward where a parameter is fit). Pass = improves or neutralizes
 market-relative Brier/RPS with no leakage; fail = degrades or only helps in-sample.
 
-### EXP-B1 — CLI-consistent floor basis  *(DEFECT_METAR_CLI_FLOOR.md)*
-- **Variants (research flag):** soft floor (cap removed mass) · `floor = metar_max − δ`
-  with δ from the **prior** over-read distribution · floor disabled.
-- **Metrics:** Brier/RPS/CRPS/center MAE vs market; count of winner-zeroing events.
-- **Min sample:** all lead-0 events; report by station where n permits.
-- **Overfitting risk:** Medium (δ tuning) → use prior-only δ, walk-forward.
+### EXP-B1 — CLI-consistent floor basis  *(DEFECT_METAR_CLI_FLOOR.md §9)* — ◑ EXPERIMENT DONE 2026-06-06
+- **Harness:** `research/floor_basis_experiment.py` (research-only; PIT rebuild,
+  floor varied, scored on canonical benchmark). n≈290 lead-0 events.
+- **Result:** the **soft floor** (cap injected confidence; `soft_w0.50`) is the
+  winner — improves on the production hard floor across Brier/RPS/CRPS/center MAE
+  and cuts winner-zeroing **7→1**. δ-subtraction (fixed + walk-forward p85≈0.6F) and
+  floor-off are rejected (fat-tail over-reads / Brier loss). **But damage reduction
+  only: market gap stays +0.0837 Brier.**
+- **Status:** candidate identified, **in-sample**. Remaining before any production
+  change: implement soft floor behind a research flag (default = current hard floor),
+  validate **walk-forward on fresh lead-0 station-days** without tuning the weight,
+  confirm no leakage. No production change made.
+- **Overfitting risk:** Low–Medium (one fixed weight; do not optimize on this window).
 
 ### EXP-B2 — HRRR weight curve  *(DEFECT_HRRR_WEIGHT_CURVE.md)*
 - **Variants:** `w=0` (null) · flat low weight · re-derived by-hour curve (coarse

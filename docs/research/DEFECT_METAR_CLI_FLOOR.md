@@ -107,3 +107,67 @@ benchmark out of sample, not chosen to maximize in-sample Brier.
 3. Promote only if it **improves or neutralizes** market-relative scores with no
    leakage, per `WEATHERBOT_PROMOTION_CRITERIA.md` §4. Mechanical fixes do not
    require positive P&L but must not degrade market-relative skill.
+
+→ Step 1 was run as EXP-B1 (see §9 below).
+
+## 9. EXP-B1 experiment results (2026-06-06)
+
+Harness: `research/floor_basis_experiment.py` (research-only). For each lead-0 TMAX
+event it rebuilds the production distribution point-in-time (`as_of` = coherent
+snapshot ts, no future data; production bias + HRRR/GFS center held fixed,
+pre-calibrator) and re-scores the model under several floor policies against the
+**same** market midpoints, using the canonical benchmark scoring. n = 289–290
+events. Market Brier ≈ 0.0876 here reproduces the canonical benchmark's coherent
+lead-0 market Brier (0.087) — a consistency check on the harness.
+
+| policy | model Brier | dBrier vs mkt | dRPS vs mkt | dCRPS vs mkt | dCenterMAE | winner-zeroed | vs prod (Brier) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **prod_hard** (current) | 0.1765 | +0.0889 | +0.0818 | +0.331 | +0.52 | 7 | +0.0000 |
+| floor_off | 0.1940 | +0.1067 | +0.0857 | +0.157 | +0.23 | 5 | +0.0177 |
+| **soft_w0.50** | **0.1710** | **+0.0837** | **+0.0701** | **+0.217** | **+0.36** | **1** | **−0.0052** |
+| soft_w0.25 | 0.1763 | +0.0890 | +0.0721 | +0.182 | +0.30 | 1 | +0.0000 |
+| minus_0.5 | 0.1758 | +0.0884 | +0.0769 | +0.229 | +0.38 | 5 | −0.0005 |
+| minus_1.0 | 0.1829 | +0.0956 | +0.0807 | +0.190 | +0.31 | 6 | +0.0066 |
+| minus_wf (p85≈0.60F) | 0.1793 | +0.0919 | +0.0806 | +0.241 | +0.38 | 8 | +0.0030 |
+
+(Negative = model better than market / better than the production floor.)
+
+**Findings:**
+
+1. **The soft floor is the effective mechanism.** Capping the floor's injected
+   confidence (`soft_w0.50` = 0.5·floored + 0.5·unfloored bucket probs) **improves
+   on the production hard floor across every metric** — Brier 0.1765→0.1710, RPS
+   gap +0.0818→+0.0701, CRPS +0.331→+0.217, center MAE +0.52→+0.36 — and cuts
+   catastrophic **winner-zeroing 7→1**. `soft_w0.25` improves RPS/CRPS and is
+   Brier-neutral. Both soft weights move the same direction, so this is not a
+   knife-edge fit.
+2. **δ-subtraction does not work.** Fixed (−0.5/−1.0 °F) and walk-forward
+   (`minus_wf`, prior-day p85 ≈ 0.60 °F) buffers leave winner-zeroing at 5–8. The
+   damaging over-reads are a 2–5 °F **fat tail** (e.g., KMDW 64.4 vs 59, KNYC 78.1
+   vs 75); a uniform buffer can't catch them without destroying the floor on the
+   80% of days it is correct.
+3. **Don't just delete the floor.** `floor_off` *worsens* Brier/RPS (the floor's
+   sharpening is net-valuable when correct) even though it helps CRPS/center. The
+   soft floor keeps the upside while removing the catastrophic downside.
+4. **Damage reduction, not edge.** Even the best policy leaves the market gap at
+   **+0.0837** Brier — the market still wins decisively at lead 0. This is exactly
+   what the audit predicted: the floor is a real wrong-direction defect, fixing it
+   removes self-inflicted damage, but it does **not** create forecast-information
+   advantage.
+
+**Recommendation (updated):** The **soft floor** is the candidate fix; the
+δ-subtraction and floor-off forms are rejected. **No production change yet** — the
+EXP-B1 evaluation is in-sample to the historical window. Required before any
+production change (`WEATHERBOT_PROMOTION_CRITERIA.md` §4):
+- implement the soft floor behind a research-only flag (default = current hard floor);
+- validate it **walk-forward on fresh lead-0 station-days** via the canonical
+  coherent benchmark (Brier/RPS not degraded vs production, winner-zeroing reduced),
+  **without** tuning the soft weight in-sample;
+- confirm no leakage.
+
+**Statistical limitations:** in-sample window (~6 weeks, lead-0 only); the soft
+weight (0.50) is a fixed default, not validated OOS; winner-zeroing counts are small
+(1–8) so their differences are directional, not precise.
+
+**Overfitting risk:** Low–Medium. The soft floor has one obvious parameter (the
+weight); keep it fixed and validate OOS rather than optimizing it on this window.
