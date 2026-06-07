@@ -51,6 +51,7 @@ STATION_TO_LOC = {
     "KBOS": "BOS",
     "KPHX": "PHX",
     "KDFW": "DFW",
+    "KHOU": "HOU",
     "KSFO": "SFO",
     "KSEA": "SEA",
     "KLAS": "LAS",

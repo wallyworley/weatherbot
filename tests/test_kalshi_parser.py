@@ -20,6 +20,14 @@ def test_event_ticker_low_chi():
     assert evt["station"] == "KMDW"
 
 
+def test_event_ticker_high_houston():
+    evt = kalshi_parser.parse_event_ticker("KXHIGHTHOU-26JUN07")
+    assert evt is not None
+    assert evt["var"] == "TMAX_DAILY"
+    assert evt["station"] == "KHOU"
+    assert evt["valid_date"] == date(2026, 6, 7)
+
+
 def test_bucket_range():
     assert kalshi_parser.parse_bucket("65-66°F") == (65.0, 67.0)
 

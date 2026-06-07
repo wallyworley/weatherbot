@@ -55,6 +55,9 @@ STATIONS: dict[str, Station] = {
     "KBOS": Station("KBOS", "Boston Logan",           42.3656, -71.0096, "America/New_York"),
     "KPHX": Station("KPHX", "Phoenix Sky Harbor",     33.4373, -112.0078, "America/Phoenix"),
     "KDFW": Station("KDFW", "Dallas-Fort Worth",      32.8998, -97.0403, "America/Chicago"),
+    # Kalshi Houston resolves on CLIHOU / "Houston-Hobby, TX" per KXHIGHTHOU
+    # rules_primary/rules_secondary verified 2026-06-07.
+    "KHOU": Station("KHOU", "Houston Hobby",           29.6454, -95.2789, "America/Chicago"),
     "KSFO": Station("KSFO", "San Francisco Intl",     37.6213, -122.3790, "America/Los_Angeles"),
     "KSEA": Station("KSEA", "Seattle-Tacoma",         47.4502, -122.3088, "America/Los_Angeles"),
     "KLAS": Station("KLAS", "Las Vegas Harry Reid",   36.0840, -115.1537, "America/Los_Angeles"),
@@ -91,6 +94,13 @@ NEIGHBOR_STATIONS: dict[str, list[Station]] = {
         Station("KHWO", "Hollywood",      26.0014, -80.2407, "America/New_York"),
         Station("KTMB", "Kendall-Tamiami",25.6479, -80.4327, "America/New_York"),
     ],
+    "KHOU": [
+        Station("KIAH", "Houston Intercontinental", 29.9844, -95.3414, "America/Chicago"),
+        Station("KEFD", "Ellington Field",         29.6073, -95.1588, "America/Chicago"),
+        Station("KSGR", "Sugar Land",              29.6223, -95.6565, "America/Chicago"),
+        Station("KTME", "Houston Executive",       29.8050, -95.8979, "America/Chicago"),
+        Station("KLVJ", "Pearland Regional",       29.5213, -95.2422, "America/Chicago"),
+    ],
 }
 
 
@@ -104,7 +114,7 @@ ACTIVE_FETCH_STATIONS: list[str] = [
     # 2026-05-24 expansion: fetch-only KXHIGH cities for bias accumulation.
     # BIAS_GATE will block all trades until each cell has n>=10 — paper safe.
     "KLAX", "KATL", "KDCA", "KPHL", "KDEN", "KBOS", "KPHX", "KAUS",
-    "KDFW", "KSFO", "KSEA", "KLAS", "KMSY", "KMSP", "KSAT", "KOKC",
+    "KDFW", "KHOU", "KSFO", "KSEA", "KLAS", "KMSY", "KMSP", "KSAT", "KOKC",
 ]
 # 2026-05-02: graduated KMDW + KMIA to active trading. All stations pass
 # bias gate at lead 0/1/2 per is_station_calibrated check. The pre-trade

@@ -34,6 +34,7 @@ SERIES_BY_STATION = {
     "KAUS": ["KXHIGHAUS"],
     "KPHL": ["KXHIGHPHIL"],
     "KDEN": ["KXHIGHDEN"],
+    "KHOU": ["KXHIGHTHOU", "KXLOWTHOU"],
     # 2026-05-24 expansion: fetch-only daily-high cities.
     "KDCA": ["KXHIGHTDC"],
     "KBOS": ["KXHIGHTBOS"],

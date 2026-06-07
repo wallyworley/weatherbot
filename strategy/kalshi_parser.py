@@ -17,8 +17,8 @@ The ticker format has been stable but we don't rely on it — we parse the
 `subtitle` / `yes_sub_title` field from the Kalshi market payload which
 contains human-readable bucket text ("65-66°F", "69°F or above", etc.).
 
-Station code mapping uses the event ticker prefix (NY, CHI, LA, MIA, DEN,
-ATL, AUS, PHL).
+Station code mapping uses the event ticker prefix (NY, CHI, LAX, MIA, DEN,
+TATL, AUS, PHL, THOU, etc.).
 """
 from __future__ import annotations
 
@@ -43,6 +43,7 @@ STATION_BY_CODE = {
     "TATL":  "KATL",  # was "ATL" — Kalshi uses TATL
     "AUS":   "KAUS",
     "PHIL":  "KPHL",  # was "PHL" — Kalshi uses PHIL
+    "THOU":  "KHOU",  # Houston resolves on CLIHOU / Houston-Hobby, TX
     # 2026-05-24 expansion: fetch-only daily-high cities.
     "TDC":   "KDCA",
     "TBOS":  "KBOS",
