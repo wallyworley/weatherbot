@@ -149,14 +149,19 @@ market-relative Brier/RPS with no leakage; fail = degrades or only helps in-samp
   market-relative Brier+RPS at both leads. NBM-only is the best center at lead-1; nothing
   beats it there; HRRR best at lead-0 (beats NBM, still loses to market). Decorrelation
   blend ≈ NBM. (In-sample, pre-calibrator; deterministic centers raw — see report §7.)
-- **← NEXT: EXP-C1b (walk-forward — the remaining hope):** bias-corrected deterministic
-  centers; inverse-recent-MAE decorrelation weights; regime-conditioned weights;
-  CLI-obs-anchored centers. Walk-forward, ≥100 fresh station-days.
+- **✅ EXP-C1b DONE 2026-06-07 (walk-forward, pre-registered, run on VPS) — the remaining
+  hope is exhausted:** `research/center_market_benchmark_wf.py` scored the 6 locked
+  conditioned centers (bias-corrected GFS/ECMWF/HRRR, inverse-MAE blend, |NBM−GFS| regime
+  gate, lead-0 obs-anchor), walk-forward, Bonferroni-6. **Result: NO variant passes** — all
+  still lose to the market; none significantly beats NBM-only. (A lead-1 reconstruction-
+  alignment bug was found+fixed on the VPS; lead-0 unaffected.) See
+  `EXP_C1B_FORECAST_CENTER_WF.md` / `EXP_C1B_PREREGISTRATION.md` / EXP-2026-008.
 - **Pass (program-relevant):** any center reaches **negative** market-relative Brier AND
-  RPS (CI excluding 0), OOS, ≥2 stations, ≥2 regimes.
-- **Overfitting risk:** Low for the parameter-free first pass (done); Medium-High for C1b →
-  pre-register, walk-forward, no slice mining.
-- **Leakage controls:** strict `run_time ≤ as_of`; truth = settlement only.
+  RPS (CI excluding 0), OOS, ≥2 stations, ≥2 regimes. **→ Not met by any center (C1 or C1b).**
+- **DECISION (pre-committed, C1b prereg §6): recommend the observation-only pivot** (charter
+  §7); calendar backstop 2026-09-04 / 500 fresh station-days; operator's final call.
+- **Leakage controls (applied):** `valid_date < station_local_date(as_of)` cutoff;
+  lead-aligned trailing reconstruction; truth = settlement only.
 
 ### EXP-C2 — Disagreement right-vs-wrong research  *(blocked-from-deploy)*
 - **Hypothesis:** A pre-registered, signal-time-observable subset of model/market

@@ -425,12 +425,22 @@ rule will be approached. No production change.
 
 ## EXP-2026-008 — Walk-Forward Conditioned Forecast Centers (EXP-C1b)
 
-**Status:** LOCKED — approved with amendments 2026-06-06; **building to spec**
+**Status:** COMPLETE 2026-06-07 — **NO variant passes; recommend observation-only pivot**
 **Priority:** P1 (the charter's final OOS center test)
 
-Full locked pre-registration: `EXP_C1B_PREREGISTRATION.md`. Six fixed candidate centers
-(`gfs_bc`, `ecmwf_bc`, `hrrr_bc`, `invmae_blend_bc`, `regime_agree`, `obs_anchor_l0`),
-walk-forward (prior-day-trained only), scored market-relative on the canonical benchmark.
-Pass = beats market AND nbm_only on Brier+RPS, Bonferroni(6) or chronological held-out,
-robust across ≥2 stations/regimes, ≥100 station-days. No-pass ⇒ recommend observation-only
-pivot (charter §7). No production change either way. Builds nothing until approved.
+Full locked pre-registration: `EXP_C1B_PREREGISTRATION.md`. Results:
+`EXP_C1B_FORECAST_CENTER_WF.md`. Harness `research/center_market_benchmark_wf.py`, run on the
+VPS against the local DB (38 s).
+
+### Result / Decision (2026-06-07)
+
+**No variant passes.** All six conditioned centers (bias-corrected GFS/ECMWF/HRRR,
+inverse-MAE blend, |NBM−GFS| regime gate, lead-0 obs-anchor) still **lose to the market** at
+both leads (positive market-relative Brier+RPS, Bonferroni-6 CIs excluding 0), and **none
+significantly beats NBM-only** (closest: invmae_blend_bc lead-1 and obs_anchor_l0 lead-0 —
+point estimates slightly below NBM, CIs include 0, still lose to market). A lead-1
+reconstruction-alignment bug was found and fixed on the VPS (lead-aligned trailing cutoffs);
+lead-0 unaffected. ecmwf_bc lead-1 (n=95) is data-limited/inconclusive but loses anyway.
+**Pre-committed decision (prereg §6): recommend converting WeatherBot to observation-only
+analytics (charter §7).** Calendar backstop 2026-09-04 / 500 fresh station-days; final call is
+the operator's. No production change.

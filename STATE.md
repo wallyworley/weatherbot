@@ -1,24 +1,34 @@
 # WeatherBot — Current State
 
-**Updated:** 2026-06-06
+**Updated:** 2026-06-07
 **Trading status:** **Paper only. No live promotion.**
-**Program status:** Forecast-information research (not trading optimization).
+**Program status:** Forecast-information research — **all edge tests negative; pivot to
+observation-only recommended (operator decision).**
 
 ---
 
 ## Where we are
 
-The 2026-06-07 market-relative benchmark was audited (2026-06-06) and **confirmed**.
-The stronger, evidence-backed statement now stands:
+The 2026-06-07 market-relative benchmark was audited and **confirmed**:
 
 > **WeatherBot's forecast distribution is materially worse than the Kalshi
 > market-implied distribution** on Brier, RPS, CRPS and center MAE — even after
 > correcting the benchmark's biggest methodological flaw.
 
-This is a **forecast-information problem, not a trading problem.** The binding
-constraint is the forecast center / resolution. The full production stack is
-neutral-to-negative versus clean NBM, and clean NBM still loses to the market, so
-mechanical fixes can reduce self-inflicted damage but are unlikely to create edge.
+**The full edge investigation is now complete and uniformly negative:**
+
+- **Audit:** benchmark confirmed (coherent-snapshot canonical).
+- **B1–B3:** mechanical center fixes (METAR floor, HRRR/GFS blends) are damage-reduction at
+  most; none creates edge.
+- **C1 first pass:** no parameter-free center (NBM/GFS/ECMWF/HRRR/decorrelation blend) beats
+  the market.
+- **C1b (final, walk-forward, pre-registered):** **no conditioned center** (bias-corrected,
+  inverse-MAE, regime-gated, obs-anchored) beats the market or reliably beats NBM-only.
+
+This is a **forecast-information problem, not a trading problem**, and the available data
+does not contain the missing information. **Pre-committed decision (EXP-C1b prereg §6):
+recommend converting WeatherBot to observation-only analytics** (charter §7). Calendar
+backstop: 2026-09-04 / 500 fresh station-days. **Final call is the operator's.**
 
 ## The single forward plan
 
@@ -54,16 +64,18 @@ mechanical fixes can reduce self-inflicted damage but are unlikely to create edg
 4. **← NEXT** — Calibrator — rebuild from all-forecasts-vs-CLI; restore ladder normalization.
 5. Reliability metric — replace the dormant invalid metric.
 
-**EXP-C1 — the decisive question: can any forecast center beat the market?**
-◑ **First pass done (2026-06-06): NO.** No parameter-free center (NBM, GFS, ECMWF, HRRR,
-NBM/GFS/ECMWF decorrelation blend) beats the market at either lead — all positive
-market-relative Brier+RPS. NBM-only is already the best center; nothing beats it at lead-1.
-Harness `research/center_market_benchmark.py`; full report `EXP_C1_FORECAST_CENTER_BENCHMARK.md`;
-registry EXP-2026-007. **Remaining hope = EXP-C1b (walk-forward):** bias-corrected
-deterministic centers, inverse-MAE/regime/obs-anchored centers. Kill rule: if no center
-clears positive market-relative **RPS and Brier** OOS within **500 fresh station-days or
-90 days (~2026-09-04)**, convert WeatherBot to **observation-only analytics** — the
-first-pass result moves us toward that call.
+**EXP-C1 — the decisive question: can any forecast center beat the market? → NO (both passes).**
+- ✅ **C1 first pass (parameter-free):** no center (NBM/GFS/ECMWF/HRRR/decorrelation blend)
+  beats the market at either lead. NBM-only is already the best center.
+  (`research/center_market_benchmark.py`; `EXP_C1_FORECAST_CENTER_BENCHMARK.md`; EXP-2026-007.)
+- ✅ **C1b (final, walk-forward, pre-registered, run on the VPS 2026-06-07):** no conditioned
+  center (bias-corrected GFS/ECMWF/HRRR, inverse-MAE blend, |NBM−GFS| regime gate, lead-0
+  obs-anchor) beats the market or reliably beats NBM-only. (`research/center_market_benchmark_wf.py`;
+  `EXP_C1B_FORECAST_CENTER_WF.md`; `EXP_C1B_PREREGISTRATION.md`; EXP-2026-008.)
+
+**Pre-committed decision (C1b prereg §6): recommend the observation-only pivot** (charter §7).
+Kill-rule calendar backstop: **2026-09-04 / 500 fresh station-days**. **Final call is the
+operator's** — pivot now, or run the paper surface to the backstop date and then pivot.
 
 ## Hard constraints (until the forecast gate is cleared)
 
