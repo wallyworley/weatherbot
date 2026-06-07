@@ -43,11 +43,18 @@ confident-wrong distribution that diverges from the market in the losing directi
   floor as `MAX(metar.temp_f)` up to each event's snapshot time):
   - events scored: **290**; all 290 had a reconstructable floor
   - floor **> CLI truth**: **58 (20.0%)**
-  - floor **≥ winning-bucket upper edge** (winner fully truncated to ~0): **6 (2.1%)**
-  - on those 6 zeroed-winner events: mean model prob on the winning bucket =
+  - **literal truncation** — floor **≥ winning-bucket upper edge**, so the winning
+    bucket's conditioned mass is forced to ~0: **6 (2.1%)**
+  - on those 6 truncated-winner events: mean model prob on the winning bucket =
     **0.102** vs market = **0.797**
 
-Representative zeroed-winner cases:
+  > Terminology: this §3 count is **literal truncation** (floor at/above the
+  > winning bucket's upper edge). The EXP-B1 experiment (§9) uses a different,
+  > softer measure — "winner&lt;5%" = winning bucket assigned &lt;5% of normalized
+  > model mass — so the two counts (6 here vs 7 for the hard floor in §9) are
+  > related but not identical.
+
+Representative literal-truncation cases:
 
 | station | date | floor °F | CLI truth °F | winning bucket | model P(win) | market P(win) |
 |---|---|---|---|---|---|---|
@@ -110,17 +117,33 @@ benchmark out of sample, not chosen to maximize in-sample Brier.
 
 → Step 1 was run as EXP-B1 (see §9 below).
 
-## 9. EXP-B1 experiment results (2026-06-06)
+## 9. EXP-B1 experiment results (2026-06-06) — IN-SAMPLE DIAGNOSTIC
+
+> ⚠️ Everything in this section is an **in-sample diagnostic**, not a validated
+> production fix. The standout policy (`soft_w0.50`) is the in-sample diagnostic
+> **winner**, i.e. a **candidate that requires walk-forward / OOS validation
+> through the production-like path** before any production decision (see
+> Recommendation).
 
 Harness: `research/floor_basis_experiment.py` (research-only). For each lead-0 TMAX
 event it rebuilds the production distribution point-in-time (`as_of` = coherent
 snapshot ts, no future data; production bias + HRRR/GFS center held fixed,
-pre-calibrator) and re-scores the model under several floor policies against the
-**same** market midpoints, using the canonical benchmark scoring. n = 289–290
-events. Market Brier ≈ 0.0876 here reproduces the canonical benchmark's coherent
-lead-0 market Brier (0.087) — a consistency check on the harness.
+**pre-calibrator** raw CDF probabilities) and re-scores the model under several
+floor policies against the **same** market midpoints, using the canonical benchmark
+scoring.
 
-| policy | model Brier | dBrier vs mkt | dRPS vs mkt | dCRPS vs mkt | dCenterMAE | winner-zeroed | vs prod (Brier) |
+**Sample:** **291 lead-0 event groups** evaluated; **289–290 scored per policy** —
+a group is unscoreable when the model's normalized mass on the captured ladder is
+undefined (e.g., the hard floor truncates the whole captured ladder to zero, which
+is itself the defect; `prod_hard` scores 289, the others 290). Market Brier ≈ 0.0876
+here reproduces the canonical benchmark's coherent lead-0 market Brier (0.087) — a
+consistency check on the harness.
+
+**`winner<5%`** below = number of events where the **winning bucket received <5% of
+the normalized model mass** (a soft-starvation proxy; distinct from §3's literal
+floor-truncation count).
+
+| policy | model Brier | dBrier vs mkt | dRPS vs mkt | dCRPS vs mkt | dCenterMAE | winner&lt;5% | vs prod (Brier) |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | **prod_hard** (current) | 0.1765 | +0.0889 | +0.0818 | +0.331 | +0.52 | 7 | +0.0000 |
 | floor_off | 0.1940 | +0.1067 | +0.0857 | +0.157 | +0.23 | 5 | +0.0177 |
@@ -132,20 +155,22 @@ lead-0 market Brier (0.087) — a consistency check on the harness.
 
 (Negative = model better than market / better than the production floor.)
 
-**Findings:**
+**Findings (all in-sample):**
 
-1. **The soft floor is the effective mechanism.** Capping the floor's injected
-   confidence (`soft_w0.50` = 0.5·floored + 0.5·unfloored bucket probs) **improves
-   on the production hard floor across every metric** — Brier 0.1765→0.1710, RPS
-   gap +0.0818→+0.0701, CRPS +0.331→+0.217, center MAE +0.52→+0.36 — and cuts
-   catastrophic **winner-zeroing 7→1**. `soft_w0.25` improves RPS/CRPS and is
-   Brier-neutral. Both soft weights move the same direction, so this is not a
-   knife-edge fit.
+1. **The soft floor is the strongest in-sample policy (candidate, not yet
+   validated).** Capping the floor's injected confidence (`soft_w0.50` =
+   0.5·floored + 0.5·unfloored bucket probs) **improves on the production hard floor
+   across every metric in-sample** — Brier 0.1765→0.1710, RPS gap +0.0818→+0.0701,
+   CRPS +0.331→+0.217, center MAE +0.52→+0.36 — and cuts `winner<5%` starvation
+   **7→1**. `soft_w0.25` improves RPS/CRPS and is Brier-neutral. Both soft weights
+   move the same direction, so it is not a knife-edge fit — **but this is still
+   in-sample and requires walk-forward / OOS validation before it can be called a
+   fix.**
 2. **δ-subtraction does not work.** Fixed (−0.5/−1.0 °F) and walk-forward
-   (`minus_wf`, prior-day p85 ≈ 0.60 °F) buffers leave winner-zeroing at 5–8. The
+   (`minus_wf`, prior-day p85 ≈ 0.60 °F) buffers leave `winner<5%` at 5–8. The
    damaging over-reads are a 2–5 °F **fat tail** (e.g., KMDW 64.4 vs 59, KNYC 78.1
    vs 75); a uniform buffer can't catch them without destroying the floor on the
-   80% of days it is correct.
+   ~80% of days it is correct.
 3. **Don't just delete the floor.** `floor_off` *worsens* Brier/RPS (the floor's
    sharpening is net-valuable when correct) even though it helps CRPS/center. The
    soft floor keeps the upside while removing the catastrophic downside.
@@ -155,19 +180,21 @@ lead-0 market Brier (0.087) — a consistency check on the harness.
    removes self-inflicted damage, but it does **not** create forecast-information
    advantage.
 
-**Recommendation (updated):** The **soft floor** is the candidate fix; the
-δ-subtraction and floor-off forms are rejected. **No production change yet** — the
-EXP-B1 evaluation is in-sample to the historical window. Required before any
-production change (`WEATHERBOT_PROMOTION_CRITERIA.md` §4):
-- implement the soft floor behind a research-only flag (default = current hard floor);
-- validate it **walk-forward on fresh lead-0 station-days** via the canonical
-  coherent benchmark (Brier/RPS not degraded vs production, winner-zeroing reduced),
-  **without** tuning the soft weight in-sample;
-- confirm no leakage.
+**Recommendation (updated):** The **soft floor** is the leading **in-sample
+candidate** (the δ-subtraction and floor-off forms are rejected) — **not a validated
+fix, and no production change yet.** Required before any production-facing decision
+(`WEATHERBOT_PROMOTION_CRITERIA.md` §4):
+1. Implement the soft floor behind a **research-only flag** (default = current hard floor).
+2. **Re-score through the full production-like path** (calibrator included), not the
+   pre-calibrator raw CDF used here, on the canonical benchmark.
+3. **Validate walk-forward on fresh lead-0 station-days** (Brier/RPS not degraded vs
+   production, `winner<5%` reduced), **without** tuning the soft weight in-sample.
+4. Confirm no leakage.
 
-**Statistical limitations:** in-sample window (~6 weeks, lead-0 only); the soft
-weight (0.50) is a fixed default, not validated OOS; winner-zeroing counts are small
-(1–8) so their differences are directional, not precise.
+**Statistical limitations:** in-sample window (~6 weeks, lead-0 only); probabilities
+are **pre-calibrator** (isolates the floor but is not the production-facing object);
+the soft weight (0.50) is a fixed default, not validated OOS; `winner<5%` counts are
+small (1–8) so their differences are directional, not precise.
 
 **Overfitting risk:** Low–Medium. The soft floor has one obvious parameter (the
 weight); keep it fixed and validate OOS rather than optimizing it on this window.

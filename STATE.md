@@ -30,12 +30,14 @@ mechanical fixes can reduce self-inflicted damage but are unlikely to create edg
    canonical selection in `research/market_relative_center_benchmark.py`
    (legacy behind `--selection latest_per_bucket`) + frozen regression test
    (`tests/test_market_relative_center_benchmark.py`, 9 tests passing).
-1. ◑ **EXP-B1 experiment done (2026-06-06)** — METAR vs CLI floor: the **soft
-   floor** (cap injected confidence) beats the production hard floor on all
-   market-relative metrics and cuts winner-zeroing 7→1, but it's **damage
-   reduction only** (market gap stays +0.0837 Brier). Harness:
-   `research/floor_basis_experiment.py`; results in `DEFECT_METAR_CLI_FLOOR.md §9`.
-   Still in-sample → OOS walk-forward validation pending before any production change.
+1. ◑ **EXP-B1 in-sample experiment done (2026-06-06)** — METAR vs CLI floor: the
+   **soft floor** (cap injected confidence) is the in-sample **candidate** — beats the
+   production hard floor on all market-relative metrics and cuts `winner<5%` mass
+   starvation 7→1, but it's **damage reduction only** (market gap stays +0.0837 Brier)
+   and **not a validated fix**. Harness: `research/floor_basis_experiment.py` (pre-
+   calibrator); results in `DEFECT_METAR_CLI_FLOOR.md §9`. Before any production change:
+   production-like re-score (calibrator incl.) + walk-forward OOS validation. No
+   production change made.
 2. **← NEXT** — HRRR weight curve — test `w=0` / much lower coarse curve, research-only.
 3. GFS blend — false premise corrected in code (2026-06-06); re-test as decorrelation only.
 4. Calibrator — rebuild from all-forecasts-vs-CLI; restore ladder normalization.

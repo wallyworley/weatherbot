@@ -40,7 +40,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from datetime import date, datetime, timezone
 
-from weather_bot.config import STATIONS
 from weather_bot.data import persistence
 from weather_bot.models.distribution import build_station_distribution
 from weather_bot.research.market_relative_center_benchmark import (
@@ -213,17 +212,27 @@ def run(days: int = 3650, workers: int = 4) -> str:
         "",
         f"_generated {datetime.now(tz=timezone.utc):%Y-%m-%d %H:%M UTC}_",
         "",
-        f"Lead-0 TMAX events: {n_events} scored ({n_skipped} skipped, no PIT rebuild). "
+        f"Lead-0 TMAX event groups evaluated: {n_events} ({n_skipped} skipped, no PIT "
+        f"rebuild). Per-policy `n` is the subset that produced a score; a group is "
+        f"unscoreable when the model's normalized mass on the captured ladder is "
+        f"undefined (e.g., the hard floor truncates the whole captured ladder to zero "
+        f"— itself an instance of the defect the soft floor avoids). "
         f"Walk-forward delta: median {st.median(wf_deltas):.2f} F "
         f"(p90 {sorted(wf_deltas)[int(0.9*(len(wf_deltas)-1))]:.2f} F) over prior-day over-read."
-        if wf_deltas else f"Lead-0 TMAX events: {n_events} ({n_skipped} skipped).",
+        if wf_deltas else f"Lead-0 TMAX event groups: {n_events} ({n_skipped} skipped).",
         "",
-        "Floor changes only; production center (bias + HRRR/GFS) held fixed; pre-calibrator. "
+        "IN-SAMPLE DIAGNOSTIC ONLY — not a production decision. Floor changes only; "
+        "production center (bias + HRRR/GFS) held fixed; **pre-calibrator** raw CDF "
+        "probabilities (isolates the floor; a production-facing check must re-run the "
+        "full production-like path, calibrator included, on the canonical benchmark). "
         "as_of = coherent-snapshot ts (no future data). Negative dX_vs_mkt = model better "
         "than market. `vs_prod` = dBrier_vs_mkt(policy) - dBrier_vs_mkt(prod_hard); "
-        "negative = smaller market gap than the production floor.",
+        "negative = smaller market gap than the production floor. "
+        "`winner<5%` = count of events where the winning bucket received <5% of the "
+        "normalized model mass (a soft-starvation proxy; distinct from the literal "
+        "floor-truncation count in DEFECT_METAR_CLI_FLOOR.md §3).",
         "",
-        "| policy | n | model Brier | dBrier_vs_mkt | dBrier 95% CI | dRPS_vs_mkt | dCRPS_vs_mkt | dCenterMAE_vs_mkt | winner_zeroed | vs_prod (Brier) |",
+        "| policy | n | model Brier | dBrier_vs_mkt | dBrier 95% CI | dRPS_vs_mkt | dCRPS_vs_mkt | dCenterMAE_vs_mkt | winner<5% | vs_prod (Brier) |",
         "|---|---:|---:|---:|---|---:|---:|---:|---:|---:|",
     ]
     for pol in POLICIES:
@@ -241,12 +250,15 @@ def run(days: int = 3650, workers: int = 4) -> str:
         )
     lines += [
         "",
-        "Reading: `prod_hard` is the current production floor. A policy is a damage-",
-        "reduction candidate only if `vs_prod (Brier)` is negative (smaller market gap)",
-        "AND it does not worsen dRPS/dCRPS. Fixed-buffer (`minus_0.5/1.0`) and soft-weight",
-        "policies are IN-SAMPLE diagnostics; only `minus_wf` (walk-forward) is leakage-free",
-        "and promotion-eligible. Promotion still requires the canonical benchmark OOS per",
-        "WEATHERBOT_PROMOTION_CRITERIA.md.",
+        "Reading: `prod_hard` is the current production floor. A policy is an in-sample",
+        "damage-reduction *candidate* (NOT a validated fix) only if `vs_prod (Brier)` is",
+        "negative (smaller market gap) AND it does not worsen dRPS/dCRPS. All deltas here",
+        "are IN-SAMPLE to this historical window; none is promotion evidence. Before any",
+        "production-facing decision a candidate must be (a) implemented behind a research",
+        "flag with the current hard floor as default, (b) re-scored through the full",
+        "production-like path (calibrator included), and (c) validated WALK-FORWARD on",
+        "fresh lead-0 station-days via the canonical benchmark, without tuning the soft",
+        "weight in-sample. Promotion requires WEATHERBOT_PROMOTION_CRITERIA.md.",
     ]
     return "\n".join(lines) + "\n"
 
