@@ -257,7 +257,16 @@ The claim that GFS beats NBM may be caused by point-in-time alignment or valid-t
 
 ### Pass Criteria
 
-GFS blend remains only if it beats NBM and market-relative benchmarks out of sample.
+(Pre-registered) GFS blend remains only if it beats NBM and market-relative benchmarks
+out of sample.
+
+> **Reconciled with the realized decision (2026-06-06):** this pre-registered bar was
+> *demote unless it beats NBM*. EXP-B3 instead found the 0.30 blend **statistically
+> indistinguishable** from NBM-only (neither beats nor loses) and **full GFS worse**, so
+> the operative rule became **"keep frozen on a no-harm basis"** rather than "demote
+> unless it beats NBM." A weight *change* (up or down) is what now requires OOS evidence;
+> the status-quo 0.30 is retained without it. See Result/Decision above and
+> `DEFECT_GFS_BLEND.md §9`.
 
 ### Overfitting Risk
 
