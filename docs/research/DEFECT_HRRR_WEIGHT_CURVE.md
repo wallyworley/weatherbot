@@ -5,8 +5,9 @@
 **Severity:** Low (downgraded from Medium–High after EXP-B2)
 **Recommendation (revised):** Keep the HRRR blend — turning it off is *worse*. The
 curve is only modestly too aggressive in the 13–16h window; a lower mid-afternoon
-weight (cap ≈0.50 / flat ≈0.30) is a marginal in-sample candidate. Do not demote or
-disable the blend.
+weight (`cap≈0.50`) is a marginal in-sample **Brier/RPS** damage-reduction candidate
+(not a distributional win — CRPS ~flat-to-worse; `flat_0.30` rejected). Do not demote
+or disable the blend.
 
 > ⚠️ **Correction.** Sections 1–8 below were written from a point-in-time
 > *center-MAE* comparison (HRRR daily-max MAE > NBM at 13–16h) and inferred the blend
@@ -114,6 +115,10 @@ validation.
 
 ## 8. Recommended next step
 
+> ⚠️ **SUPERSEDED by §9 (EXP-B2).** Step 3 below ("test `w=0` as the leading
+> damage-reduction candidate") was executed and **`w=0` lost** — keep the blend. Read
+> §9 for the current recommendation; the steps below are the original pre-EXP-B2 plan.
+
 1. Build a research-only by-hour, by-lead HRRR-vs-NBM center study (issuance-time
    correct), and a candidate weight curve (including **w=0** as the null).
 2. Score candidates on `snapshot_market_benchmark.py` (Brier/RPS/CRPS/center MAE
@@ -160,16 +165,25 @@ Brier 0.1765 reproduces the canonical lead-0 baseline.
 
 **Findings:**
 
-1. **Turning HRRR off is worse** — `w0_nbm` degrades every metric vs `prod_curve`
-   (Brier +0.0178, RPS, CRPS, center all worse), at every band. So the HRRR blend is
-   **net-beneficial** despite HRRR's worse standalone point-MAE (§3): a *partial* blend
-   toward a decorrelated center reduces distribution error. This **refutes the §3/§5
-   inference** and the earlier "test w=0 as the leading candidate" recommendation.
+1. **Turning HRRR off is worse overall** — `w0_nbm` degrades every metric vs
+   `prod_curve` overall (Brier +0.0178, RPS, CRPS, center all worse) and **materially
+   in most bands, especially 15–16h (+0.1127 vs +0.0924) and ≥17h (+0.1797 vs
+   +0.0941)**. The one exception is 13–14h, where `w0_nbm` is *marginally* better on
+   Brier (+0.0855 vs +0.0870). So the HRRR blend is **net-beneficial** despite HRRR's
+   worse standalone point-MAE (§3): a *partial* blend toward a decorrelated center
+   reduces distribution error. This **refutes the §3/§5 inference** and the earlier
+   "test w=0 as the leading candidate" recommendation.
 2. **Replacing HRRR with GFS (`w0_gfs`) is also worse** than the HRRR blend.
-3. **The production curve is mildly too aggressive mid-afternoon.** `cap_0.50` and
-   `flat_0.30` beat `prod_curve` by only **−0.0027 / −0.0026 Brier** overall,
-   concentrated at 13–14h (flat_0.30 best, +0.0713 vs +0.0870) and 15–16h (cap_0.50
-   best, +0.0858 vs +0.0924) — exactly where the curve weights HRRR 0.78–0.92.
+3. **The production curve is mildly too aggressive mid-afternoon — on Brier (and, for
+   `cap_0.50`, RPS).** `cap_0.50` and `flat_0.30` beat `prod_curve` by only
+   **−0.0027 / −0.0026 Brier** overall, concentrated at 13–14h (flat_0.30 best,
+   +0.0713 vs +0.0870) and 15–16h (cap_0.50 best, +0.0858 vs +0.0924) — where the
+   curve weights HRRR 0.78–0.92. **The improvement is not "better distribution across
+   the board":** `flat_0.30` *worsens* RPS (+0.0822 vs +0.0818), CRPS (+0.364 vs
+   +0.331) and center MAE (+0.55 vs +0.52); `cap_0.50` is the cleaner candidate
+   (RPS +0.0814 ≈ slightly better, center +0.52 ≈ equal) but still **slightly worsens
+   CRPS** (+0.341 vs +0.331). So the correct framing is a **small Brier/RPS
+   damage-reduction** (`cap_0.50`), not a distributional win.
 4. **At ≥17h the high weight is correct** — `prod_curve` is best in that band
    (+0.0941 vs cap +0.1362), consistent with HRRR locking in the late-day high
    (n=20, small).
@@ -177,12 +191,14 @@ Brier 0.1765 reproduces the canonical lead-0 baseline.
    market gap at ~**+0.086** — damage-reduction-marginal at most; the market still wins.
 
 **Recommendation (revised):** **Keep the HRRR blend.** Do not disable it (w=0 loses).
-The only supported tweak is a **modestly lower mid-afternoon weight** (cap ≈0.50, or
-flat ≈0.30 in 13–16h) — an in-sample *candidate*, not a validated fix, worth ~0.003
-Brier. Given the size, it is **low priority**. If pursued: implement behind a research
-flag (default = current curve), re-score through the production-like path (calibrator
-included), and validate walk-forward without tuning the weight in-sample. A *fitted*
-by-hour curve remains deferred (high overfit risk); `cap_0.50`/`flat_0.30` bracket it.
+The only supported tweak is `cap_0.50` (a modestly lower mid-afternoon weight) as a
+**small Brier/RPS damage-reduction candidate** — in-sample, not a validated fix, worth
+~0.003 Brier, and it does **not** improve the full distribution (CRPS ~flat-to-worse).
+`flat_0.30` is rejected (improves Brier only, worsens RPS/CRPS/center). Given the size,
+this is **low priority**. If pursued: implement behind a research flag (default =
+current curve), re-score through the production-like path (calibrator included), and
+validate walk-forward without tuning the weight in-sample. A *fitted* by-hour curve
+remains deferred (high overfit risk); `cap_0.50`/`flat_0.30` bracket it.
 
 **Overfitting risk:** Low for the "keep the blend / w=0 loses" conclusion (robust
-across bands). Medium–High for any fitted curve.
+overall and in the high-n 15–16h band). Medium–High for any fitted curve.

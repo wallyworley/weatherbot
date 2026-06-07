@@ -24,7 +24,7 @@ gap** — the binding constraint is forecast information / center resolution.
 | Defect | Confirmed? | Direction | Quantified impact | Affects market gap? | Fix priority |
 |---|---|---|---|---|---|
 | **METAR vs CLI floor** | ✅ Yes | Wrong-direction (manufactures false divergence) | Floor > CLI truth on **20%** of lead-0 events; literal winner truncation on **2.1%**. EXP-B1: soft floor (in-sample) cuts `winner<5%` 7→1 and beats hard floor on all metrics — **damage reduction only**, market gap stays +0.0837 | Yes (lead-0 contributor) | **1** |
-| **HRRR weight curve** | ◑ Revised (EXP-B2) | Blend net-**helpful**; curve only mildly too aggressive 13–16h | **EXP-B2 refuted the "inferior model" read:** HRRR-off is *worse* (dBrier +0.0889→+0.1068). cap≤0.50/flat-0.30 beat prod by only **−0.003 Brier** (13–16h); ≥17h high weight is correct. (§3 point-MAE table true but incomplete) | Marginal | low (revised down) |
+| **HRRR weight curve** | ◑ Revised (EXP-B2) | Blend net-**helpful**; curve only mildly too aggressive 13–16h | **EXP-B2 refuted the "inferior model" read:** HRRR-off is *worse* overall (dBrier +0.0889→+0.1068; materially at 15–16h & ≥17h, ~flat at 13–14h). `cap_0.50` = small **Brier/RPS** damage-reduction (~−0.003 Brier), CRPS ~flat-to-worse; `flat_0.30` worsens RPS/CRPS/center. ≥17h high weight correct. (§3 point-MAE table true but incomplete) | Marginal | low (revised down) |
 | **GFS center blend** | ✅ Yes (false premise) | Justification false; small decorrelation help | PIT MAE: NBM 1.571/1.654 **beats** GFS 1.815/2.176 (lead 0/1); blend gives only ~3–8% center-MAE, no market skill | Marginal | **3** |
 | **Signal-log calibrator** | ✅ Yes (structural) | Circular; near-inert | Fires on 98.7% of signals, **net −0.4 pp**; 24.8% train/infer bin mismatch; breaks ladder normalization (prob-sum median 1.13, max 3.25) | No (net ~0) | 4 (correctness) |
 | **Invalid reliability metric** | ✅ Yes | N/A (measurement) | `empirical_freq` is a histogram density over a degenerate event; **dormant** (table stale since 2026-04-20) | No | 5 (correctness) |
@@ -64,10 +64,12 @@ reduction**, but the **center itself** (even clean NBM) is what loses to the mar
 Lock the ruler before changing anything it measures; fix wrong-direction model
 mechanics before hygiene. (Canonical version lives in `EXPERIMENT_PLAN_NEXT.md`.)
 
-0. **Lock the benchmark** — coherent-snapshot canonical + frozen regression fixture.
-1. **METAR/CLI floor** — highest wrong-direction, lead-0 impact; cleanest to test.
-2. **HRRR weight curve** — test `w=0` (NBM/decorrelation center) as damage-reduction.
-3. **GFS blend** — correct the false claim in code/docs; re-derive as decorrelation-only.
+0. **Lock the benchmark** — coherent-snapshot canonical + frozen regression fixture. *(done)*
+1. **METAR/CLI floor** — highest wrong-direction, lead-0 impact. *(EXP-B1 done: soft-floor candidate, in-sample)*
+2. **HRRR weight curve** — *(EXP-B2 done: w=0 REJECTED — keep the blend; optional lower
+   mid-afternoon weight (cap≈0.50) is a small Brier/RPS damage-reduction candidate,
+   research-only / OOS)*.
+3. **GFS blend** — false claim corrected in code; re-test GFS as decorrelation-only. *(next)*
 4. **Calibrator** — rebuild from all-forecasts-vs-CLI, walk-forward, binned by raw; restore ladder normalization.
 5. **Reliability metric** — replace with true predicted-vs-observed curve + test.
 

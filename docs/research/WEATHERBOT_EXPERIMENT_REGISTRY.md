@@ -71,8 +71,17 @@ Low | Medium | High
 
 ## EXP-2026-001 — Market-Relative Benchmark Audit
 
-**Status:** Proposed
+**Status:** Complete (2026-06-06) — **CONFIRMED**
 **Priority:** P0
+
+### Result / Decision (2026-06-06)
+
+Benchmark **confirmed** and reproduced. One methodological defect found (time-incoherent
+"latest-per-bucket" selection, median ~9 h spread at lead 0) was corrected: the
+**coherent-snapshot** selection is now canonical (`market_relative_center_benchmark.py`,
+default) + frozen regression test. Direction unchanged under the correction (market
+beats WeatherBot on Brier/RPS/CRPS/center; CRPS magnitude was overstated ~40%). Settlement
+mapping exact, no leakage, 561/561 events single-winner. See `MARKET_BASELINE_AUDIT.md`.
 
 ### Hypothesis
 
@@ -125,8 +134,19 @@ Low, if audit-only.
 
 ## EXP-2026-002 — METAR vs CLI Floor Basis
 
-**Status:** Proposed
+**Status:** Complete in-sample (2026-06-06) — **candidate; OOS pending**
 **Priority:** P0
+
+### Result / Decision (2026-06-06)
+
+Confirmed wrong-direction defect: the hard METAR floor exceeds CLI truth on ~20% of
+lead-0 events and literally truncates the winning bucket on ~2%. EXP-B1
+(`research/floor_basis_experiment.py`, pre-calibrator) found the **soft floor**
+(`soft_w0.50`, cap injected confidence) is the in-sample winner — beats the hard floor
+on Brier/RPS/CRPS/center and cuts `winner<5%` starvation 7→1. δ-subtraction and floor-off
+rejected. **Damage reduction only** (market gap stays +0.0837). **Candidate, not a
+validated fix** — needs production-like re-score (calibrator) + walk-forward OOS, no
+in-sample weight tuning. No production change. See `DEFECT_METAR_CLI_FLOOR.md §9`.
 
 ### Hypothesis
 
@@ -158,10 +178,22 @@ Medium.
 
 ## EXP-2026-003 — HRRR Late-Day Weight Curve
 
-**Status:** Proposed
+**Status:** Completed / **Revised** (2026-06-06)
 **Priority:** P0
 
-### Hypothesis
+### Result / Decision (2026-06-06)
+
+**Hypothesis REJECTED as stated.** EXP-B2 (`research/hrrr_weight_experiment.py`,
+distribution-level market-relative scoring — the correct test) shows the HRRR blend is
+**net-helpful**: `w=0` (NBM-only) is *worse* overall (dBrier +0.0889→+0.1068), materially
+at 15–16h and ≥17h (~flat at 13–14h). The earlier "overweights an inferior model"
+read came from point-MAE and was incomplete (it missed error-decorrelation). **Decision:
+keep the blend; w=0 rejected.** The only supported tweak is a lower mid-afternoon weight
+(`cap_0.50`) = a small **Brier/RPS** damage-reduction candidate (~−0.003 Brier; CRPS
+~flat-to-worse; `flat_0.30` rejected) — **in-sample candidate only**, low priority, not a
+validated fix. Market gap unchanged (~+0.086). See `DEFECT_HRRR_WEIGHT_CURVE.md §9`.
+
+### Hypothesis (original — now revised; see Result above)
 
 The HRRR weight curve overweights HRRR late in the day and creates confident-wrong distributions.
 
