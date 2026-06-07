@@ -28,10 +28,12 @@ it measures; fix wrong-direction model mechanics before hygiene.
    in-sample candidate (winner<5% starvation 7→1, all metrics improved vs hard floor)
    but damage-reduction only; **not a validated fix** — production-like re-score +
    walk-forward OOS validation still required before any production change. *(EXP-B1)*
-2. **HRRR weight curve** — test `w=0` or a much lower coarse curve, research-only.
-   ← **NEXT** *(EXP-B2)*
-3. **GFS blend** — correct the false "GFS beats NBM" premise in code/docs, re-test
-   GFS as decorrelation only. *(EXP-B3)*
+2. ◑ **HRRR weight curve** — EXP-B2 in-sample done: HRRR blend is **net-helpful**
+   (w=0 loses); curve only mildly too aggressive 13–16h (~0.003-Brier tweak). **Keep
+   the blend**; lower-mid-afternoon-weight is a low-priority candidate, not validated.
+   Corrected the earlier point-MAE-based "defect" overstatement. *(EXP-B2)*
+3. **GFS blend** — correct the false "GFS beats NBM" premise (done in code 2026-06-06);
+   re-test GFS as decorrelation only. ← **NEXT** *(EXP-B3)*
 4. **Calibrator** — rebuild from all-forecasts-vs-CLI and restore ladder
    normalization. *(EXP-B4)*
 5. **Reliability metric** — replace the dormant invalid metric. *(EXP-B5)*
@@ -92,11 +94,19 @@ market-relative Brier/RPS with no leakage; fail = degrades or only helps in-samp
   no leakage.
 - **Overfitting risk:** Low–Medium (one fixed weight; do not optimize on this window).
 
-### EXP-B2 — HRRR weight curve  *(DEFECT_HRRR_WEIGHT_CURVE.md)*
-- **Variants:** `w=0` (null) · flat low weight · re-derived by-hour curve (coarse
-  bands, station-pooled, walk-forward).
-- **Metrics:** market-relative Brier/RPS by hour band; center MAE by hour.
-- **Overfitting risk:** High → coarse bands, walk-forward, `w=0` as the benchmark to beat.
+### EXP-B2 — HRRR weight curve  *(DEFECT_HRRR_WEIGHT_CURVE.md §9)* — ◑ IN-SAMPLE EXPERIMENT DONE 2026-06-06
+- **Harness:** `research/hrrr_weight_experiment.py` (research-only; NBM-only center
+  rebuilt PIT, HRRR/GFS shift re-applied per policy, scored by hour band). Pre-calibrator.
+- **Result (in-sample, supersedes the §3/§5 point-MAE inference):** the HRRR blend is
+  **net-helpful** — `w=0` (NBM-only) is *worse* (dBrier +0.0889→+0.1068). The
+  production curve is only **mildly too aggressive at 13–16h**: `cap≤0.50` / `flat-0.30`
+  beat prod by only **−0.003 Brier**; at ≥17h the high weight is correct. **Damage
+  reduction marginal; market gap stays ~+0.086.**
+- **Status: keep the blend (do NOT disable).** The lower-mid-afternoon-weight tweak is
+  a low-priority in-sample candidate, **not a validated fix**. Before any production
+  change: research flag (default = current curve) → production-like re-score → walk-forward
+  OOS, no in-sample weight tuning. A *fitted* by-hour curve is deferred (high overfit risk).
+- **Overfitting risk:** Low for "keep blend / w=0 loses"; High for any fitted curve.
 
 ### EXP-B3 — GFS blend re-derivation  *(DEFECT_GFS_BLEND.md)*
 - **First:** correct the false MAE claim in `models/distribution.py`.

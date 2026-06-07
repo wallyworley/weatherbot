@@ -1,11 +1,20 @@
 # Defect Report: HRRR Late-Day Weight Curve
 
-**Date:** 2026-06-06
-**Defect class:** Overfit blend weight on the less-accurate center model
-**Severity:** Medium–High (same-day TMAX, peak-heating hours)
-**Recommendation:** Demote the HRRR center blend to research-only and re-derive the
-weight curve from a by-hour HRRR-vs-NBM accuracy study; do not keep the current
-curve in production.
+**Date:** 2026-06-06 · **Updated 2026-06-06 after EXP-B2 (see §9)**
+**Defect class:** Mildly mis-tuned blend weight (NOT "blend on an inferior model")
+**Severity:** Low (downgraded from Medium–High after EXP-B2)
+**Recommendation (revised):** Keep the HRRR blend — turning it off is *worse*. The
+curve is only modestly too aggressive in the 13–16h window; a lower mid-afternoon
+weight (cap ≈0.50 / flat ≈0.30) is a marginal in-sample candidate. Do not demote or
+disable the blend.
+
+> ⚠️ **Correction.** Sections 1–8 below were written from a point-in-time
+> *center-MAE* comparison (HRRR daily-max MAE > NBM at 13–16h) and inferred the blend
+> hurts and that `w=0` would help. **EXP-B2 (§9), which scores the full distribution
+> market-relative — the correct test — refutes that inference:** HRRR blending
+> *improves* market-relative Brier/RPS/CRPS/center vs NBM-only (the point-MAE
+> comparison missed the error-decorrelation benefit of a partial blend). Read §9 as
+> the authoritative conclusion; treat §3's MAE table as a true but *incomplete* input.
 
 ---
 
@@ -67,6 +76,11 @@ market-relative Brier/RPS skill from the ablation cross-check.
 
 ## 5. Exact conclusion
 
+> ⚠️ **SUPERSEDED by §9 (EXP-B2).** This conclusion was inferred from center-MAE and
+> is **wrong on the key claim**: distribution-level market-relative scoring shows the
+> HRRR blend *helps* (NBM-only is worse), so the blend does not "drag the center
+> toward an inferior model." The MAE facts below are correct; the inference is not.
+
 The HRRR center blend is **misweighted against the evidence**. At the peak-heating
 hours 13:00–16:00 — which hold **238 of the lead-0 events** — the curve weights
 HRRR **0.78–0.92** while HRRR's daily-TMAX MAE (1.8–3.0 °F) is **worse than
@@ -108,3 +122,67 @@ validation.
    HRRR weight to 0 (NBM/GFS-decorrelation center only) should be tested as the
    leading damage-reduction candidate. Promote nothing without OOS market-relative
    evidence (`WEATHERBOT_PROMOTION_CRITERIA.md` §2/§4).
+
+> Step 3's "test w=0" was executed as EXP-B2 (§9) and **w=0 lost** — see below.
+
+## 9. EXP-B2 experiment results (2026-06-06) — IN-SAMPLE DIAGNOSTIC; supersedes §3/§5 inference
+
+> ⚠️ In-sample diagnostic, pre-calibrator. No production change. Any candidate needs
+> production-like re-score + walk-forward OOS validation before a production decision.
+
+Harness: `research/hrrr_weight_experiment.py` (research-only). Each lead-0 TMAX
+distribution is rebuilt point-in-time with an **NBM-only center**
+(`center_blend_weights={"NBM":1.0}`; bias + intraday floor retained; pre-calibrator),
+then the HRRR/GFS center shift is re-applied under several weight policies (production
+formula `shift += w*(hrrr−nbm_median)`, GFS fallback 0.30), and each is scored against
+the **same** market midpoints with the canonical benchmark — overall and by local-hour
+band. n = 289 scored of 291 groups; HRRR available as-of in all 291. `prod_curve`
+Brier 0.1765 reproduces the canonical lead-0 baseline.
+
+**Overall (negative = better; `vs_prod` = dBrier − dBrier(prod_curve)):**
+
+| policy | model Brier | dBrier_vs_mkt | dRPS_vs_mkt | dCRPS_vs_mkt | dCenterMAE_vs_mkt | vs_prod |
+|---|---:|---:|---:|---:|---:|---:|
+| **prod_curve** (current) | 0.1765 | +0.0889 | +0.0818 | +0.331 | +0.52 | +0.0000 |
+| w0_nbm (HRRR off) | 0.1943 | +0.1068 | +0.1057 | +0.474 | +0.69 | **+0.0178 (worse)** |
+| w0_gfs (NBM+0.30 GFS) | 0.1860 | +0.0985 | +0.0967 | +0.436 | +0.64 | +0.0096 (worse) |
+| flat_0.30 (HRRR w=0.30) | 0.1739 | +0.0864 | +0.0822 | +0.364 | +0.55 | −0.0026 |
+| cap_0.50 (curve ≤0.50) | 0.1738 | +0.0862 | +0.0814 | +0.341 | +0.52 | −0.0027 |
+
+**dBrier_vs_mkt by local-hour band** (n: ≤12=33, 13–14=96, 15–16=142, ≥17=20):
+
+| band | prod_curve | w0_nbm | w0_gfs | flat_0.30 | cap_0.50 |
+|---|---:|---:|---:|---:|---:|
+| ≤12 | +0.0761 | +0.0984 | +0.0791 | +0.0773 | **+0.0722** |
+| 13–14 | +0.0870 | +0.0855 | +0.0774 | **+0.0713** | +0.0810 |
+| 15–16 | +0.0924 | +0.1127 | +0.1055 | +0.0888 | **+0.0858** |
+| ≥17 | **+0.0941** | +0.1797 | +0.1802 | +0.1557 | +0.1362 |
+
+**Findings:**
+
+1. **Turning HRRR off is worse** — `w0_nbm` degrades every metric vs `prod_curve`
+   (Brier +0.0178, RPS, CRPS, center all worse), at every band. So the HRRR blend is
+   **net-beneficial** despite HRRR's worse standalone point-MAE (§3): a *partial* blend
+   toward a decorrelated center reduces distribution error. This **refutes the §3/§5
+   inference** and the earlier "test w=0 as the leading candidate" recommendation.
+2. **Replacing HRRR with GFS (`w0_gfs`) is also worse** than the HRRR blend.
+3. **The production curve is mildly too aggressive mid-afternoon.** `cap_0.50` and
+   `flat_0.30` beat `prod_curve` by only **−0.0027 / −0.0026 Brier** overall,
+   concentrated at 13–14h (flat_0.30 best, +0.0713 vs +0.0870) and 15–16h (cap_0.50
+   best, +0.0858 vs +0.0924) — exactly where the curve weights HRRR 0.78–0.92.
+4. **At ≥17h the high weight is correct** — `prod_curve` is best in that band
+   (+0.0941 vs cap +0.1362), consistent with HRRR locking in the late-day high
+   (n=20, small).
+5. **Marginal, and no edge.** The best policy improves Brier by ~0.003 and leaves the
+   market gap at ~**+0.086** — damage-reduction-marginal at most; the market still wins.
+
+**Recommendation (revised):** **Keep the HRRR blend.** Do not disable it (w=0 loses).
+The only supported tweak is a **modestly lower mid-afternoon weight** (cap ≈0.50, or
+flat ≈0.30 in 13–16h) — an in-sample *candidate*, not a validated fix, worth ~0.003
+Brier. Given the size, it is **low priority**. If pursued: implement behind a research
+flag (default = current curve), re-score through the production-like path (calibrator
+included), and validate walk-forward without tuning the weight in-sample. A *fitted*
+by-hour curve remains deferred (high overfit risk); `cap_0.50`/`flat_0.30` bracket it.
+
+**Overfitting risk:** Low for the "keep the blend / w=0 loses" conclusion (robust
+across bands). Medium–High for any fitted curve.

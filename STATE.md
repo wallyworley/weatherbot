@@ -38,8 +38,15 @@ mechanical fixes can reduce self-inflicted damage but are unlikely to create edg
    calibrator); results in `DEFECT_METAR_CLI_FLOOR.md §9`. Before any production change:
    production-like re-score (calibrator incl.) + walk-forward OOS validation. No
    production change made.
-2. **← NEXT** — HRRR weight curve — test `w=0` / much lower coarse curve, research-only.
-3. GFS blend — false premise corrected in code (2026-06-06); re-test as decorrelation only.
+2. ◑ **EXP-B2 in-sample experiment done (2026-06-06)** — HRRR weight curve: the HRRR
+   blend is **net-helpful** (turning it off is *worse*), correcting the earlier
+   point-MAE-based "inferior model" overstatement. The curve is only mildly too
+   aggressive at 13–16h (cap≤0.50/flat-0.30 ≈ −0.003 Brier); ≥17h high weight correct.
+   **Keep the blend**; lower-mid-afternoon weight is a low-priority candidate, not
+   validated. Harness: `research/hrrr_weight_experiment.py`; results in
+   `DEFECT_HRRR_WEIGHT_CURVE.md §9`. Market gap unchanged.
+3. **← NEXT** — GFS blend (false premise already corrected in code 2026-06-06) —
+   re-test GFS as decorrelation only.
 4. Calibrator — rebuild from all-forecasts-vs-CLI; restore ladder normalization.
 5. Reliability metric — replace the dormant invalid metric.
 

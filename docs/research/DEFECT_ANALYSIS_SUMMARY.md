@@ -23,36 +23,41 @@ gap** — the binding constraint is forecast information / center resolution.
 
 | Defect | Confirmed? | Direction | Quantified impact | Affects market gap? | Fix priority |
 |---|---|---|---|---|---|
-| **METAR vs CLI floor** | ✅ Yes | Wrong-direction (manufactures false divergence) | Floor > CLI truth on **20%** of lead-0 events; winner fully zeroed on **2.1%** (model 0.10 vs market 0.80 on the winner) | Yes (lead-0 contributor) | **1** |
-| **HRRR weight curve** | ✅ Yes | Overweights inferior model | At 13–16h (238 events) HRRR weight 0.78–0.92 while HRRR MAE 1.8–3.0 °F > NBM 1.35–1.55 °F; morning blend inert | Yes (lead-0 contributor) | **2** |
+| **METAR vs CLI floor** | ✅ Yes | Wrong-direction (manufactures false divergence) | Floor > CLI truth on **20%** of lead-0 events; literal winner truncation on **2.1%**. EXP-B1: soft floor (in-sample) cuts `winner<5%` 7→1 and beats hard floor on all metrics — **damage reduction only**, market gap stays +0.0837 | Yes (lead-0 contributor) | **1** |
+| **HRRR weight curve** | ◑ Revised (EXP-B2) | Blend net-**helpful**; curve only mildly too aggressive 13–16h | **EXP-B2 refuted the "inferior model" read:** HRRR-off is *worse* (dBrier +0.0889→+0.1068). cap≤0.50/flat-0.30 beat prod by only **−0.003 Brier** (13–16h); ≥17h high weight is correct. (§3 point-MAE table true but incomplete) | Marginal | low (revised down) |
 | **GFS center blend** | ✅ Yes (false premise) | Justification false; small decorrelation help | PIT MAE: NBM 1.571/1.654 **beats** GFS 1.815/2.176 (lead 0/1); blend gives only ~3–8% center-MAE, no market skill | Marginal | **3** |
 | **Signal-log calibrator** | ✅ Yes (structural) | Circular; near-inert | Fires on 98.7% of signals, **net −0.4 pp**; 24.8% train/infer bin mismatch; breaks ladder normalization (prob-sum median 1.13, max 3.25) | No (net ~0) | 4 (correctness) |
 | **Invalid reliability metric** | ✅ Yes | N/A (measurement) | `empirical_freq` is a histogram density over a degenerate event; **dormant** (table stale since 2026-04-20) | No | 5 (correctness) |
 
-## 3. What the defects do and don't explain
+## 3. What the defects do and don't explain  *(updated after EXP-B1/B2)*
 
-- **They are real and wrong-direction** (floor, HRRR): both manufacture
+- **The floor is the one confirmed wrong-direction defect.** It manufactures
   over-confident same-day distributions that diverge from the market in the losing
-  direction. They concentrate at **lead 0**, exactly where the benchmark gap is
-  largest (coherent-snapshot lead-0 Brier +0.103 vs lead-1 +0.032).
+  direction, concentrated at **lead 0** (coherent-snapshot lead-0 Brier +0.103 vs
+  lead-1 +0.032). EXP-B1: a soft floor removes most of that self-inflicted damage
+  in-sample (`winner<5%` 7→1) but does **not** close the market gap.
+- **HRRR was NOT a wrong-direction defect** (EXP-B2 correction). The afternoon HRRR
+  blend *improves* market-relative scores vs NBM-only; the production curve is only
+  mildly too aggressive at 13–16h (a ~0.003-Brier tweak). The earlier center-MAE read
+  overstated this. (The 06–09 morning ablation separately shows morning HRRR ≈ inert.)
 - **They do not explain the whole gap.** The coherent-snapshot benchmark shows
-  WeatherBot losing on **every** metric at **both** leads even though the floor/HRRR
-  damage is a minority of events, and the morning ablation shows **NBM-only**
-  (no HRRR, no GFS, no floor effect in the 06–09 window) still at market skill
-  **−0.30**. Removing the defects reduces self-inflicted damage; it does not create
-  forecast information the model lacks.
+  WeatherBot losing on **every** metric at **both** leads, and the morning ablation
+  shows **NBM-only** still at market skill **−0.30**. Removing/limiting the defects
+  reduces self-inflicted damage; it does not create forecast information the model lacks.
 - **The calibrator and reliability metric are correctness problems, not edge
   problems.** The raw model is already roughly calibrated; the calibrator nets ≈0;
   the reliability metric is dormant. Fixing them is hygiene, not a path to edge.
 
 ## 4. Cross-cutting finding: the production stack is no better than clean NBM
 
-The morning ablation (45d, n=1313) shows `logged_model` (full production stack:
-bias + HRRR/GFS blend + calibrator) is **worse** than a clean `nbm_only` rebuild on
-RPS (0.1383 vs 0.1188) and equal on Brier. The accumulated mechanical machinery is
-net-neutral-to-negative versus simply using the NBM distribution. This is the
-strongest single argument that the defects matter for **damage reduction** but the
-**center itself** (even clean NBM) is what loses to the market.
+The morning ablation (45d, n=1313, **06–09 window**) shows `logged_model` (full
+production stack: bias + HRRR/GFS blend + calibrator) is **worse** than a clean
+`nbm_only` rebuild on RPS (0.1383 vs 0.1188) and equal on Brier. In the morning the
+machinery is net-neutral-to-negative versus simply using NBM. (This is window-specific:
+EXP-B2 shows the *afternoon* HRRR blend is net-positive — morning HRRR weight is low,
+so the morning ablation mostly reflects the calibrator + GFS, not the afternoon HRRR
+blend.) Either way the conclusion holds: the mechanical machinery matters for **damage
+reduction**, but the **center itself** (even clean NBM) is what loses to the market.
 
 ## 5. Recommended fix order (agreed — auditor + analyst review, 2026-06-06)
 
