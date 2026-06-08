@@ -444,3 +444,133 @@ lead-0 unaffected. ecmwf_bc lead-1 (n=95) is data-limited/inconclusive but loses
 **Pre-committed decision (prereg §6): recommend converting WeatherBot to observation-only
 analytics (charter §7).** Calendar backstop 2026-09-04 / 500 fresh station-days; final call is
 the operator's. No production change.
+
+---
+
+## EXP-2026-009 — Market-Information Forensics Dataset
+
+**Status:** Running
+**Priority:** P1
+**Date Opened:** 2026-06-07
+
+### Hypothesis
+
+Kalshi's near-settlement accuracy is explained by observable public information
+or update timing, not by another generic WeatherBot forecast-center tweak.
+
+### Why This Matters
+
+The current market-relative evidence says WeatherBot does not beat the market on
+Brier, RPS, CRPS, or center MAE. The next useful research question is what the
+market is incorporating, and whether WeatherBot observes that information early
+enough for a paper-only, out-of-sample signal.
+
+### Data Required
+
+- VPS PostgreSQL database as the authoritative source.
+- Report execution on the VPS itself; do not SSH/tunnel data back to local for evidence collection.
+- Kalshi market snapshots across all active fetch stations.
+- WeatherBot fair probabilities as of each snapshot.
+- METAR high-so-far and latest observation timestamp.
+- CLI settlement values from `cli_obs`.
+- DSM values where captured in the longitudinal research file.
+- NBM/HRRR/GFS/ECMWF and official guidance centers available as of snapshot.
+- Recent market movement before and after the snapshot.
+
+### Code Areas
+
+- `research/market_information_forensics.py`
+- `jobs/market_information_forensics_report.py`
+- `research/reports/market_information_forensics_*.csv`
+
+### Training Window
+
+Historical completed station-days already collected in the VPS database, with
+the report run on the VPS itself.
+
+### Validation Window
+
+Fresh station-days after this registration. Candidate signals must be scored
+only on data collected after the candidate is frozen.
+
+### Minimum Sample Size
+
+At least 100 fresh station-days for any candidate signal unless explicitly
+labeled exploratory.
+
+### Metrics
+
+Forecast metrics:
+- Market-relative Brier
+- Market-relative RPS
+- CRPS
+- Center MAE
+- Paired confidence intervals
+
+Timing diagnostics:
+- Observation-to-market reaction lag
+- 1, 5, 10, 30, and 60 minute market-center moves
+- Boundary-state cohorts
+
+### Market Baseline
+
+Market-implied probabilities are normalized Kalshi bid/ask midpoints over a
+coherent station/date/snapshot bucket set.
+
+### Pass Criteria
+
+- Positive market-relative Brier and RPS improvement out of sample.
+- Paired confidence interval excluding zero.
+- At least 100 fresh station-days unless exploratory.
+- Holds across at least two stations, or one station with a pre-registered
+  station-specific rationale.
+- No leakage.
+- No production trading change.
+
+### Failure Criteria
+
+- Market movement is explainable only after WeatherBot could observe it.
+- Candidate improvement disappears out of sample.
+- Candidate depends on settlement, future observation, stale bucket stitching,
+  or station/date selection after seeing results.
+
+### Overfitting Risk
+
+High.
+
+### Leakage Controls
+
+The dataset constrains forecasts and WeatherBot probabilities to records
+available as of the market snapshot. Settlement values are included for scoring
+only and must not be used as features. Current-day rows are excluded by default.
+
+### Result
+
+**Validation 2026-06-07:** code is correct and leakage-safe (5/5 unit tests; canonical
+coherent-snapshot methodology; all features as-of the snapshot; settlement and future-price
+columns are labels-only; climatology uses strictly-prior days).
+
+**Performance (resolved, evidence-driven):** the first build enriched every raw
+`market_snapshot` row before the Python window-dedup, so it never finished at scale. Fixes
+applied: (a) `base` to `reps` CTE that windows/dedups representatives in SQL first, plus an
+`eligible_windows` CTE (`COUNT(DISTINCT ticker) >= min_buckets`) before enrichment;
+(b) climo cached by flooring snapshot time to the tick window; (c) index-prunable
+local-midnight ranges replacing the functional `(valid_time/obs_time AT TIME ZONE tz)::date`
+filters. That made it complete but it was still ~120 s/station-day, so I stopped guessing and
+ran `EXPLAIN ANALYZE` on the VPS. The plan named one culprit: the `det_forecast` LATERAL's
+correlated `MAX(run_time)` SubPlan executed **1,665,000 times** (~405 s of 408 s); metar,
+nbm, guidance, and the market-move scans were all sub-millisecond. Fix: restructure the det
+subquery to find the latest run per (rep, model) once via `ORDER BY run_time DESC LIMIT 1`
+over an indexed `run_time` range, then `MAX` the day's values.
+
+**Result: registered-scale is now feasible.** VPS timings: 1 station-day **15 s** (was ~126 s,
+EXPLAIN run 408 s); 7-day 3-station lead-0/1 **149 s** (4,956 rows, 21 station-days);
+~7 s/station-day, so 30-day all-station is ~75 min versus ~21 h before. Output validated
+correct (det centers HRRR/GFS/ECMWF + NBM percentiles + guidance all populated). The 30-day
+all-station build is running on the VPS to produce the first registered-scale artifact. A
+`--explain` flag was added for future profiling. No production trading change.
+
+### Decision
+
+No candidate signal is promoted by the dataset build itself. Continue broad
+collection, including KHOU/Houston; no trading-logic change.
