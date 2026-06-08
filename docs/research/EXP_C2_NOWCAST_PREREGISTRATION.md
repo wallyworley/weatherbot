@@ -1,7 +1,8 @@
 # EXP-C2 (Lead-0 Obs-Timing Nowcast) Pre-Registration
 
 **Date:** 2026-06-08
-**Status:** PRE-REGISTRATION for sign-off. No code until approved.
+**Status:** LOCKED / APPROVED 2026-06-08. Window amendment applied (afternoon hours 13 to 17,
+fresh-METAR 10 min); building to spec.
 **Experiment:** EXP-2026-010 (concrete instance of EXP-2026-006, scoped to the lead-0
 observation-timing mechanism surfaced by the EXP-2026-009 forensics dataset).
 **Constraint:** research-only, paper-only, no production trading change. Promotion still
@@ -54,8 +55,9 @@ descriptive label only and is NOT a feature (using it would be look-ahead).
 
 Primary pass cohort = lead-0 snapshots that satisfy ALL of:
 1. `lead_day == 0`,
-2. local hour in [13, 18] (afternoon, near and after peak heating, where remaining-rise is
-   small and well-estimated),
+2. local hour in [13, 17] (afternoon, near and after peak heating, where remaining-rise is
+   small and well-estimated; 18 dropped because the high is essentially set and the market is
+   already resolved, leaving no room for edge),
 3. `latest_metar_age_min <= 10` (a fresh observation is present).
 
 Reported secondary cuts (confirmatory only, NOT additional pass cohorts, to avoid
