@@ -574,3 +574,19 @@ all-station build is running on the VPS to produce the first registered-scale ar
 
 No candidate signal is promoted by the dataset build itself. Continue broad
 collection, including KHOU/Houston; no trading-logic change.
+
+---
+
+## EXP-2026-010 — Lead-0 Obs-Timing Nowcast (EXP-C2 instance)
+
+**Status:** Pre-registered 2026-06-08 — awaiting sign-off before build
+**Priority:** P1 (the last edge-adjacent test)
+
+Full locked pre-registration: `EXP_C2_NOWCAST_PREREGISTRATION.md`. Concrete instance of
+EXP-2026-006, scoped to the lead-0 observation-timing mechanism from the EXP-2026-009 forensics
+dataset. ONE signal (`obs_anchor_dist`: metar-max-so-far + walk-forward remaining-rise
+distribution), ONE primary cohort (lead-0, local hour 13-18, fresh METAR <=10 min). Pass =
+beats the MARKET on Brier AND RPS on a chronological held-out split, paired CI excluding 0,
+>=100 cohort station-snapshots, >=2 stations, no leakage. No-pass closes the forecast-edge
+question for good (observation-only). No production trading change either way. Builds nothing
+until approved.
