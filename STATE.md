@@ -27,6 +27,11 @@ The 2026-06-07 market-relative benchmark was audited and **confirmed**:
   the market.
 - **C1b (final, walk-forward, pre-registered):** **no conditioned center** (bias-corrected,
   inverse-MAE, regime-gated, obs-anchored) beats the market or reliably beats NBM-only.
+- **C2 / EXP-2026-010 (lead-0 obs-timing nowcast, pre-registered):** the last edge-adjacent
+  idea. An obs-anchored nowcast (metar-max-so-far + walk-forward remaining-rise) **loses to
+  the market** in the held-out cohort (dBrier +0.0455, dRPS +0.0354; market wins in all 20
+  stations, both sub-splits, both boundary cuts). The market already prices the live
+  observation WeatherBot sees. See `EXP_C2_NOWCAST_RESULTS.md`.
 
 This is a **forecast-information problem, not a trading problem**, and the available data
 does not contain the missing information. **Pre-committed decision (EXP-C1b prereg §6):

@@ -1,8 +1,8 @@
 # EXP-C2 (Lead-0 Obs-Timing Nowcast) Pre-Registration
 
 **Date:** 2026-06-08
-**Status:** LOCKED / APPROVED 2026-06-08. Window amendment applied (afternoon hours 13 to 17,
-fresh-METAR 10 min); building to spec.
+**Status:** COMPLETE 2026-06-08 — **NO PASS** (hypothesis rejected). Window amendment applied
+(afternoon hours 13 to 17, fresh-METAR 10 min). Results: `EXP_C2_NOWCAST_RESULTS.md`.
 **Experiment:** EXP-2026-010 (concrete instance of EXP-2026-006, scoped to the lead-0
 observation-timing mechanism surfaced by the EXP-2026-009 forensics dataset).
 **Constraint:** research-only, paper-only, no production trading change. Promotion still

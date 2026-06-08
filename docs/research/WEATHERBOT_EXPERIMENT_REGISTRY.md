@@ -579,14 +579,31 @@ collection, including KHOU/Houston; no trading-logic change.
 
 ## EXP-2026-010 — Lead-0 Obs-Timing Nowcast (EXP-C2 instance)
 
-**Status:** Pre-registered 2026-06-08 — awaiting sign-off before build
+**Status:** Complete (2026-06-08) — **NO PASS / hypothesis REJECTED**
 **Priority:** P1 (the last edge-adjacent test)
 
-Full locked pre-registration: `EXP_C2_NOWCAST_PREREGISTRATION.md`. Concrete instance of
-EXP-2026-006, scoped to the lead-0 observation-timing mechanism from the EXP-2026-009 forensics
-dataset. ONE signal (`obs_anchor_dist`: metar-max-so-far + walk-forward remaining-rise
-distribution), ONE primary cohort (lead-0, local hour 13-18, fresh METAR <=10 min). Pass =
-beats the MARKET on Brier AND RPS on a chronological held-out split, paired CI excluding 0,
->=100 cohort station-snapshots, >=2 stations, no leakage. No-pass closes the forecast-edge
-question for good (observation-only). No production trading change either way. Builds nothing
-until approved.
+### Result / Decision (2026-06-08)
+
+**Hypothesis REJECTED, decisively.** The locked obs-anchored nowcast (`obs_anchor_dist` =
+metar-max-so-far + walk-forward Normal remaining-rise) **loses to the market** in the
+pre-registered held-out cohort: dBrier **+0.0455** CI [+0.0435,+0.0474], dRPS **+0.0354**
+CI [+0.0338,+0.0370] (positive = market wins), on 6,630 held-out events / 20 stations. The
+sign is the same in **all 20 stations**, **both** chronological sub-splits, and **both**
+boundary cuts; the near-boundary slice (where a fresh obs should be most decisive) loses by
+slightly more. Zero of the four substantive pass criteria met. The market has already priced
+the live observation WeatherBot sees. Full artifact: `EXP_C2_NOWCAST_RESULTS.md`; locked
+design: `EXP_C2_NOWCAST_PREREGISTRATION.md`. No leakage (as-of features; chronological
+held-out; settlement scoring-only). **No production trading change.**
+
+**This closes the forecast-edge question.** Combined with EXP-2026-001 (benchmark audit
+confirmed), EXP-B1 to B3 (floor/HRRR/GFS, damage-reduction only), and EXP-C1/C1b (no center
+variant beats the market OOS), every avenue is exhausted. Per the locked decision rule,
+WeatherBot is observation-only analytics (charter §7).
+
+### Design (locked pre-registration)
+
+Concrete instance of EXP-2026-006, scoped to the lead-0 observation-timing mechanism from the
+EXP-2026-009 forensics dataset. ONE signal (`obs_anchor_dist`), ONE primary cohort (lead-0,
+local hour 13-17, fresh METAR <=10 min). Pass = beats the MARKET on Brier AND RPS on a
+chronological held-out split, paired CI excluding 0, >=100 cohort events, >=2 stations,
+negative in >=2 stations and >=2 sub-splits, no leakage.
