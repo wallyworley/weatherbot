@@ -84,6 +84,7 @@ async def _run_once(client: KalshiClient, deadline: float | None) -> None:
         return
     log.info("subscribing orderbook_delta for %d tickers", len(tickers))
     books: dict[str, _Book] = {}
+    last_top: dict[str, tuple[float | None, float | None]] = {}
     buf: list[dict] = []
     last_flush = asyncio.get_event_loop().time()
     last_refresh = asyncio.get_event_loop().time()
@@ -130,6 +131,13 @@ async def _run_once(client: KalshiClient, deadline: float | None) -> None:
                 except Exception:
                     pass
             yes_bid, yes_ask = book.top_of_book()
+            # Volume control: only persist when the top-of-book actually changes (snapshots
+            # always kept). This drops no-op deltas while preserving every center move the
+            # onset-timing audit needs. Cuts ~27M rows/day to a small fraction.
+            top = (yes_bid, yes_ask)
+            if mtype == "orderbook_delta" and last_top.get(ticker) == top:
+                continue
+            last_top[ticker] = top
             buf.append({
                 "ticker": ticker,
                 "msg_type": mtype,
