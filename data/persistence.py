@@ -91,6 +91,58 @@ def record_info_provenance(rows: Iterable[dict]) -> None:
         log.warning("info_provenance write skipped: %s", exc)
 
 
+def insert_kalshi_ws_book_events(rows: Iterable[dict]) -> None:
+    """Research-only (EXP-2026-011 A5): high-cadence Kalshi WS book events. NOT read by any
+    production probability/sizing/execution/gate path. Best-effort; never raises into the
+    collector loop."""
+    prepared = []
+    for row in rows:
+        r = dict(row)
+        if not r.get("ticker") or not r.get("msg_type"):
+            continue
+        payload = r.get("payload")
+        r["payload"] = json.dumps(_json_ready(payload)) if payload is not None else None
+        prepared.append(r)
+    if not prepared:
+        return
+    sql = """
+    INSERT INTO kalshi_ws_book_event
+        (ticker, msg_type, seq, exchange_ts, received_at, yes_bid, yes_ask, payload)
+    VALUES
+        (%(ticker)s, %(msg_type)s, %(seq)s, %(exchange_ts)s, %(received_at)s,
+         %(yes_bid)s, %(yes_ask)s, %(payload)s::jsonb)
+    """
+    for r in prepared:
+        r.setdefault("seq", None)
+        r.setdefault("exchange_ts", None)
+        r.setdefault("received_at", datetime.now(tz=timezone.utc))
+        r.setdefault("yes_bid", None)
+        r.setdefault("yes_ask", None)
+    try:
+        with connect() as conn, conn.cursor() as cur:
+            cur.executemany(sql, prepared)
+            conn.commit()
+    except Exception as exc:
+        log.warning("kalshi_ws_book_event write skipped: %s", exc)
+
+
+def active_weather_tickers() -> list[str]:
+    """Active Kalshi weather market tickers from kalshi_market (for WS subscribe). Read-only."""
+    sql = """
+    SELECT ticker FROM kalshi_market
+     WHERE status IN ('active', 'open')
+       AND valid_date >= (now() AT TIME ZONE 'UTC')::date - 1
+     ORDER BY ticker
+    """
+    try:
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute(sql)
+            return [r["ticker"] for r in cur.fetchall()]
+    except Exception as exc:
+        log.warning("active_weather_tickers query failed: %s", exc)
+        return []
+
+
 def _record_forecast_run_provenance(rows: list[dict]) -> None:
     by_event: dict[tuple, dict] = {}
     for row in rows:

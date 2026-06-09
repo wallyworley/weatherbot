@@ -371,6 +371,23 @@ CREATE INDEX IF NOT EXISTS idx_info_provenance_seen
 CREATE INDEX IF NOT EXISTS idx_info_provenance_station_seen
     ON info_provenance (station, source_type, first_seen_at DESC);
 
+-- Research-only high-cadence Kalshi WebSocket book events (EXP-2026-011 A5). Tightens onset
+-- timing against polling censoring. NOT read by production probabilities/sizing/execution/gates.
+CREATE TABLE IF NOT EXISTS kalshi_ws_book_event (
+    id           BIGSERIAL PRIMARY KEY,
+    ticker       TEXT NOT NULL,
+    msg_type     TEXT NOT NULL,
+    seq          BIGINT,
+    exchange_ts  TIMESTAMPTZ,
+    received_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    yes_bid      NUMERIC,
+    yes_ask      NUMERIC,
+    payload      JSONB,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_kalshi_ws_book_ticker_recv
+    ON kalshi_ws_book_event (ticker, received_at DESC);
+
 -- ---------------------------------------------------------------------------
 -- Health & autonomy tables
 -- ---------------------------------------------------------------------------

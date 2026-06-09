@@ -93,6 +93,20 @@ class KalshiClient:
                 pass
         return min(self.backoff_seconds * (2**attempt), 60.0)
 
+    # ----- WebSocket auth (research-only market-data collector, EXP-2026-011) -----
+    # Same RSA-PSS scheme as REST, signed over GET + the ws path. Read-only: the collector
+    # only subscribes to market data and never sends order commands.
+    WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
+    WS_SIGN_PATH = "/trade-api/ws/v2"
+
+    def ws_auth_headers(self) -> dict:
+        ts_ms = str(int(time.time() * 1000))
+        return {
+            "KALSHI-ACCESS-KEY": self.api_key_id,
+            "KALSHI-ACCESS-SIGNATURE": self._sign(ts_ms, "GET", self.WS_SIGN_PATH),
+            "KALSHI-ACCESS-TIMESTAMP": ts_ms,
+        }
+
     # ----- High-level helpers -----
     def list_events(self, series_ticker: str, status: str = "open", cursor: str | None = None) -> dict:
         return self.get("/events", params={"series_ticker": series_ticker, "status": status, "cursor": cursor})
