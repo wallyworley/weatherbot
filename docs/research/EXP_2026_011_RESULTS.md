@@ -48,6 +48,14 @@ is far below the 100 event-day gate; this is a pipeline validation, not a findin
 3. **Cross-venue (Polymarket) not scored.** Requires a rules/source-verified same-station
    comparability map between Kalshi and Polymarket (do not infer from city names). Provenance
    is collecting; scoring deferred until the map is locked.
+   **UPDATE 2026-06-09 (late):** two developments, see
+   `EXP_2026_011_CROSS_VENUE_MAP_VERIFICATION.md`. (a) **Collection defect found and
+   fixed**: the fetcher was polling the two hardcoded, resolved May-16 events (KLGA/KORD,
+   both non-comparable) — the channel had zero usable forward data; slugs are now generated
+   daily for the verified-comparable set. (b) **A2 map expanded 2 → 7 comparable stations**
+   (added KAUS, KSEA, KLAX, KHOU, KSFO; KDFW newly excluded — PM settles Love Field KDAL):
+   the 100-event-day gate moves from ~50 days out to **~15 days** (~2026-06-25). Genuine
+   forward collection on the expanded set starts 2026-06-10.
 4. **DSM not first-class instrumented.** Reported as not-yet-forward-instrumented per the
    handoff. Add provenance only if a durable DSM capture path is created.
 5. **Polling is interval-censored.** Kalshi/Polymarket book timing is bounded by snapshot

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import requests
@@ -16,17 +16,37 @@ log = logging.getLogger(__name__)
 GAMMA_EVENT_SLUG_URL = "https://gamma-api.polymarket.com/events/slug/{slug}"
 CLOB_BOOK_URL = "https://clob.polymarket.com/book"
 
-DEFAULT_EVENT_SLUGS = [
-    "highest-temperature-in-nyc-on-may-16-2026",
-    "highest-temperature-in-chicago-on-may-16-2026",
-]
-
-STATION_BY_EVENT_SLUG = {
-    # Polymarket resolution sources are Wunderground station pages. These are
-    # not identical to the Kalshi KNYC/KMDW settlement stations.
-    "highest-temperature-in-nyc-on-may-16-2026": "KLGA",
-    "highest-temperature-in-chicago-on-may-16-2026": "KORD",
+# Verified SAME-physical-station cities only (EXP-2026-011 amendment A2; rules
+# citations in docs/research/EXP_2026_011_CROSS_VENUE_MAP_VERIFICATION.md).
+# Slug city fragment -> settlement station (= our Kalshi station code for these).
+# Excluded as non-comparable: nyc (KLGA), chicago (KORD), denver (Buckley),
+# dallas (KDAL Love Field; we trade KDFW).
+COMPARABLE_CITY_STATIONS = {
+    "miami": "KMIA",
+    "atlanta": "KATL",
+    "austin": "KAUS",
+    "seattle": "KSEA",
+    "los-angeles": "KLAX",
+    "houston": "KHOU",
+    "san-francisco": "KSFO",
 }
+
+
+def default_event_slugs(today: date | None = None) -> list[str]:
+    """Today's and tomorrow's daily-high events for the verified-comparable cities."""
+    today = today or date.today()
+    slugs = []
+    for d in (today, today + timedelta(days=1)):
+        for frag in COMPARABLE_CITY_STATIONS:
+            slugs.append(
+                f"highest-temperature-in-{frag}-on-{d.strftime('%B').lower()}-{d.day}-{d.year}"
+            )
+    return slugs
+
+
+def _station_for_slug(slug: str) -> str | None:
+    m = re.match(r"highest-temperature-in-(.+)-on-[a-z]+-\d{1,2}-\d{4}$", slug)
+    return COMPARABLE_CITY_STATIONS.get(m.group(1)) if m else None
 
 
 def _json_list(value: Any) -> list[Any]:
@@ -115,7 +135,7 @@ def fetch_event(slug: str, timeout: int = 20) -> dict:
 def snapshot_event(slug: str, timeout: int = 20) -> list[dict]:
     event = fetch_event(slug, timeout=timeout)
     valid_date = _valid_date_from_slug(slug)
-    station = STATION_BY_EVENT_SLUG.get(slug)
+    station = _station_for_slug(slug)
     rows: list[dict] = []
     for market in event.get("markets") or []:
         tokens = [str(t) for t in _json_list(market.get("clobTokenIds"))]
@@ -168,7 +188,7 @@ def snapshot_event(slug: str, timeout: int = 20) -> list[dict]:
 
 
 def run(slugs: list[str] | None = None) -> int:
-    slugs = slugs or DEFAULT_EVENT_SLUGS
+    slugs = slugs or default_event_slugs()
     rows: list[dict] = []
     for slug in slugs:
         log.info("Polymarket snapshot: %s", slug)

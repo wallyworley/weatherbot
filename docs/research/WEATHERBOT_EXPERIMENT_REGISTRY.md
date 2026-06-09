@@ -634,6 +634,12 @@ availability estimand), and cross-venue scoring needs a rules-verified Kalshi/Po
 same-station map. DSM not first-class instrumented. Status doc: `EXP_2026_011_RESULTS.md`.
 Measurement only; no production trading change.
 
+**Cross-venue update (2026-06-09 late):** collection defect found and fixed (fetcher was
+polling the resolved May-16 KLGA/KORD events — zero usable channel data); A2 comparable map
+expanded 2 -> 7 stations after rules verification (added KAUS/KSEA/KLAX/KHOU/KSFO; KDFW
+excluded, PM settles KDAL Love Field). 100-event-day gate now ~2026-06-25 instead of late
+July. See `EXP_2026_011_CROSS_VENUE_MAP_VERIFICATION.md`.
+
 **Codex resolutions folded (2026-06-09):** amendments A1-A6 locked in the prereg. Scoring
 updated: Option A model-run anchor (windowed onset on first_seen_at), genuineness caps
 (60/480/360 min) + instrumentation-start cutoff, cross-venue same-station map (comparable

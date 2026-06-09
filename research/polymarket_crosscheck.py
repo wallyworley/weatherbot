@@ -47,12 +47,21 @@ _GAMMA = "https://gamma-api.polymarket.com"
 PM_CITY: dict[str, tuple[str, str, bool]] = {
     "KMIA": ("Miami", "Miami Intl (KMIA) — same station", True),
     "KATL": ("Atlanta", "Hartsfield-Jackson (KATL) — same station", True),
+    # Verified 2026-06-09 from PM resolution rules (Wunderground station URLs) +
+    # Kalshi payload.rules_primary; citations in
+    # docs/research/EXP_2026_011_CROSS_VENUE_MAP_VERIFICATION.md:
+    "KAUS": ("Austin", "Austin-Bergstrom (KAUS) — same station", True),
+    "KSEA": ("Seattle", "Seattle-Tacoma Intl (KSEA) — same station", True),
+    "KLAX": ("Los Angeles", "Los Angeles Intl (KLAX) — same station", True),
+    "KHOU": ("Houston", "William P. Hobby (KHOU) — same station", True),
+    "KSFO": ("San Francisco", "San Francisco Intl (KSFO) — same station", True),
     # NOT comparable — Polymarket settles a different station than we trade:
     "KNYC": ("NYC", "LaGuardia (KLGA); we trade Central Park", False),
     "KMDW": ("Chicago", "O'Hare (KORD); we trade Midway", False),
     "KDEN": ("Denver", "Buckley SFB; we trade Denver Intl", False),
-    # Unverified — read each market's rules before enabling (do not guess):
-    #   KDFW, KAUS, KSEA, KPHX, KBOS, KLAX, KHOU
+    "KDFW": ("Dallas", "Love Field (KDAL); we trade DFW Intl", False),
+    # No Polymarket daily-temp market found 2026-06-09: KPHX, KBOS, KLAS, KMSP,
+    # KMSY, KOKC, KSAT, KDCA, KPHL.
 }
 
 
