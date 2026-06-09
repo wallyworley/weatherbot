@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from research.market_reaction_latency import _lag_minutes, reprice_onset
+from research.market_reaction_latency import _lag_minutes, reprice_onset, reprice_onset_window
 
 T0 = datetime(2026, 6, 9, 18, 0, tzinfo=timezone.utc)
 
@@ -40,3 +40,25 @@ def test_no_baseline_returns_none():
 def test_move_must_exceed_threshold():
     series = _series([(0, 90.0), (4, 90.09)])  # 0.09 < 0.10
     assert reprice_onset(series, T0, threshold=0.10) is None
+
+
+# --- Option A windowed onset (model-run channel) ---
+def test_window_we_saw_first_positive_lag():
+    # baseline 80.0 at -30; flat through first_seen (T0); jumps at +5 -> we saw it first
+    series = _series([(-30, 80.0), (-1, 80.0), (5, 80.3), (12, 80.3)])
+    onset = reprice_onset_window(series, T0, pre_min=30, post_min=60, threshold=0.10)
+    assert onset == T0 + timedelta(minutes=5)
+    assert _lag_minutes(onset, T0) == 5.0  # positive: market moved after first_seen
+
+
+def test_window_already_priced_negative_lag():
+    # baseline 70.0 at -30; market already moved at -8 (before first_seen) -> already priced
+    series = _series([(-30, 70.0), (-8, 70.4), (3, 70.4)])
+    onset = reprice_onset_window(series, T0, pre_min=30, post_min=60, threshold=0.10)
+    assert onset == T0 - timedelta(minutes=8)
+    assert _lag_minutes(onset, T0) == -8.0  # negative: market priced the run before we saw it
+
+
+def test_window_no_baseline_before_prewindow():
+    series = _series([(-5, 60.0), (5, 60.5)])  # nothing at/before T0-30
+    assert reprice_onset_window(series, T0, pre_min=30) is None

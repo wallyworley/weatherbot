@@ -207,3 +207,54 @@ dedupe; material move is locked to 0.10 F; candidate thresholds are numeric; raw
 events are replaced by event-days for sample size; model-run inclusion is source-native rather
 than selected by WeatherBot's current probabilities; polling interval censoring is an explicit
 validity control.
+
+---
+
+## LOCKED AMENDMENTS (2026-06-09, post codex resolutions)
+
+Source: `EXP_2026_011_CODEX_OPEN_ITEMS.md` + `EXP_2026_011_CODEX_RESOLUTIONS.md`. These amend the
+locked sections above and are themselves locked.
+
+**A1 — Model-run estimand = Option A (amends §6).** For the model-run channel, `official_ts`
+(= `run_time`) is metadata used only for cycle/source grouping. The latency anchor is
+`first_seen_at`. Score by taking the baseline center at the start of the pre-window
+(`first_seen_at - pre_window`) and finding the first material move (0.10 F) across the window
+`(first_seen_at - pre_window, first_seen_at + post_window]`. lag = onset minus `first_seen_at`,
+so a move BEFORE `first_seen_at` (the market already priced the run) is a negative lag, and a
+move after is positive. Nominal cycle-time lag is never counted as evidence. Option B
+(`value_summary.available_ts`) is an optional later diagnostic only, not required, not a new
+column. METAR and CLI keep `official_ts` (obs/issue time) as the anchor.
+
+**A2 — Cross-venue same-station map (amends §4 ch.4, §5).** Score the Polymarket channel only on
+a rules/source-verified same-station map (seed from `research/polymarket_crosscheck.py`):
+comparable = **KATL, KMIA**; excluded as non-comparable = **KNYC** (Kalshi KNYC vs Polymarket
+KLGA), **KMDW** (KMDW vs KORD), **KDEN** (Denver Intl vs Buckley SFB); all other stations
+EXCLUDED until rules/source verified. A pair is eligible only if the Polymarket resolution source
+is persisted/cited and maps to the same physical station as the Kalshi market. Bucket alignment:
+each venue center on its own normalized ladder midpoints; require same var, same date, F units,
+substantial support overlap; for any bucket-level or EXP-2026-012 scoring, re-bin Polymarket to
+the Kalshi ladder. Same-station gaps may be source basis (Polymarket raw Wunderground vs Kalshi
+NWS/CLI), not edge.
+
+**A3 — Forward genuineness = cutoff AND cap (amends §5, §8).** Use BOTH a hard
+instrumentation-start cutoff (`first_seen_at >= since`) AND a per-channel max-ingest-latency cap
+on `first_seen_at - official_ts`: **METAR 60 min, model-run 480 min, CLI 360 min**. The
+start cutoff is the primary guard against day-one startup backfill; the cap is the second guard
+against stale rows. (Supersedes the provisional 300 min model-run cap and 180 min CLI cap.)
+
+**A4 — DSM (amends §4 ch.3).** Report DSM as not-forward-instrumented for this audit. The
+CLI/DSM channel reports CLI forward evidence and states DSM coverage unavailable. DSM becomes
+prospective only from the date a durable DSM capture path is added by explicit amendment.
+
+**A5 — Research-only Kalshi WebSocket collector (amends §8 polling caveat).** Before the
+evidence run, stand up a research-only Kalshi WebSocket market-data collector (NOT a trading
+path, NOT a webhook) to tighten onset timing against polling censoring. Endpoint
+`wss://external-api-ws.kalshi.com/trade-api/ws/v2`, API-key authenticated, subscribe
+`orderbook_delta` (snapshot then deltas, with exchange `ts`/`ts_ms`) for active weather tickers
+only. Store raw messages + receipt timestamps in a research-only table; never read it from
+production probabilities, sizing, execution, gates, or station activation.
+
+**A6 — Backtest scope (clarifies §3, §8).** Historical `market_snapshot` replay is exploratory
+only (hypothesis generation, code-path validation). The audit VERDICT remains forward-only on
+genuine `first_seen_at`; pre-instrumentation history has no trustworthy first-seen and cannot
+produce a latency verdict.

@@ -32,18 +32,25 @@ CAND_POS_FRAC = 0.60            # candidate: positive-lag fraction >= 60%
 CAND_MIN_EVENT_DAYS = 100       # candidate: >= 100 unique station/date event-days
 CAND_MIN_STATIONS = 2           # candidate: >= 2 stations
 
-# source_types + max plausible forward ingest latency (minutes) per channel. The latency cap is
-# the operational definition of a GENUINE forward sighting: at instrumentation start the first
-# poll of each source backfills recent items all stamped first_seen_at=now (e.g. METAR pulls 36h
-# of history), which are NOT genuine first-sightings. Events whose (first_seen_at - official_ts)
-# exceeds the cap are excluded as startup/stale backfill. Caps reflect real forward cadence:
-# METAR obs arrive every few min and we poll often; model runs are available ~1.5-3.5h after
-# their nominal cycle (official_ts = run cycle time, not availability).
-CHANNEL_SOURCES = {
-    "metar": (("metar", "metar_lowlat"), 60),
-    "model_run": (("nbm_run", "hrrr_run", "gfs_run", "ecmwf_run"), 300),
-    "cli": (("cli", "dsm"), 180),
+# Per-channel config (locked amendments A1, A3). `cap_min` = max plausible forward ingest latency
+# on first_seen_at - official_ts (second guard against startup/stale backfill; the --since
+# instrumentation-start cutoff is the primary guard). `anchor`:
+#   "official"            -> anchor latency on official_ts (METAR obs time, CLI issue time);
+#                            genuine event time, close to first_seen.
+#   "first_seen_window"   -> Option A for model runs: official_ts (run cycle time) is metadata
+#                            only; anchor on first_seen_at, baseline at (first_seen - pre), search
+#                            the full window so a move BEFORE we saw the run is a negative lag
+#                            (already priced) and a move after is positive (we saw it first).
+CHANNELS = {
+    "metar": {"sources": ("metar", "metar_lowlat"), "cap_min": 60, "anchor": "official"},
+    "model_run": {"sources": ("nbm_run", "hrrr_run", "gfs_run", "ecmwf_run"), "cap_min": 480, "anchor": "first_seen_window"},
+    "cli": {"sources": ("cli", "dsm"), "cap_min": 360, "anchor": "official"},
 }
+
+# Locked cross-venue same-station map (amendment A2; seed from polymarket_crosscheck.py).
+# Only these Kalshi stations are comparable to Polymarket; all others excluded until verified.
+CROSSVENUE_COMPARABLE = ("KATL", "KMIA")
+CROSSVENUE_EXCLUDED = ("KNYC", "KMDW", "KDEN")  # documented non-comparable (different stations)
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +77,31 @@ def reprice_onset(
     hi = official_ts + timedelta(minutes=post_min)
     for ts, c in center_series:
         if official_ts < ts <= hi and abs(c - baseline) >= threshold:
+            return ts
+    return None
+
+
+def reprice_onset_window(
+    center_series: list[tuple[datetime, float]],
+    anchor: datetime,
+    pre_min: int = PRE_MIN,
+    post_min: int = POST_MIN,
+    threshold: float = MATERIAL_MOVE_F,
+) -> datetime | None:
+    """Option A (model-run). Baseline = last center at or before (anchor - pre_min). Onset =
+    first timestamp in (anchor - pre_min, anchor + post_min] deviating from baseline by >=
+    threshold. Onset BEFORE `anchor` => negative lag (already priced before we saw it); onset
+    after => positive. Returns None if no baseline or no move in the window."""
+    base_time = anchor - timedelta(minutes=pre_min)
+    baseline = None
+    for ts, c in center_series:
+        if ts <= base_time:
+            baseline = c
+    if baseline is None:
+        return None
+    hi = anchor + timedelta(minutes=post_min)
+    for ts, c in center_series:
+        if base_time < ts <= hi and abs(c - baseline) >= threshold:
             return ts
     return None
 
@@ -169,10 +201,8 @@ def _station_tz(cur, station: str) -> str:
     return (r and r["tz"]) or "America/New_York"
 
 
-def score_channel(
-    cur, source_types: tuple[str, ...], since: datetime, max_latency_min: int
-) -> tuple[list[LagRow], dict]:
-    events = _provenance_events(cur, source_types, since)
+def score_channel(cur, cfg: dict, since: datetime) -> tuple[list[LagRow], dict]:
+    events = _provenance_events(cur, cfg["sources"], since)
     series_cache: dict[tuple[str, date], list[tuple[datetime, float]]] = {}
     tz_cache: dict[str, str] = {}
     out: list[LagRow] = []
@@ -182,11 +212,12 @@ def score_channel(
         st = ev["station"]
         ot = ev["official_ts"]
         fs = ev["first_seen_at"]
-        # forward-genuineness guard: drop startup/stale backfill (see CHANNEL_SOURCES note)
-        if (fs - ot).total_seconds() / 60.0 > max_latency_min:
+        # forward-genuineness guard: drop startup/stale backfill (amendment A3)
+        if (fs - ot).total_seconds() / 60.0 > cfg["cap_min"]:
             diag["stale_backfill_excluded"] += 1
             continue
         tz = tz_cache.get(st) or tz_cache.setdefault(st, _station_tz(cur, st))
+        # valid_date is the lead-0 market: local date of the genuine event time.
         vd = _station_local_date(ot, tz)
         key = (st, vd)
         if key not in series_cache:
@@ -195,7 +226,10 @@ def score_channel(
         if not series:
             diag["no_market_series"] += 1
             continue
-        onset = reprice_onset(series, ot)
+        if cfg["anchor"] == "first_seen_window":
+            onset = reprice_onset_window(series, fs)   # Option A: anchor on first_seen
+        else:
+            onset = reprice_onset(series, ot)          # METAR/CLI: anchor on official_ts
         if onset is None:
             diag["no_onset_censored"] += 1
             continue
@@ -259,14 +293,14 @@ def run(since: datetime, out_path: Path) -> None:
     ]
     any_candidate = False
     with persistence.connect() as conn, conn.cursor() as cur:
-        for channel, (sources, max_latency_min) in CHANNEL_SOURCES.items():
-            rows, diag = score_channel(cur, sources, since, max_latency_min)
+        for channel, cfg in CHANNELS.items():
+            rows, diag = score_channel(cur, cfg, since)
             overall = _summarize(rows)
             is_cand = _candidate(overall)
             any_candidate = any_candidate or is_cand
             lines.append(
-                f"## Channel: {channel}  (sources: {', '.join(sources)}; "
-                f"forward-latency cap {max_latency_min} min)"
+                f"## Channel: {channel}  (sources: {', '.join(cfg['sources'])}; "
+                f"anchor={cfg['anchor']}; forward-latency cap {cfg['cap_min']} min)"
             )
             lines.append("")
             lines.append(f"- overall: {_fmt(overall)}")
@@ -286,10 +320,11 @@ def run(since: datetime, out_path: Path) -> None:
     lines.append("## Cross-venue (Polymarket lead) — channel 4")
     lines.append("")
     lines.append(
-        "Not scored in this build: requires rules/source-verified same-station comparability "
-        "between Kalshi and Polymarket (do not infer from city names) plus paired Kalshi/"
-        "Polymarket center series. Deferred until the comparability map is locked. Provenance "
-        "(`polymarket_book`) is collecting."
+        f"Same-station map LOCKED (amendment A2): comparable = {', '.join(CROSSVENUE_COMPARABLE)}; "
+        f"excluded as non-comparable = {', '.join(CROSSVENUE_EXCLUDED)}; all other stations "
+        "excluded until rules/source verified. Scorer not yet wired: needs paired Kalshi + "
+        "Polymarket center series on the comparable set with Polymarket re-binned to the Kalshi "
+        "ladder. Both `kalshi_book` and `polymarket_book` provenance are collecting forward."
     )
     lines.append("")
     lines.append("## DSM channel")
