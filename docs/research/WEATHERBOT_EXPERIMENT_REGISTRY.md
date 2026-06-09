@@ -616,8 +616,23 @@ negative in >=2 stations and >=2 sub-splits, no leakage.
 
 ## EXP-2026-011 — Market Reaction Latency Audit
 
-**Status:** LOCKED pre-registration (2026-06-09); additive provenance instrumentation implemented
+**Status:** Forward collection IN PROGRESS (since 2026-06-09); instrumentation live + report
+tool built/validated. NOT a verdict. Evidence run targeted on or after 2026-06-23.
 **Priority:** P1 (the one new axis after the accuracy question closed)
+
+### Status (2026-06-09)
+
+Instrumentation verified live on the VPS: `info_provenance` collecting genuine forward
+`first_seen_at` (metar/kalshi_book/polymarket_book confirmed; model-run/cli on cadence). Report
+tool `research/market_reaction_latency.py` built, unit-tested (pure onset core), deployed, and
+validated end to end. First smoke (one partial day) is forward-collection-in-progress, not
+evidence: metar 20 event-days (median lag -23 min, leans negative as the prior expected),
+model_run 17 event-days, cli 0; all below the 100 event-day gate. Smoke exposed and fixed a
+startup-backfill artifact (genuineness latency cap added) and surfaced two open items for codex:
+model-run `official_ts` is the nominal cycle time not availability (channel needs a real
+availability estimand), and cross-venue scoring needs a rules-verified Kalshi/Polymarket
+same-station map. DSM not first-class instrumented. Status doc: `EXP_2026_011_RESULTS.md`.
+Measurement only; no production trading change.
 
 Locked prereg: `EXP_2026_011_MARKET_REACTION_LATENCY_AUDIT.md`. A MEASUREMENT program, not a
 trading project. Tests the latency axis (does Kalshi reprice AFTER WeatherBot first sees a
