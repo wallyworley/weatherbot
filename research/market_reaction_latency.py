@@ -32,10 +32,17 @@ CAND_POS_FRAC = 0.60            # candidate: positive-lag fraction >= 60%
 CAND_MIN_EVENT_DAYS = 100       # candidate: >= 100 unique station/date event-days
 CAND_MIN_STATIONS = 2           # candidate: >= 2 stations
 
+# source_types + max plausible forward ingest latency (minutes) per channel. The latency cap is
+# the operational definition of a GENUINE forward sighting: at instrumentation start the first
+# poll of each source backfills recent items all stamped first_seen_at=now (e.g. METAR pulls 36h
+# of history), which are NOT genuine first-sightings. Events whose (first_seen_at - official_ts)
+# exceeds the cap are excluded as startup/stale backfill. Caps reflect real forward cadence:
+# METAR obs arrive every few min and we poll often; model runs are available ~1.5-3.5h after
+# their nominal cycle (official_ts = run cycle time, not availability).
 CHANNEL_SOURCES = {
-    "metar": ("metar", "metar_lowlat"),
-    "model_run": ("nbm_run", "hrrr_run", "gfs_run", "ecmwf_run"),
-    "cli": ("cli", "dsm"),
+    "metar": (("metar", "metar_lowlat"), 60),
+    "model_run": (("nbm_run", "hrrr_run", "gfs_run", "ecmwf_run"), 300),
+    "cli": (("cli", "dsm"), 180),
 }
 
 
@@ -162,7 +169,9 @@ def _station_tz(cur, station: str) -> str:
     return (r and r["tz"]) or "America/New_York"
 
 
-def score_channel(cur, source_types: tuple[str, ...], since: datetime) -> tuple[list[LagRow], dict]:
+def score_channel(
+    cur, source_types: tuple[str, ...], since: datetime, max_latency_min: int
+) -> tuple[list[LagRow], dict]:
     events = _provenance_events(cur, source_types, since)
     series_cache: dict[tuple[str, date], list[tuple[datetime, float]]] = {}
     tz_cache: dict[str, str] = {}
@@ -173,6 +182,10 @@ def score_channel(cur, source_types: tuple[str, ...], since: datetime) -> tuple[
         st = ev["station"]
         ot = ev["official_ts"]
         fs = ev["first_seen_at"]
+        # forward-genuineness guard: drop startup/stale backfill (see CHANNEL_SOURCES note)
+        if (fs - ot).total_seconds() / 60.0 > max_latency_min:
+            diag["stale_backfill_excluded"] += 1
+            continue
         tz = tz_cache.get(st) or tz_cache.setdefault(st, _station_tz(cur, st))
         vd = _station_local_date(ot, tz)
         key = (st, vd)
@@ -246,12 +259,15 @@ def run(since: datetime, out_path: Path) -> None:
     ]
     any_candidate = False
     with persistence.connect() as conn, conn.cursor() as cur:
-        for channel, sources in CHANNEL_SOURCES.items():
-            rows, diag = score_channel(cur, sources, since)
+        for channel, (sources, max_latency_min) in CHANNEL_SOURCES.items():
+            rows, diag = score_channel(cur, sources, since, max_latency_min)
             overall = _summarize(rows)
             is_cand = _candidate(overall)
             any_candidate = any_candidate or is_cand
-            lines.append(f"## Channel: {channel}  (sources: {', '.join(sources)})")
+            lines.append(
+                f"## Channel: {channel}  (sources: {', '.join(sources)}; "
+                f"forward-latency cap {max_latency_min} min)"
+            )
             lines.append("")
             lines.append(f"- overall: {_fmt(overall)}")
             lines.append(f"- diagnostics: {diag}")
