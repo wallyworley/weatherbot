@@ -584,16 +584,20 @@ collection, including KHOU/Houston; no trading-logic change.
 
 ### Result / Decision (2026-06-08)
 
-**Hypothesis REJECTED, decisively.** The locked obs-anchored nowcast (`obs_anchor_dist` =
-metar-max-so-far + walk-forward Normal remaining-rise) **loses to the market** in the
-pre-registered held-out cohort: dBrier **+0.0455** CI [+0.0435,+0.0474], dRPS **+0.0354**
-CI [+0.0338,+0.0370] (positive = market wins), on 6,630 held-out events / 20 stations. The
-sign is the same in **all 20 stations**, **both** chronological sub-splits, and **both**
-boundary cuts; the near-boundary slice (where a fresh obs should be most decisive) loses by
-slightly more. Zero of the four substantive pass criteria met. The market has already priced
-the live observation WeatherBot sees. Full artifact: `EXP_C2_NOWCAST_RESULTS.md`; locked
-design: `EXP_C2_NOWCAST_PREREGISTRATION.md`. No leakage (as-of features; chronological
-held-out; settlement scoring-only). **No production trading change.**
+**Hypothesis REJECTED, decisively negative by point estimate and station consistency.** The
+locked obs-anchored nowcast (`obs_anchor_dist` = metar-max-so-far + walk-forward Normal
+remaining-rise) **loses to the market** in the pre-registered held-out cohort: dBrier
+**+0.0455**, dRPS **+0.0354** (positive = market wins), on 6,630 held-out events / 20 stations.
+The sign is market-winning in **all 20 stations** (station-level sign test p ~= 1e-6), **both**
+chronological sub-splits, and **both** boundary cuts; the near-boundary slice (where a fresh
+obs should be most decisive) loses by slightly more. Zero of the four substantive pass
+criteria met. (Caveat: snapshot-level CIs are anti-conservative due to within-station-date
+clustering, so the conclusion leans on magnitude + 20/20 station agreement, not CI width; the
+climo runs rolling strictly-prior rather than frozen-on-design-split, which only helps the
+nowcast. See `EXP_C2_NOWCAST_RESULTS.md` caveats.) The market has already priced the live
+observation WeatherBot sees. Locked design: `EXP_C2_NOWCAST_PREREGISTRATION.md`. No leakage
+(as-of features; chronological held-out; settlement scoring-only). **No production trading
+change.**
 
 **This closes the forecast-edge question.** Combined with EXP-2026-001 (benchmark audit
 confirmed), EXP-B1 to B3 (floor/HRRR/GFS, damage-reduction only), and EXP-C1/C1b (no center

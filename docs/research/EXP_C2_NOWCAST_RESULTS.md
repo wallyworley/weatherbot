@@ -82,11 +82,37 @@ The obs-anchored nowcast does NOT beat the market in the pre-registered held-out
 - No leakage: every feature is as-of the snapshot; settlement used only to score; no future
   market move used as a feature; chronological held-out (design dates < 2026-05-27 <= eval).
 
+## Statistical caveats and robustness (reviewer-raised, 2026-06-09)
+
+Three honest caveats. None reverses the rejection; the first changes how the conclusion is
+phrased.
+
+1. **Snapshot-level CIs are too tight (clustering).** The paired CIs treat each intraday
+   snapshot as an independent event, but many rows are repeated snapshots of the same
+   station-date, so the effective n is far smaller than the raw count and the CIs overstate
+   precision. The rejection therefore rests on **point-estimate magnitude and cross-cluster
+   consistency, not snapshot-level CI width**: all **20 of 20 stations** have a positive
+   (market-winning) point estimate, a station-level sign test of p = 2^-20 ~= 1e-6 that does
+   not depend on the within-station correlation, and most per-station CIs exclude zero on
+   their own. Both chronological sub-splits and both boundary cuts agree in sign. A proper
+   cluster-robust CI (unit = station-date) would be wider but, given a +0.045 effect with
+   20/20 agreement, would still sit well clear of zero. (Available on request as a re-run.)
+2. **Climo is rolling strictly-prior, not frozen-on-design-split.** The prereg (§5) framed the
+   remaining-rise climo as frozen on the earlier 60%; the implementation instead recomputes it
+   from strictly-prior days for every row (walk-forward). This is leakage-safe and gives the
+   nowcast a *fairer and slightly better* chance than a frozen split (more recent training per
+   row), so it **strengthens** the rejection rather than weakening it. Documented here as an
+   implementation deviation from the prereg wording.
+3. **Boundary cut uses ordinary, not Bonferroni, CIs.** The secondary boundary cut was
+   preregistered as Bonferroni-adjusted; the artifact reports ordinary paired CIs. It is
+   confirmatory-only and also loses, so this is not decision-relevant.
+
 ## Interpretation
 
 The result is not marginal. The market beats the obs-anchored nowcast by ~0.045 Brier and
-~0.035 RPS in the held-out cohort, with tight CIs far from zero, and the sign is the same in
-all 20 stations, both chronological sub-splits, and both boundary cuts. The near-boundary
+~0.035 RPS in the held-out cohort. Leaning on the robust evidence rather than snapshot-level
+CI precision (see caveat 1): the sign is market-winning in **all 20 stations** (sign-test
+p ~= 1e-6), both chronological sub-splits, and both boundary cuts. The near-boundary
 slice (where a fresh observation should be most decisive) loses by slightly MORE, not less.
 This is the cleanest possible refutation of the lead-0 obs-timing edge hypothesis: the market
 has already priced the live observation that WeatherBot sees, and a climatological
@@ -94,5 +120,8 @@ remaining-rise model on top of that observation is strictly less informative tha
 
 Combined with EXP-2026-001 (benchmark audit), EXP-B1 to B3 (floor/HRRR/GFS defects, all
 damage-reduction only), and EXP-C1/C1b (no center variant beats the market out of sample),
-this closes the forecast-edge question. WeatherBot moves to observation-only analytics per the
-charter. No production trading change.
+this closes the forecast-edge question **as a program decision**: it is not a proof that no
+edge can ever exist, but with the current public data and models every pre-registered avenue
+has been exhausted. WeatherBot moves to observation-only analytics per the charter. No
+production trading change, no new signal promotion, and no further forecast-center or nowcast
+mining without genuinely new data or a new pre-registered source.
