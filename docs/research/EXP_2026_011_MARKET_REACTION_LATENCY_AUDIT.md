@@ -1,14 +1,16 @@
 # EXP-2026-011 — Market Reaction Latency Audit (Pre-Registration)
 
 **Date:** 2026-06-09
-**Status:** DRAFT for codex review. No code until reviewed and locked.
+**Status:** LOCKED 2026-06-09 after codex review.
 **Type:** Measurement program (audit). NOT a trading project.
 **Constraint:** research-only, paper-only, no production probability / sizing / execution
 change. This audit does not trade and does not promote anything. Promotion still requires
 `WEATHERBOT_PROMOTION_CRITERIA.md` via a separate, later pre-registration.
 
-> Once locked, the channels (§4) and the lag statistic (§6) may not be added, removed, or
-> re-specified. All results reported including null findings. Changes require a new prereg.
+> Locked fields: channels (§4), provenance keying (§5), lag statistic (§6),
+> material-move threshold (§6), candidate rule (§7), and validity controls (§8). They may
+> not be added, removed, or re-specified. All results reported including null findings.
+> Changes require a new prereg.
 
 ---
 
@@ -79,23 +81,33 @@ official timestamps today; we do not store ingest time. Proposed research-only t
 ```
 info_provenance
   id              bigserial primary key
-  source_type     text     -- metar | metar_lowlat | cli | dsm |
+  source_type     text not null
+                           -- metar | metar_lowlat | cli | dsm |
                            --   nbm_run | hrrr_run | gfs_run | ecmwf_run |
                            --   kalshi_book | polymarket_book
   station         text     -- ICAO; null only for non-station-keyed items
   official_ts     timestamptz  -- obs_time / run_time / issue_time / exchange book ts
+  event_key       text not null
+                           -- stable natural event key, unique with source_type
   first_seen_at   timestamptz not null default now()  -- when OUR ingest wrote it
   value_summary   jsonb    -- e.g. {"max_f": 87.0} | {"run_avail": true} | {"center_f": 86.2}
   ingest_host     text     -- single clock source (the VPS); for skew auditing
   created_at      timestamptz not null default now()
+  updated_at      timestamptz not null default now()
 ```
 
 Properties:
 - **Additive only.** A write into a new table from the existing ingest path. No probability,
   sizing, gating, or execution logic changes. (Touches the live ingest path, so this piece
   needs explicit operator approval before wiring, per the standing live-system rule.)
+- **Dedupe rule.** `UNIQUE (source_type, event_key)`. Repeated fetches update
+  `value_summary` / `updated_at` but preserve the earliest `first_seen_at` with
+  `LEAST(existing.first_seen_at, excluded.first_seen_at)`. This prevents polling retries
+  from manufacturing new events.
 - For `kalshi_book` and `polymarket_book`, `first_seen_at` is our snapshot fetch time and
-  `official_ts` is the exchange-reported book timestamp where available.
+  `official_ts` is the exchange-reported book timestamp where available, otherwise the fetch
+  time. Because current Kalshi/Polymarket capture is polling, book-event timing is interval
+  censored until a stream/webhook collector exists.
 - **Forward collection is mandatory for the untested channels.** Genuine `first_seen_at` cannot
   be reconstructed from history. The METAR channel may use EXP-2026-009 as a lower-bound
   approximation, but the model-run, CLI/DSM, and cross-venue findings are only valid on data
@@ -112,8 +124,8 @@ Per event, compute:
 - market center / bucket probabilities at the last snapshot before the event,
 - market move at +1, +5, +10, +30, +60 minutes after the event,
 - **reprice onset**: the first post-event interval whose absolute market-center move exceeds a
-  pre-committed material threshold (locked at review; proposed 0.20 F on center, the same
-  material-move constant used in EXP-2026-009),
+  pre-committed material threshold: **0.10 F on market center**, matching
+  `MATERIAL_CENTER_MOVE_F` in EXP-2026-009,
 - **lag** = (reprice onset timestamp) minus `first_seen_at`.
 
 The single pre-registered statistic per channel is the **distribution of lag**, reported as
@@ -121,17 +133,25 @@ median and the fraction of events with lag strictly positive (market moved after
 broken out per station and per liquidity tier. One statistic per channel. No search over
 alternative event or move definitions.
 
+For the model-run channel, the event is source-native and not selected by WeatherBot's
+current losing probability estimate: a run event is included when the new run's daily center
+for an open station/date bucket set differs from the previous same-source run by **>= 0.5 F**
+OR when its fixed NBM-shape bucket vector differs by **>= 5 percentage points** in any bucket.
+Those thresholds are locked for event inclusion and are not trading thresholds.
+
 ## 7. Decision rule (pre-committed) — this audit only
 
 This audit decides ONLY whether a candidate channel exists. It never trades.
 
 - **Candidate found** on a channel if, on forward-collected data with genuine `first_seen_at`:
-  median lag is materially positive AND the positive-lag fraction is a clear majority AND it
-  holds across >= 2 stations (or a station-specific rationale is locked first) AND >= N events
-  (N locked at review; proposed >= 100 events per channel) AND it survives the clock-skew checks
-  in §8. Result: open a SEPARATE pre-registration (EXP-2026-012) for a paper-only signal test
-  with the full strict bar (market-relative Brier AND RPS improvement, station-date
-  cluster-robust CI excluding zero, OOS on fresh station-days, no leakage, no production change).
+  **median lag >= 2 minutes** AND **positive-lag fraction >= 60%** AND it holds across
+  **>= 2 stations** (or a station-specific rationale is locked first) AND at least
+  **100 event-days** for the channel (unique station/date pairs with one or more qualifying
+  events; raw repeated snapshots do not count toward this minimum) AND it survives the
+  clock-skew checks in §8. Result: open a SEPARATE pre-registration (EXP-2026-012) for a
+  paper-only signal test with the full strict bar (market-relative Brier AND RPS improvement,
+  station-date cluster-robust CI excluding zero, OOS on fresh station-days, no leakage, no
+  production change).
 - **No candidate** on any channel: the latency axis is closed alongside the accuracy axis.
   Observation-only stands, now on both axes. No production change.
 
@@ -143,6 +163,10 @@ In neither branch does EXP-2026-011 change production logic or place any trade.
   A 30-second clock skew destroys a 1 to 10 minute measurement. Record `ingest_host`; audit
   drift before trusting any lag. Exchange-reported book timestamps are cross-checked against
   our fetch time to bound skew.
+- **Polling interval caveat.** Current book capture is polling. Any result from polling data
+  must report interval-censored onset bounds. A channel can be marked "candidate found" only
+  if the positive-lag margin remains after applying the polling interval as adverse timing
+  uncertainty, or after a research-only streaming/high-cadence collector confirms it.
 - **`first_seen_at` is genuine, never backfilled.** Untested-channel conclusions use forward
   data only (§5).
 - **No look-ahead in any eventual signal.** Here the future market move is a measured label,
@@ -178,8 +202,8 @@ looking at outcomes. All channels reported including nulls.
 
 ---
 
-**Requested of codex:** review §4 (channels), §5 (provenance schema), §6 (lag statistic and
-material-move threshold), §7 (candidate thresholds: events per channel, station count), and §8
-(clock discipline). Flag anything that would make a positive finding a false positive, any
-missing channel that belongs in scope before locking, and whether the forward-collection
-commitment in §5 and §7 is strong enough to keep this honest.
+**Codex review resolved 2026-06-09:** schema now has stable event keys and earliest-first-seen
+dedupe; material move is locked to 0.10 F; candidate thresholds are numeric; raw repeated
+events are replaced by event-days for sample size; model-run inclusion is source-native rather
+than selected by WeatherBot's current probabilities; polling interval censoring is an explicit
+validity control.

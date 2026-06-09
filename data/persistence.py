@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Iterable
 
 import psycopg
@@ -21,6 +22,109 @@ log = logging.getLogger(__name__)
 def connect():
     with psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=False) as conn:
         yield conn
+
+
+def _event_key(*parts) -> str:
+    return "|".join("" if p is None else str(p) for p in parts)
+
+
+def _model_run_source_type(model: str) -> str | None:
+    return {
+        "NBM_QMD": "nbm_run",
+        "HRRR": "hrrr_run",
+        "GFS": "gfs_run",
+        "ECMWF": "ecmwf_run",
+    }.get(str(model).upper())
+
+
+def _json_ready(value):
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _json_ready(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_ready(v) for v in value]
+    return value
+
+
+def record_info_provenance(rows: Iterable[dict]) -> None:
+    """Insert first-seen research provenance, preserving the earliest sighting.
+
+    EXP-2026-011 depends on genuine forward ``first_seen_at`` timestamps. Callers
+    must not use this for historical backfills. Repeated polling/upserts keep the
+    earliest first_seen_at for the stable (source_type, event_key).
+    """
+    prepared = []
+    for row in rows:
+        r = dict(row)
+        if not r.get("source_type") or not r.get("event_key"):
+            continue
+        r.setdefault("first_seen_at", datetime.now(tz=timezone.utc))
+        r.setdefault("ingest_host", socket.gethostname())
+        summary = r.get("value_summary")
+        if isinstance(summary, (dict, list, tuple, set)):
+            r["value_summary"] = json.dumps(_json_ready(summary))
+        elif summary is None:
+            r["value_summary"] = None
+        prepared.append(r)
+    if not prepared:
+        return
+
+    sql = """
+    INSERT INTO info_provenance
+        (source_type, station, official_ts, event_key, first_seen_at, value_summary, ingest_host)
+    VALUES
+        (%(source_type)s, %(station)s, %(official_ts)s, %(event_key)s,
+         %(first_seen_at)s, %(value_summary)s::jsonb, %(ingest_host)s)
+    ON CONFLICT (source_type, event_key) DO UPDATE SET
+        first_seen_at = LEAST(info_provenance.first_seen_at, EXCLUDED.first_seen_at),
+        official_ts = COALESCE(info_provenance.official_ts, EXCLUDED.official_ts),
+        value_summary = EXCLUDED.value_summary,
+        ingest_host = EXCLUDED.ingest_host,
+        updated_at = now()
+    """
+    try:
+        with connect() as conn, conn.cursor() as cur:
+            cur.executemany(sql, prepared)
+            conn.commit()
+    except Exception as exc:
+        log.warning("info_provenance write skipped: %s", exc)
+
+
+def _record_forecast_run_provenance(rows: list[dict]) -> None:
+    by_event: dict[tuple, dict] = {}
+    for row in rows:
+        source_type = _model_run_source_type(str(row.get("model")))
+        station = row.get("station")
+        run_time = row.get("run_time")
+        if not source_type or not station or not run_time:
+            continue
+        key = (source_type, station, run_time)
+        item = by_event.setdefault(
+            key,
+            {
+                "source_type": source_type,
+                "station": station,
+                "official_ts": run_time,
+                "event_key": _event_key(station, row.get("model"), run_time),
+                "value_summary": {
+                    "model": row.get("model"),
+                    "row_count": 0,
+                    "vars": set(),
+                    "valid_dates": set(),
+                    "valid_times": 0,
+                },
+            },
+        )
+        summary = item["value_summary"]
+        summary["row_count"] += 1
+        if row.get("var") is not None:
+            summary["vars"].add(row.get("var"))
+        if row.get("valid_date") is not None:
+            summary["valid_dates"].add(row.get("valid_date"))
+        if row.get("valid_time") is not None:
+            summary["valid_times"] += 1
+    record_info_provenance(by_event.values())
 
 
 def bootstrap_stations():
@@ -51,7 +155,8 @@ def bootstrap_stations():
 # ---------------------------------------------------------------------------
 # Forecasts
 # ---------------------------------------------------------------------------
-def upsert_det_forecast(rows: Iterable[dict]):
+def upsert_det_forecast(rows: Iterable[dict], record_provenance: bool = False):
+    materialized = list(rows)
     sql = """
     INSERT INTO det_forecast(station, model, run_time, valid_time, lead_hr, var, value)
     VALUES (%(station)s, %(model)s, %(run_time)s, %(valid_time)s, %(lead_hr)s, %(var)s, %(value)s)
@@ -59,11 +164,14 @@ def upsert_det_forecast(rows: Iterable[dict]):
     DO NOTHING
     """
     with connect() as conn, conn.cursor() as cur:
-        cur.executemany(sql, list(rows))
+        cur.executemany(sql, materialized)
         conn.commit()
+    if record_provenance:
+        _record_forecast_run_provenance(materialized)
 
 
-def upsert_prob_forecast(rows: Iterable[dict]):
+def upsert_prob_forecast(rows: Iterable[dict], record_provenance: bool = False):
+    materialized = list(rows)
     sql = """
     INSERT INTO prob_forecast(station, model, run_time, valid_date, var, percentile, value)
     VALUES (%(station)s, %(model)s, %(run_time)s, %(valid_date)s, %(var)s, %(percentile)s, %(value)s)
@@ -71,8 +179,10 @@ def upsert_prob_forecast(rows: Iterable[dict]):
     DO NOTHING
     """
     with connect() as conn, conn.cursor() as cur:
-        cur.executemany(sql, list(rows))
+        cur.executemany(sql, materialized)
         conn.commit()
+    if record_provenance:
+        _record_forecast_run_provenance(materialized)
 
 
 def upsert_ensemble_forecast(rows: Iterable[dict]):
@@ -335,7 +445,8 @@ def station_bias_as_of(
 # ---------------------------------------------------------------------------
 # Observations
 # ---------------------------------------------------------------------------
-def upsert_metar(rows: Iterable[dict]):
+def upsert_metar(rows: Iterable[dict], record_provenance: bool = False):
+    materialized = list(rows)
     sql = """
     INSERT INTO metar_obs(station, obs_time, temp_f, dewpoint_f, wind_kt, raw)
     VALUES (%(station)s, %(obs_time)s, %(temp_f)s, %(dewpoint_f)s, %(wind_kt)s, %(raw)s)
@@ -346,8 +457,26 @@ def upsert_metar(rows: Iterable[dict]):
            raw = EXCLUDED.raw
     """
     with connect() as conn, conn.cursor() as cur:
-        cur.executemany(sql, list(rows))
+        cur.executemany(sql, materialized)
         conn.commit()
+    if record_provenance:
+        prov_rows = []
+        for row in materialized:
+            prov_rows.append(
+                {
+                    "source_type": "metar",
+                    "station": row.get("station"),
+                    "official_ts": row.get("obs_time"),
+                    "event_key": _event_key(row.get("station"), row.get("obs_time")),
+                    "value_summary": {
+                        "temp_f": row.get("temp_f"),
+                        "dewpoint_f": row.get("dewpoint_f"),
+                        "wind_kt": row.get("wind_kt"),
+                        "raw": row.get("raw"),
+                    },
+                }
+            )
+        record_info_provenance(prov_rows)
 
 
 def upsert_daily_obs(rows: Iterable[dict]):
@@ -741,7 +870,7 @@ def close_paper_fill_early(
 # ---------------------------------------------------------------------------
 # Market snapshots (orderbook top-of-book, logged every pull cycle)
 # ---------------------------------------------------------------------------
-def insert_market_snapshots(rows: Iterable[dict]) -> None:
+def insert_market_snapshots(rows: Iterable[dict], record_provenance: bool = True) -> None:
     """Insert one snapshot row per market per pull cycle.
 
     Captures both YES and NO orderbook top-of-book — NO-side can diverge from
@@ -763,6 +892,7 @@ def insert_market_snapshots(rows: Iterable[dict]) -> None:
          %(last_price)s, %(volume_24h)s, %(open_interest)s)
     ON CONFLICT (ticker, ts) DO NOTHING
     """
+    seen_at = datetime.now(tz=timezone.utc)
     rows_norm = [{**{"no_ask": None, "no_bid": None,
                       "no_ask_size": None, "no_bid_size": None,
                       "status": None}, **r}
@@ -770,9 +900,32 @@ def insert_market_snapshots(rows: Iterable[dict]) -> None:
     with connect() as conn, conn.cursor() as cur:
         cur.executemany(sql, rows_norm)
         conn.commit()
+    if record_provenance:
+        record_info_provenance(
+            {
+                "source_type": "kalshi_book",
+                "station": None,
+                "official_ts": seen_at,
+                "event_key": _event_key(row.get("ticker"), seen_at.isoformat()),
+                "first_seen_at": seen_at,
+                "value_summary": {
+                    "ticker": row.get("ticker"),
+                    "yes_ask": row.get("yes_ask"),
+                    "yes_bid": row.get("yes_bid"),
+                    "no_ask": row.get("no_ask"),
+                    "no_bid": row.get("no_bid"),
+                    "last_price": row.get("last_price"),
+                    "status": row.get("status"),
+                    "capture": "polling_interval_censored",
+                },
+            }
+            for row in rows_norm
+            if row.get("ticker")
+        )
 
 
-def insert_external_market_snapshots(rows: Iterable[dict]) -> None:
+def insert_external_market_snapshots(rows: Iterable[dict], record_provenance: bool = True) -> None:
+    seen_at = datetime.now(tz=timezone.utc)
     sql = """
     INSERT INTO external_market_snapshot
         (venue, event_slug, market_slug, question, station, valid_date,
@@ -795,3 +948,27 @@ def insert_external_market_snapshots(rows: Iterable[dict]) -> None:
     with connect() as conn, conn.cursor() as cur:
         cur.executemany(sql, prepared)
         conn.commit()
+    if record_provenance:
+        record_info_provenance(
+            {
+                "source_type": "polymarket_book",
+                "station": row.get("station"),
+                "official_ts": seen_at,
+                "event_key": _event_key(row.get("venue"), row.get("market_slug"), seen_at.isoformat()),
+                "first_seen_at": seen_at,
+                "value_summary": {
+                    "venue": row.get("venue"),
+                    "event_slug": row.get("event_slug"),
+                    "market_slug": row.get("market_slug"),
+                    "valid_date": row.get("valid_date"),
+                    "lower_f": row.get("lower_f"),
+                    "upper_f": row.get("upper_f"),
+                    "yes_bid": row.get("yes_bid"),
+                    "yes_ask": row.get("yes_ask"),
+                    "liquidity": row.get("liquidity"),
+                    "capture": "polling_interval_censored",
+                },
+            }
+            for row in prepared
+            if row.get("market_slug")
+        )

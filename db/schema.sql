@@ -349,6 +349,28 @@ CREATE TABLE IF NOT EXISTS external_market_snapshot (
 CREATE INDEX IF NOT EXISTS idx_external_snapshot_ts ON external_market_snapshot (venue, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_external_snapshot_station ON external_market_snapshot (venue, station, valid_date, ts DESC);
 
+-- Research-only public-information provenance. This records when the VPS first
+-- observed source events so EXP-2026-011 can compare public-info availability
+-- against Kalshi market reaction timing. It is additive and is not read by
+-- production probability, sizing, gating, or execution logic.
+CREATE TABLE IF NOT EXISTS info_provenance (
+    id             BIGSERIAL PRIMARY KEY,
+    source_type    TEXT NOT NULL,
+    station        TEXT,
+    official_ts    TIMESTAMPTZ,
+    event_key      TEXT NOT NULL,
+    first_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    value_summary  JSONB,
+    ingest_host    TEXT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (source_type, event_key)
+);
+CREATE INDEX IF NOT EXISTS idx_info_provenance_seen
+    ON info_provenance (source_type, first_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_info_provenance_station_seen
+    ON info_provenance (station, source_type, first_seen_at DESC);
+
 -- ---------------------------------------------------------------------------
 -- Health & autonomy tables
 -- ---------------------------------------------------------------------------

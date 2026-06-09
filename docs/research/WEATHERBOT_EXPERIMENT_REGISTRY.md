@@ -616,18 +616,21 @@ negative in >=2 stations and >=2 sub-splits, no leakage.
 
 ## EXP-2026-011 — Market Reaction Latency Audit
 
-**Status:** DRAFT pre-registration (2026-06-09) — awaiting codex review, then lock
+**Status:** LOCKED pre-registration (2026-06-09); additive provenance instrumentation implemented
 **Priority:** P1 (the one new axis after the accuracy question closed)
 
-Full draft: `EXP_2026_011_MARKET_REACTION_LATENCY_AUDIT.md`. A MEASUREMENT program, not a
+Locked prereg: `EXP_2026_011_MARKET_REACTION_LATENCY_AUDIT.md`. A MEASUREMENT program, not a
 trading project. Tests the latency axis (does Kalshi reprice AFTER WeatherBot first sees a
 public-info event), distinct from the closed accuracy axis (EXP-C1/C1b/C2). Four locked
 channels (METAR, model-run availability, CLI/DSM, cross-venue Polymarket lead). Missing piece
-is `first_seen_at` provenance instrumentation (new `info_provenance` table, additive to the
-ingest path, operator approval required; genuine forward collection mandatory for the untested
-channels). One lag statistic per channel = distribution of (market reprice onset minus
-first_seen_at). Decision: a positive-lag channel only earns a SEPARATE strict paper-only signal
-prereg (EXP-2026-012); no candidate on any channel closes the latency axis too. No production
-trading change in this audit. Honest prior: likely negative (edge compressed; METAR leans
-negative already; hobby-scale vs sharps), highest upside is cross-venue. Reuses the EXP-2026-009
+was `first_seen_at` provenance instrumentation; codex added the research-only
+`info_provenance` table/migration and additive writes for live METAR, model-run, CLI,
+Kalshi book, and Polymarket book capture. Genuine forward collection is mandatory for the
+untested channels; historical backfills must not be treated as first-seen evidence. One lag
+statistic per channel = distribution of (market reprice onset minus first_seen_at), with
+0.10 F market-center material move, median lag >=2 minutes / >=60% positive-lag / >=100
+event-days / >=2 stations required merely to open a separate strict paper-only signal prereg
+(EXP-2026-012). No candidate on any channel closes the latency axis too. No production trading
+change in this audit. Honest prior: likely negative (edge compressed; METAR leans negative
+already; hobby-scale vs sharps), highest upside is cross-venue. Reuses the EXP-2026-009
 backbone.

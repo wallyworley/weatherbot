@@ -23,7 +23,11 @@ from weather_bot.data import nws_text_products as nws
 log = logging.getLogger(__name__)
 
 
-def run(stations: list[str], days_back: int = 2) -> int:
+def run(stations: list[str], days_back: int = 2, record_provenance: bool | None = None) -> int:
+    if record_provenance is None:
+        # Scheduled live pulls use the default 2-day window. Wider historical
+        # backfills should not manufacture first_seen_at evidence for EXP-2026-011.
+        record_provenance = days_back <= 2
     today = date.today()
     captured = 0
     for st in stations:
@@ -37,7 +41,7 @@ def run(stations: list[str], days_back: int = 2) -> int:
             if obs.tmax_f is None and obs.tmin_f is None:
                 log.warning("CLI %s %s: parsed both TMAX/TMIN as None", st, d)
                 continue
-            nws.upsert_cli_obs(st, d, obs, raw, issued)
+            nws.upsert_cli_obs(st, d, obs, raw, issued, record_provenance=record_provenance)
             log.info("CLI %s %s: tmax=%.1f tmin=%.1f section=%s issued=%s",
                      st, d, obs.tmax_f or float("nan"), obs.tmin_f or float("nan"),
                      obs.section, issued)
@@ -51,5 +55,20 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--stations", nargs="+", default=ACTIVE_FETCH_STATIONS)
     ap.add_argument("--days-back", type=int, default=2)
+    ap.add_argument(
+        "--record-provenance",
+        action="store_true",
+        help="Force EXP-2026-011 first-seen provenance even for wider manual pulls.",
+    )
+    ap.add_argument(
+        "--no-provenance",
+        action="store_true",
+        help="Disable EXP-2026-011 first-seen provenance for this pull.",
+    )
     args = ap.parse_args()
-    run(args.stations, days_back=args.days_back)
+    provenance = None
+    if args.record_provenance:
+        provenance = True
+    if args.no_provenance:
+        provenance = False
+    run(args.stations, days_back=args.days_back, record_provenance=provenance)

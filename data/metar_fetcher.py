@@ -284,7 +284,7 @@ def run(hours: int = 36, days_back: int = 2) -> None:
             continue
 
     if all_metars:
-        persistence.upsert_metar(all_metars)
+        persistence.upsert_metar(all_metars, record_provenance=True)
     if daily_rows:
         persistence.upsert_daily_obs(daily_rows)
     log.info("Persisted %d METAR rows, %d daily rows (failed stations: %s)",

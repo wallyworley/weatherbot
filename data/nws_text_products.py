@@ -367,8 +367,14 @@ def fetch_dsm(station: str, target_date) -> Optional[tuple[DsmObservation, str, 
 # ---------------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------------
-def upsert_cli_obs(station: str, local_date, obs: CliObservation, raw_text: str,
-                    issued_at: datetime) -> None:
+def upsert_cli_obs(
+    station: str,
+    local_date,
+    obs: CliObservation,
+    raw_text: str,
+    issued_at: datetime,
+    record_provenance: bool = False,
+) -> None:
     sql = """
     INSERT INTO cli_obs(station, local_date, tmax_f, tmax_time_lst, tmin_f, tmin_time_lst,
                          section, issued_at, raw_text)
@@ -388,6 +394,23 @@ def upsert_cli_obs(station: str, local_date, obs: CliObservation, raw_text: str,
                            obs.tmin_f, obs.tmin_time_lst, obs.section,
                            issued_at, raw_text))
         conn.commit()
+    if record_provenance:
+        persistence.record_info_provenance(
+            [
+                {
+                    "source_type": "cli",
+                    "station": station,
+                    "official_ts": issued_at,
+                    "event_key": f"{station}|{local_date}|{issued_at.isoformat()}",
+                    "value_summary": {
+                        "local_date": local_date,
+                        "tmax_f": obs.tmax_f,
+                        "tmin_f": obs.tmin_f,
+                        "section": obs.section,
+                    },
+                }
+            ]
+        )
 
 
 def get_cli_tmax(station: str, local_date) -> Optional[float]:

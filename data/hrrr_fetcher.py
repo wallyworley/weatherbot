@@ -85,7 +85,7 @@ def run(cycle: datetime | None = None) -> None:
         rows = fetch_hrrr_tmp_series(cycle, station)
         all_rows.extend(rows)
     if all_rows:
-        persistence.upsert_det_forecast(all_rows)
+        persistence.upsert_det_forecast(all_rows, record_provenance=True)
         log.info("Persisted %d HRRR rows", len(all_rows))
 
 

@@ -379,7 +379,7 @@ def run_fast(
                         valid_date=d, var=var, percentile=p, value=v,
                     ))
     if all_rows:
-        persistence.upsert_prob_forecast(all_rows)
+        persistence.upsert_prob_forecast(all_rows, record_provenance=False)
         log.info("Persisted %d NBM QMD rows (fast path)", len(all_rows))
     else:
         log.warning("No NBM QMD rows persisted across any cycle (fast path)")
@@ -445,7 +445,7 @@ def run(
                         )
                     )
     if all_rows:
-        persistence.upsert_prob_forecast(all_rows)
+        persistence.upsert_prob_forecast(all_rows, record_provenance=True)
         log.info("Persisted %d NBM QMD rows", len(all_rows))
     else:
         log.warning("No NBM QMD rows persisted across any cycle")
