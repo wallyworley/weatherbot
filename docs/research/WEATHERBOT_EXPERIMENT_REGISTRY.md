@@ -657,3 +657,78 @@ event-days / >=2 stations required merely to open a separate strict paper-only s
 change in this audit. Honest prior: likely negative (edge compressed; METAR leans negative
 already; hobby-scale vs sharps), highest upside is cross-venue. Reuses the EXP-2026-009
 backbone.
+
+---
+
+## EXP-2026-013 — Shadow-Ensemble Market-Relative Benchmark
+
+**Status:** Registered + LOCKED 2026-06-09; run pending
+**Priority:** P1 (consumes the "genuinely new models" reopening trigger)
+**Date Opened:** 2026-06-09
+
+### Hypothesis
+
+One of the four never-scored shadow ensembles (WEATHERNEXT2, ECMWF_AIFS_ENS, ECMWF_IFS_ENS,
+GFS_ENS in `ensemble_forecast`, collected since 2026-05-10/15) beats the Kalshi
+market-implied distribution as a center, bias-corrected center, or member-frequency
+distribution.
+
+### Why This Matters
+
+The C1/C1b/C2 closure named "genuinely new models" as the only reopening trigger; the
+2026-06-09 review found 36.9M ensemble rows (incl. two AI models absent from C1/C1b) that
+were never benchmarked. This either reopens the axis or closes the documented gap.
+
+### Design
+
+Locked prereg: `EXP_2026_013_ENSEMBLE_MARKET_BENCHMARK.md`. Canonical coherent-snapshot
+events, leads 0-1, TMAX_DAILY; twelve locked variants (center / walk-forward bias-corrected
+center / Laplace-0.5 member-frequency dist, per model); as-of by `ingested_at <= snapshot_ts`
+(run_time untrusted); harness `research/ensemble_market_benchmark.py` reusing the canonical
+scoring. Pass = negative market-relative Brier AND RPS, paired CI excluding 0, n>=100,
+>=2 stations. Candidate only earns a fresh-forward prereg; no production change either way.
+
+### Overfitting Risk
+
+Low (parameter-free first pass; bc variant walk-forward; no smoothing/weight search).
+
+### Result
+
+Pending.
+
+---
+
+## EXP-2026-014 — Kalshi Market Self-Calibration (Favorite-Longshot Bias)
+
+**Status:** Registered + LOCKED 2026-06-09; design-set run pending
+**Priority:** P1 (the one structural axis never tested; does not require beating the market)
+**Date Opened:** 2026-06-09
+
+### Hypothesis
+
+Kalshi morning prices exhibit favorite-longshot bias large enough that buying the morning
+favorite (highest-mid bucket, mid >= 0.50, at the ask, taker fees included) has positive
+expected value held to settlement — with no forecast input at all.
+
+### Why This Matters
+
+Every closed experiment tested WeatherBot-vs-market forecast skill. This tests whether the
+market's own price structure leaks money. Disclosed peek: one exploratory decile query
+(2026-06-09 review) motivated it; therefore history = design set only, and a pre-committed
+forward window (>=300 fresh events, valid_date >= 2026-06-10) is the actual test.
+
+### Design
+
+Locked prereg: `EXP_2026_014_MARKET_SELF_CALIBRATION.md`. Fixed 14-16 UTC reference snapshot;
+one locked primary rule; executable prices + Kalshi taker fee; cluster bootstrap by
+station-date; TMAX+TMIN. Harness `research/market_longshot_bias.py`. Design pass requires
+CI excluding 0 AND both chronological halves positive AND >=60% of stations positive; pass
+only opens the forward window. Nothing trades.
+
+### Overfitting Risk
+
+Medium (one disclosed peek; mitigated by single locked rule + forward window).
+
+### Result
+
+Pending.
