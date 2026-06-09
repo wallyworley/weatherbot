@@ -188,6 +188,73 @@ All resolutions folded into the locked prereg as amendments A1-A6 and implemente
   `kalshi_ws_book_event`.
 - **A6 backtest scope** — verdict stays forward-only; history is exploratory only.
 
-Open question for you: for the cross-venue scorer, confirm the lead/lag statistic you want
-(e.g. when Polymarket center diverges from Kalshi by >= X, does Kalshi later move toward it
-within the window, and by how long), so I lock it before wiring rather than choosing it myself.
+## Codex call — Cross-venue lead/lag statistic (2026-06-09)
+
+Lock the cross-venue scorer as a **fresh Polymarket divergence episode -> directional Kalshi
+follow-through** statistic. This keeps the channel aligned with the audit question: can
+WeatherBot observe an external public market disagreement before Kalshi reprices?
+
+Eligible pair:
+
+- Only locked comparable same-station pairs: `KATL`, `KMIA`.
+- Same valid date, same variable (`TMAX_DAILY`), Fahrenheit units, substantial overlapping
+  support.
+- Polymarket probabilities are normalized and re-binned to the Kalshi ladder for bucket-level
+  alignment; center comparison may also report each venue's native-ladder center as a diagnostic.
+
+Event definition:
+
+- At each forward Polymarket book observation time `t0 = polymarket_book.first_seen_at`, compute
+  the latest available Kalshi center at or before `t0`, preferably from `kalshi_ws_book_event`
+  once live.
+- Let `gap0 = poly_center(t0) - kalshi_center(t0)`.
+- A fresh divergence episode starts only when `abs(gap0) >= 0.50 F` and the prior paired
+  Polymarket observation for that station/date was either opposite-signed or inside the re-arm
+  band `abs(gap) < 0.25 F`. Persistent above-threshold disagreement is one episode, not a new
+  event on every poll.
+- If there is no prior paired Polymarket observation within 15 minutes, flag the episode as
+  left-censored; report it separately and exclude it from the primary candidate gate.
+
+Directional onset:
+
+- Direction `s = sign(gap0)`. Positive means Polymarket is warmer than Kalshi; negative means
+  colder.
+- Use the same latency windows as the other channels: `PRE_MIN = 30`, `POST_MIN = 60`.
+- Baseline Kalshi center is the latest Kalshi center at or before `t0 - PRE_MIN`.
+- Reprice onset is the first Kalshi center timestamp in `(t0 - PRE_MIN, t0 + POST_MIN]` where
+  `s * (kalshi_center(t) - baseline_kalshi_center) >= 0.10 F`.
+- Lag is `onset_ts - t0`.
+- If onset is before `t0`, classify the episode as **already moving / already priced** with
+  negative lag. Do not count it as a stale-Kalshi opportunity.
+- If onset is after `t0`, classify it as **Polymarket-led directional follow-through** with
+  positive lag.
+- If no onset occurs within the window, classify as no-follow / censored.
+
+Timestamp source:
+
+- For Kalshi onset timing, use the earliest sane exchange timestamp from `kalshi_ws_book_event`
+  when present; fall back to VPS receipt time only when the exchange timestamp is missing or
+  fails the clock-skew sanity check.
+- For Polymarket event timing, use WeatherBot's forward `polymarket_book.first_seen_at`; do
+  not infer an earlier Polymarket move from historical/polled data.
+
+Primary channel statistic:
+
+- Use the same candidate gate shape as the other channels on primary, non-left-censored
+  episodes: median lag, positive-lag fraction, unique station/date event-days, and stations.
+- Candidate requires the locked EXP-011 gate: median lag >= 2 minutes, positive-lag fraction
+  >= 60%, >= 100 event-days, >= 2 stations, and survival after timing uncertainty.
+- Report secondary diagnostics: distribution of `gap0`, direction split, left-censored episode
+  count, no-follow count, and whether Kalshi's move reduced the initial gap by at least 0.10 F
+  using `kalshi_center(t0)` as the baseline. These diagnostics do not alter the candidate gate.
+
+Rationale:
+
+- `0.50 F` is large enough to avoid scoring normal ladder/basis noise and matches the model-run
+  center-shift materiality scale.
+- The `0.25 F` re-arm band prevents repeated polling snapshots from becoming fake independent
+  events.
+- Directional Kalshi movement is required; an unrelated absolute Kalshi center jump should not
+  count.
+- Looking back 30 minutes and allowing negative lag prevents a persistent or already-closing
+  gap from being mislabeled as exploitable latency.
