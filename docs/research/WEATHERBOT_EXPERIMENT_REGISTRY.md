@@ -662,7 +662,7 @@ backbone.
 
 ## EXP-2026-013 — Shadow-Ensemble Market-Relative Benchmark
 
-**Status:** Registered + LOCKED 2026-06-09; run pending
+**Status:** Complete (2026-06-09) — **NO PASS; "genuinely new models" trigger consumed**
 **Priority:** P1 (consumes the "genuinely new models" reopening trigger)
 **Date Opened:** 2026-06-09
 
@@ -692,15 +692,22 @@ scoring. Pass = negative market-relative Brier AND RPS, paired CI excluding 0, n
 
 Low (parameter-free first pass; bc variant walk-forward; no smoothing/weight search).
 
-### Result
+### Result / Decision (2026-06-09)
 
-Pending.
+**No variant beats the market** (578 events, 19 stations, 2026-05-10..06-08): all twelve
+variants positive market-relative Brier AND RPS at both leads, CIs excluding 0 the wrong
+way. Notable for the record: **WEATHERNEXT2_center_bc at lead-1 is the first variant ever
+to beat the NBM baseline** (paired dRPS -0.0152, CI [-0.0287,-0.0017]; market gap narrowed
+to +0.0127 vs NBM's +0.0231) — but it still loses to the market, so no candidate. Raw WN2
+is crippled by 6-hourly sampling (~1.3F center penalty); hourly WN2-class data would be
+genuinely new and could be pre-registered fresh. Accuracy axis stays closed.
+See `EXP_2026_013_RESULTS.md`. No production change.
 
 ---
 
 ## EXP-2026-014 — Kalshi Market Self-Calibration (Favorite-Longshot Bias)
 
-**Status:** Registered + LOCKED 2026-06-09; design-set run pending
+**Status:** Complete (2026-06-09) — **DESIGN FAIL; axis closed**
 **Priority:** P1 (the one structural axis never tested; does not require beating the market)
 **Date Opened:** 2026-06-09
 
@@ -729,6 +736,12 @@ only opens the forward window. Nothing trades.
 
 Medium (one disclosed peek; mitigated by single locked rule + forward window).
 
-### Result
+### Result / Decision (2026-06-09)
 
-Pending.
+**Zero of three design-pass criteria met** (195 events): net EV +0.0083/contract, cluster
+CI [-0.0564,+0.0753] includes 0; second half negative (-0.0043); 4/7 stations (57%) < 60%.
+The favorite-longshot SHAPE is real (longshot decile 0.2-0.3 edge -0.0602, CI excludes 0;
+favorite point estimates positive) but ~80% of it is consumed by spread + taker fees: the
+exploratory +5-7pp was a mid-price fee-free artifact. Per locked rule the axis closes; no
+forward window. Maker-side capture would be separate execution research, out of scope.
+See `EXP_2026_014_RESULTS.md`. No production change; nothing traded.

@@ -1,6 +1,16 @@
 # WeatherBot — Current State
 
-**Updated:** 2026-06-07
+**Updated:** 2026-06-09
+
+**2026-06-09 addendum:** two further pre-registered axes ran and closed negative the same
+day. **EXP-2026-013** (the four never-benchmarked shadow ensembles incl. WeatherNext 2 and
+AIFS — the "genuinely new models" reopening trigger): no variant beats the market; trigger
+consumed. (For the record: bias-corrected WN2 at lead-1 is the first variant ever to beat
+the NBM baseline, market gap narrowed ~45%, but the market still wins.) **EXP-2026-014**
+(Kalshi favorite-longshot self-calibration, a market-structure axis independent of forecast
+skill): the bias is real but ~80% is consumed by spread + taker fees; design fail on all
+three locked criteria; axis closed. See `EXP_2026_013_RESULTS.md` / `EXP_2026_014_RESULTS.md`.
+The only open axis remains **EXP-2026-011** (reaction latency; evidence run ≥ 2026-06-23).
 **Trading status:** **Paper only. No live promotion.**
 **Program status:** **DECISION (operator-approved 2026-06-07): pivot to observation-only
 analytics.** All edge tests negative (audit → B1–B3 → C1 → C1b); no market-relative forecast
