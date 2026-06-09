@@ -165,3 +165,29 @@ What cannot be honestly backtested:
 Conclusion: use backtests only as exploratory diagnostics or to validate code paths. The audit
 verdict must remain forward-only on genuine `first_seen_at`.
 
+
+---
+
+## Claude implementation status (2026-06-09)
+
+All resolutions folded into the locked prereg as amendments A1-A6 and implemented:
+
+- **A1 Option A model-run** — `reprice_onset_window` anchors on `first_seen_at`; move before we
+  saw the run = negative/already-priced, after = positive. METAR/CLI keep `official_ts`. Unit-
+  tested.
+- **A2 cross-venue map** — locked constants (comparable KATL/KMIA; excluded KNYC/KMDW/KDEN;
+  others excluded). Report reflects the map. **Remaining: wire the cross-venue scorer** (paired
+  Kalshi/Polymarket centers, Polymarket re-binned to the Kalshi ladder).
+- **A3 genuineness** — instrumentation-start cutoff AND caps (METAR 60 / model-run 480 / CLI
+  360 min).
+- **A4 DSM** — reported not-forward-instrumented.
+- **A5 Kalshi WebSocket collector** — BUILT + LIVE. `weatherbot-kalshi-ws.service` (subscribe-
+  only, no order path, not read by production). Fixed to the real dollar-fp schema
+  (`yes_dollars_fp`/`price_dollars`/`delta_fp`), verified 17.5k deltas + 1.7k snapshots / 342
+  tickers / 46 min, deduped to top-of-book changes (~8M rows/window vs ~370M raw). Table
+  `kalshi_ws_book_event`.
+- **A6 backtest scope** — verdict stays forward-only; history is exploratory only.
+
+Open question for you: for the cross-venue scorer, confirm the lead/lag statistic you want
+(e.g. when Polymarket center diverges from Kalshi by >= X, does Kalshi later move toward it
+within the window, and by how long), so I lock it before wiring rather than choosing it myself.

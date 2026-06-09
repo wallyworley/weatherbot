@@ -66,6 +66,17 @@ is far below the 100 event-day gate; this is a pipeline validation, not a findin
   **in progress, not a closure**. The latency axis is closed only when the committed window is
   reached with no candidate on any channel.
 
+## 4b. High-cadence Kalshi WebSocket collector LIVE (amendment A5, 2026-06-09)
+
+Research-only `orderbook_delta` collector is deployed and running as a systemd service
+(`weatherbot-kalshi-ws.service`, active + enabled). Subscribe-only (no order path), never read
+by production. After a schema fix (Kalshi uses the dollar-fp format `yes_dollars_fp` /
+`price_dollars` / `delta_fp`, not integer-cent arrays), verified healthy: 17,515 deltas +
+1,710 snapshots across 342 tickers in 46 min, all with derived top-of-book and exchange
+timestamps. Volume control: persist only when a ticker's top-of-book changes (~8M rows over the
+collection window vs ~370M raw). This tightens reprice-onset timing against the polling
+censoring caveat before the evidence run. Table: `kalshi_ws_book_event`.
+
 ## 5. Hard constraints honored
 
 Broad collection stays on for all stations; KHOU stays collected and is not trade-enabled; no

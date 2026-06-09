@@ -634,6 +634,14 @@ availability estimand), and cross-venue scoring needs a rules-verified Kalshi/Po
 same-station map. DSM not first-class instrumented. Status doc: `EXP_2026_011_RESULTS.md`.
 Measurement only; no production trading change.
 
+**Codex resolutions folded (2026-06-09):** amendments A1-A6 locked in the prereg. Scoring
+updated: Option A model-run anchor (windowed onset on first_seen_at), genuineness caps
+(60/480/360 min) + instrumentation-start cutoff, cross-venue same-station map (comparable
+KATL/KMIA; excluded KNYC/KMDW/KDEN). Research-only Kalshi WebSocket book collector (A5) built,
+fixed to the dollar-fp schema, and LIVE as a systemd service (`weatherbot-kalshi-ws.service`,
+subscribe-only, deduped to top-of-book changes). Remaining build: cross-venue scorer wiring on
+the comparable set. Evidence run on/after 2026-06-23.
+
 Locked prereg: `EXP_2026_011_MARKET_REACTION_LATENCY_AUDIT.md`. A MEASUREMENT program, not a
 trading project. Tests the latency axis (does Kalshi reprice AFTER WeatherBot first sees a
 public-info event), distinct from the closed accuracy axis (EXP-C1/C1b/C2). Four locked
