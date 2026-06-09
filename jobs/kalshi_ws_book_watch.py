@@ -32,23 +32,30 @@ BACKOFF_START = 2.0
 BACKOFF_MAX = 60.0
 
 
+def _to_cents(price_dollars) -> int:
+    return int(round(float(price_dollars) * 100))
+
+
 class _Book:
     """Minimal per-ticker book reconstructed from snapshot + deltas, to derive top-of-book.
-    Kalshi prices are integer cents; best yes bid = max yes buy price; best yes ask =
-    100 - best no buy price (buying yes == selling no)."""
+
+    Kalshi (newer dollar-fp format): snapshot has `yes_dollars_fp`/`no_dollars_fp` =
+    [[price_dollars, size], ...]; delta has `price_dollars`, `delta_fp`, `side`. Prices are
+    dollar strings (e.g. "0.7800"); we key by integer cents. best yes bid = max resting yes
+    buy; best yes ask = 100 - max resting no buy (buying yes == selling no)."""
 
     def __init__(self) -> None:
-        self.yes: dict[int, int] = {}
-        self.no: dict[int, int] = {}
+        self.yes: dict[int, float] = {}
+        self.no: dict[int, float] = {}
 
     def apply_snapshot(self, msg: dict) -> None:
-        self.yes = {int(p): int(s) for p, s in (msg.get("yes") or []) if int(s) > 0}
-        self.no = {int(p): int(s) for p, s in (msg.get("no") or []) if int(s) > 0}
+        self.yes = {_to_cents(p): float(s) for p, s in (msg.get("yes_dollars_fp") or []) if float(s) > 0}
+        self.no = {_to_cents(p): float(s) for p, s in (msg.get("no_dollars_fp") or []) if float(s) > 0}
 
     def apply_delta(self, msg: dict) -> None:
         side = self.yes if msg.get("side") == "yes" else self.no
-        price = int(msg["price"])
-        side[price] = side.get(price, 0) + int(msg["delta"])
+        price = _to_cents(msg["price_dollars"])
+        side[price] = side.get(price, 0.0) + float(msg["delta_fp"])
         if side[price] <= 0:
             side.pop(price, None)
 
@@ -63,9 +70,15 @@ def _exchange_ts(msg: dict) -> datetime | None:
     if ts_ms is not None:
         return datetime.fromtimestamp(float(ts_ms) / 1000.0, tz=timezone.utc)
     ts = msg.get("ts")
-    if ts is not None:
-        return datetime.fromtimestamp(float(ts), tz=timezone.utc)
-    return None
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc)  # epoch seconds
+    except (ValueError, TypeError):
+        try:
+            return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))  # ISO string
+        except ValueError:
+            return None
 
 
 async def _flush(buf: list[dict]) -> None:
