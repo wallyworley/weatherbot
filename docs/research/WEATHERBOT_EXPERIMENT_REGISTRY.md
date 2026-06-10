@@ -757,3 +757,43 @@ favorite point estimates positive) but ~80% of it is consumed by spread + taker 
 exploratory +5-7pp was a mid-price fee-free artifact. Per locked rule the axis closes; no
 forward window. Maker-side capture would be separate execution research, out of scope.
 See `EXP_2026_014_RESULTS.md`. No production change; nothing traded.
+
+---
+
+## EXP-2026-015 — Venue-Wide Kalshi Settlement-Calibration Sweep
+
+**Status:** Registered + LOCKED 2026-06-10; backfill running
+**Priority:** P1 (operator-directed search for structural edge beyond weather)
+**Date Opened:** 2026-06-10
+
+### Hypothesis
+
+Some (category x price-band) cell of the Kalshi settled-market universe shows settlement
+frequency deviating from executable settlement-eve prices by more than spread + taker fees,
+stably across two independent chronological halves. Retail corners (PARLAY/KXMVE,
+Entertainment, Mentions, long-dated event markets) are the priors-favored cells.
+
+### Why This Matters
+
+The weather program closed negative on accuracy and (weather-only) price structure. This
+generalizes the one structural question that needs no forecast — is the venue itself
+calibrated at executable prices — to all ~15 categories. Recon 2026-06-10: ~10,800 series;
+settled markets carry result; daily candlesticks give per-market executable yes bid/ask.
+
+### Design
+
+Locked prereg: `EXP_2026_015_VENUE_CALIBRATION_SWEEP.md`. 90-day settled census
+(`kalshi_settled_market`), settlement-eve daily-candle reference (volume >= 500, life >= 1
+day), locked grid (16 categories x 7 bands x 2 sides), taker fees, cluster bootstrap by
+event_ticker, candidate requires BOTH chronological halves independently (n>=50, CI excl 0,
+edge > 1c). Sweep-wide false-positive expectation < 1 cell by construction. Candidate only
+earns a forward-window prereg (>=200 fresh markets); no candidate closes the venue-structure
+axis. Harness `research/kalshi_settled_calibration.py`. Nothing trades.
+
+### Overfitting Risk
+
+High by construction (a sweep); mitigated by the locked grid + dual-half rule + forward window.
+
+### Result
+
+Pending (backfill + candle fetch in progress).
