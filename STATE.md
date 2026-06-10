@@ -11,6 +11,14 @@ the NBM baseline, market gap narrowed ~45%, but the market still wins.) **EXP-20
 skill): the bias is real but ~80% is consumed by spread + taker fees; design fail on all
 three locked criteria; axis closed. See `EXP_2026_013_RESULTS.md` / `EXP_2026_014_RESULTS.md`.
 The only open axis remains **EXP-2026-011** (reaction latency; evidence run ≥ 2026-06-23).
+
+**2026-06-10 addendum:** the operator-directed venue-wide search also closed negative.
+**EXP-2026-015** (settlement-calibration sweep across ALL Kalshi categories: 7.0M-market
+90-day census, 12,915 sampled at settlement-eve executable prices, fees in, dual-half rule):
+**zero candidates**. Most cells lose on BOTH sides (spread+fee envelope); parlays are quoted
+too wide to harvest (buy-YES EV −0.80/contract); the favorite-longshot lean replicates
+venue-wide but is cost-eaten everywhere (third independent measurement). The venue-structure
+axis is closed. See `EXP_2026_015_RESULTS.md`. Remaining open question: EXP-2026-011 only.
 **Trading status:** **Paper only. No live promotion.**
 **Program status:** **DECISION (operator-approved 2026-06-07): pivot to observation-only
 analytics.** All edge tests negative (audit → B1–B3 → C1 → C1b); no market-relative forecast

@@ -762,7 +762,7 @@ See `EXP_2026_014_RESULTS.md`. No production change; nothing traded.
 
 ## EXP-2026-015 — Venue-Wide Kalshi Settlement-Calibration Sweep
 
-**Status:** Registered + LOCKED 2026-06-10; backfill running
+**Status:** Complete (2026-06-10) — **ZERO CANDIDATES; venue-structure axis CLOSED**
 **Priority:** P1 (operator-directed search for structural edge beyond weather)
 **Date Opened:** 2026-06-10
 
@@ -794,6 +794,13 @@ axis. Harness `research/kalshi_settled_calibration.py`. Nothing trades.
 
 High by construction (a sweep); mitigated by the locked grid + dual-half rule + forward window.
 
-### Result
+### Result / Decision (2026-06-10)
 
-Pending (backfill + candle fetch in progress).
+**Zero candidates** across the full grid (12,915 scored markets sampled from a 7.0M-market
+90-day census, 15 categories + PARLAY). Most cells negative on BOTH sides = prices inside
+the spread+fee envelope; the venue is well calibrated at executable prices wherever liquid.
+Descriptive: parlays are quoted bid~0/ask~1 at settlement-eve (buy-YES EV -0.80/contract —
+untestable AND unharvestable); the favorite-longshot lean replicates venue-wide (Politics
+0.65-0.85 +6.8c/+6.0c both halves but fails n>=50/half; Sports/Economics fail the 1c floor)
+— third independent measurement of the same cost-eaten bias. Per prereg §7 the
+venue-structure axis closes. See `EXP_2026_015_RESULTS.md`. No production change.
