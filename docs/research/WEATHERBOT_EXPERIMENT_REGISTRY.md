@@ -645,8 +645,10 @@ updated: Option A model-run anchor (windowed onset on first_seen_at), genuinenes
 (60/480/360 min) + instrumentation-start cutoff, cross-venue same-station map (comparable
 KATL/KMIA; excluded KNYC/KMDW/KDEN). Research-only Kalshi WebSocket book collector (A5) built,
 fixed to the dollar-fp schema, and LIVE as a systemd service (`weatherbot-kalshi-ws.service`,
-subscribe-only, deduped to top-of-book changes). Remaining build: cross-venue scorer wiring on
-the comparable set. Evidence run on/after 2026-06-23.
+subscribe-only, deduped to top-of-book changes). Cross-venue scorer WIRED 2026-06-09
+late (locked f2e7031 statistic; 16 unit tests; first end-to-end VPS run validated — 8
+episodes, all left-censored as expected on day one). All four channels now report.
+Evidence run on/after 2026-06-23.
 
 Locked prereg: `EXP_2026_011_MARKET_REACTION_LATENCY_AUDIT.md`. A MEASUREMENT program, not a
 trading project. Tests the latency axis (does Kalshi reprice AFTER WeatherBot first sees a
