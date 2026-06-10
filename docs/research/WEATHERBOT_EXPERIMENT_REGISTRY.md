@@ -648,6 +648,10 @@ fixed to the dollar-fp schema, and LIVE as a systemd service (`weatherbot-kalshi
 subscribe-only, deduped to top-of-book changes). Cross-venue scorer WIRED 2026-06-09
 late (locked f2e7031 statistic; 16 unit tests; first end-to-end VPS run validated — 8
 episodes, all left-censored as expected on day one). All four channels now report.
+**A7 (operator-authorized 2026-06-10):** PM-side poll censoring reduced — poll timer 5 -> 2 min
+and a research-only Polymarket CLOB WS collector (`weatherbot-polymarket-ws.service`,
+`polymarket_ws_book_event`, top-of-book dedupe, no auth, subscribe-only) now anchors t0 at
+genuine WS receipt; scorer prefers WS with polled fallback. Locked statistic/gate unchanged.
 Evidence run on/after 2026-06-23.
 
 Locked prereg: `EXP_2026_011_MARKET_REACTION_LATENCY_AUDIT.md`. A MEASUREMENT program, not a

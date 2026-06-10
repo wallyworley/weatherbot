@@ -201,15 +201,6 @@ def directional_onset(
     return None
 
 
-def _latest_at_or_before(series: list[tuple[datetime, float]], ts: datetime) -> float | None:
-    val = None
-    for t, c in series:
-        if t > ts:
-            break
-        val = c
-    return val
-
-
 @dataclass
 class XvEpisode:
     station: str
@@ -715,8 +706,9 @@ def run(since: datetime, out_path: Path) -> None:
             f"in (t0−{PRE_MIN}m, t0+{POST_MIN}m]. lag = onset − t0; onset before t0 = already "
             "priced (negative). PM centers re-binned to the Kalshi ladder (support overlap >= "
             f"{XV_SUPPORT_MIN:.0%}); Kalshi series from the WS top-of-book stream (exchange ts, "
-            "skew-checked) with polling fallback. PM observation timing is itself poll-censored "
-            "(~5 min cadence)."
+            "skew-checked) with polling fallback. PM observations from the A7 WS collector "
+            "(t0 = genuine receipt) where available, else polled (~2 min cadence, censored); "
+            "diagnostics report which path each station-date used."
         )
         lines.append("")
         lines.append(f"- overall (scored episodes): {_fmt(xv_overall)}")
