@@ -96,3 +96,18 @@ No candidate anywhere: the venue-structure axis closes, like the others.
 `research/kalshi_settled_calibration.py` (collector + report, research-only),
 table `kalshi_settled_market` (migration `db/migrations/2026-06-10_kalshi_settled_market.sql`),
 results to `EXP_2026_015_RESULTS.md` + registry EXP-2026-015. Evidence runs on the VPS.
+
+## 10. Scale amendment (LOCKED 2026-06-10, before any candle/report data was seen)
+
+First backfill found the settled universe is ~50x the recon estimate: **~440,000 markets/day**,
+~85% zero-volume auto-generated parlay legs (11 days = 4.88M rows / 2.4 GB before pruning).
+Amendments, all data-budget only, none results-contingent:
+
+- **Storage floor:** rows stored only at `volume_fp >= 100`; thinner markets are censused by
+  count in the collector log (they are untradeable and never reach the candle phase anyway).
+  Zero-volume rows already collected are pruned.
+- **Stratified candle sample:** per-category cap of **1,500** candle fetches, selected by
+  `md5(ticker)` ordering (deterministic, reproducible, unbiased w.r.t. outcome). 1,500 per
+  category is ample for the locked 7-band x 2-half grid at n >= 50 per cell. Categories under
+  the cap are taken in full.
+- Grid, reference price, costs, and the §7 candidate rule are unchanged.

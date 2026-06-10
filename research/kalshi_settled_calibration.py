@@ -28,6 +28,8 @@ from weather_bot.strategy.kalshi_client import KalshiClient
 
 THROTTLE_S = 0.25            # <= ~4 req/s, prereg §8 rate-limit citizenship
 MIN_VOLUME = 500             # candle fetch only for liquid markets (prereg §3)
+MIN_STORE_VOLUME = 100       # scale amendment 2026-06-10: census-by-count below this
+CATEGORY_SAMPLE_CAP = 1500   # scale amendment: deterministic per-category candle sample
 BANDS = [(0.0, 0.05), (0.05, 0.15), (0.15, 0.35), (0.35, 0.65),
          (0.65, 0.85), (0.85, 0.95), (0.95, 1.001)]
 MIN_CELL_N = 50
@@ -80,6 +82,7 @@ def backfill(days: int) -> None:
     now = int(datetime.now(timezone.utc).timestamp())
     cursor = None
     n_rows = 0
+    n_skipped_thin = 0
     sql = """
     INSERT INTO kalshi_settled_market
         (ticker, event_ticker, series_ticker, category, title, open_time, close_time,
@@ -104,6 +107,12 @@ def backfill(days: int) -> None:
         for m in mkts:
             ticker = m.get("ticker")
             if not ticker:
+                continue
+            # Scale amendment (2026-06-10): the settled universe is ~440k markets/day,
+            # overwhelmingly zero-volume auto-generated parlay legs. Census them by count;
+            # store rows only at >= MIN_STORE_VOLUME.
+            if (_num(m.get("volume_fp")) or 0.0) < MIN_STORE_VOLUME:
+                n_skipped_thin += 1
                 continue
             series = ticker.split("-")[0]
             open_t, close_t = _ts(m.get("open_time")), _ts(m.get("close_time"))
@@ -133,21 +142,33 @@ def backfill(days: int) -> None:
                 conn.commit()
             n_rows += len(rows)
         cursor = res.get("cursor")
-        if n_rows % 10000 < 1000:
-            print(f"  backfilled {n_rows} markets...")
+        if (n_rows + n_skipped_thin) % 50000 < 1000:
+            print(f"  stored {n_rows} | census-skipped thin {n_skipped_thin}...", flush=True)
         if not cursor or not mkts:
             break
         time.sleep(THROTTLE_S)
-    print(f"backfill complete: {n_rows} settled markets over {days} days")
+    print(f"backfill complete: stored {n_rows}, census-skipped {n_skipped_thin} "
+          f"(volume < {MIN_STORE_VOLUME}) over {days} days")
 
 
 def fetch_candles(limit: int) -> None:
     client = KalshiClient()
     with persistence.connect() as conn, conn.cursor() as cur:
+        # Scale amendment (2026-06-10): deterministic stratified sample — md5(ticker)
+        # ordering caps each category at CATEGORY_SAMPLE_CAP candle fetches (unbiased,
+        # reproducible). ~1,500/category is ample for 7 bands x 2 halves at n>=50.
         cur.execute(
-            """SELECT ticker, series_ticker, close_time FROM kalshi_settled_market
-               WHERE ref_status = 'pending' ORDER BY close_time LIMIT %(n)s""",
-            {"n": limit},
+            """
+            SELECT ticker, series_ticker, close_time FROM (
+                SELECT ticker, series_ticker, close_time, ref_status,
+                       row_number() OVER (PARTITION BY category ORDER BY md5(ticker)) AS rk
+                FROM kalshi_settled_market
+                WHERE ref_status IN ('pending', 'ok', 'no_candle', 'err')
+            ) s
+            WHERE s.rk <= %(cap)s AND s.ref_status = 'pending'
+            ORDER BY close_time LIMIT %(n)s
+            """,
+            {"n": limit, "cap": CATEGORY_SAMPLE_CAP},
         )
         todo = list(cur.fetchall())
     print(f"candle fetch: {len(todo)} pending")
