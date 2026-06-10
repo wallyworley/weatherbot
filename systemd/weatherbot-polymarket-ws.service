@@ -1,0 +1,19 @@
+[Unit]
+Description=weather_bot research-only Polymarket WebSocket book collector (EXP-2026-011 A7)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/weather_bot
+EnvironmentFile=/opt/weather_bot/.env
+ExecStart=/opt/weather_bot/.venv/bin/python -m weather_bot.jobs.polymarket_ws_book_watch
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/weather_bot/polymarket_ws.log
+StandardError=append:/var/log/weather_bot/polymarket_ws.log
+
+[Install]
+WantedBy=multi-user.target

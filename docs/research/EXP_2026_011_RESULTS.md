@@ -89,6 +89,17 @@ Early descriptive note (NOT evidence): median |gap0| = 1.11 F with 7/8 episodes
 Polymarket-colder-than-Kalshi — direction consistent with the documented Wunderground-raw
 vs NWS-CLI source basis, which the no-follow/directional design already discounts.
 
+## 4a-bis. Polymarket WS collector + tighter polling (amendment A7, operator-authorized 2026-06-10)
+
+The PM-side observation was the channel's binding censoring (~5 min polls vs a 2-minute
+median-lag gate). Operator authorized reducing it. Built symmetric to A5: research-only
+Polymarket CLOB market-channel WS collector (`jobs/polymarket_ws_book_watch.py`, systemd
+`weatherbot-polymarket-ws.service`, table `polymarket_ws_book_event`, top-of-book dedupe,
+asset set refreshed from the polled universe every 10 min). Poll timer tightened 5 → 2 min as
+the fallback/discovery path. Scorer prefers WS-based PM observations (t0 = received_at, the
+same genuine-first-sight anchor at higher cadence) with polled fallback, and reports which
+path each station-date used. Locked statistic/thresholds/gate unchanged.
+
 ## 4b. High-cadence Kalshi WebSocket collector LIVE (amendment A5, 2026-06-09)
 
 Research-only `orderbook_delta` collector is deployed and running as a systemd service

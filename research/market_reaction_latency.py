@@ -239,8 +239,12 @@ def crossvenue_episodes(
     episodes: list[XvEpisode] = []
     prev_gap: float | None = None
     prev_ts: datetime | None = None
-    for t0, poly_c in pm_obs:
-        k0 = _latest_at_or_before(kalshi_series, t0)
+    k_idx, k_n, k_latest = 0, len(kalshi_series), None
+    for t0, poly_c in pm_obs:  # both series ascending: two-pointer k0 lookup
+        while k_idx < k_n and kalshi_series[k_idx][0] <= t0:
+            k_latest = kalshi_series[k_idx][1]
+            k_idx += 1
+        k0 = k_latest
         if k0 is None:
             continue
         gap = poly_c - k0
@@ -397,6 +401,46 @@ def _pm_center_obs(
     return out, dict(diag)
 
 
+def _pm_ws_center_obs(
+    cur, station: str, valid_date: date, since: datetime,
+    kalshi_buckets: list[tuple], typical: float,
+) -> list[tuple[datetime, float]]:
+    """Polymarket center observations from the research-only WS stream (amendment A7).
+    t0 = received_at (WeatherBot's genuine first sight of the book state, per the locked
+    anchor). One observation per WS event once >= 3 buckets have state; re-binned to the
+    Kalshi ladder with the same A2 support requirement as the polled path."""
+    cur.execute(
+        """
+        SELECT received_at, asset_id, lower_f, upper_f, bid, ask
+          FROM polymarket_ws_book_event
+         WHERE station = %(s)s AND valid_date = %(vd)s AND received_at >= %(since)s
+           AND bid IS NOT NULL AND ask IS NOT NULL
+         ORDER BY received_at, id
+        """,
+        {"s": station, "vd": valid_date, "since": since},
+    )
+    mids = [_bucket_mid(lo, hi, typical) for lo, hi in kalshi_buckets]
+    dst_mids = [m for m in mids if m is not None]
+    state: dict[str, tuple] = {}
+    out: list[tuple[datetime, float]] = []
+    for r in cur.fetchall():
+        if r["lower_f"] is None and r["upper_f"] is None:
+            continue
+        p = (float(r["bid"]) + float(r["ask"])) / 2.0
+        if not (0.0 < p <= 1.0):
+            continue
+        state[r["asset_id"]] = (r["lower_f"], r["upper_f"], p)
+        if len(state) < 3:
+            continue
+        probs, support = rebin_to_ladder(list(state.values()), kalshi_buckets, typical)
+        if probs is None or support < XV_SUPPORT_MIN:
+            continue
+        center = weighted_center(probs, dst_mids)
+        if center is not None:
+            out.append((r["received_at"], center))
+    return out
+
+
 def _ws_center_series(cur, station: str, valid_date: date) -> list[tuple[datetime, float]]:
     """Kalshi center series from the research-only WebSocket top-of-book stream (A5).
     Timestamp = exchange ts when it passes the clock-skew sanity check, else receipt time.
@@ -466,9 +510,16 @@ def score_crossvenue(cur, since: datetime) -> tuple[list[LagRow], dict, list[XvE
         if not buckets:
             diag["no_kalshi_ladder"] += 1
             continue
-        pm_obs, pm_diag = _pm_center_obs(cur, station, vd, since, buckets, typical)
-        for k, v in pm_diag.items():
-            diag[k] += v
+        pm_obs = _pm_ws_center_obs(cur, station, vd, since, buckets, typical)
+        if pm_obs:
+            diag["pm_ws_station_dates"] += 1
+            diag["pm_observations"] += len(pm_obs)
+        else:
+            pm_obs, pm_diag = _pm_center_obs(cur, station, vd, since, buckets, typical)
+            for k, v in pm_diag.items():
+                diag[k] += v
+            if pm_obs:
+                diag["pm_polled_fallback_station_dates"] += 1
         if not pm_obs:
             continue
         series = _ws_center_series(cur, station, vd)

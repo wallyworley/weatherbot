@@ -126,6 +126,63 @@ def insert_kalshi_ws_book_events(rows: Iterable[dict]) -> None:
         log.warning("kalshi_ws_book_event write skipped: %s", exc)
 
 
+def insert_polymarket_ws_book_events(rows: Iterable[dict]) -> None:
+    """Research-only (EXP-2026-011 A7): high-cadence Polymarket WS book events. NOT read by
+    any production probability/sizing/execution/gate path. Best-effort; never raises into
+    the collector loop. bid/ask are DOLLARS (0..1)."""
+    prepared = []
+    for row in rows:
+        r = dict(row)
+        if not r.get("asset_id") or not r.get("msg_type"):
+            continue
+        payload = r.get("payload")
+        r["payload"] = json.dumps(_json_ready(payload)) if payload is not None else None
+        for k in ("market_slug", "station", "valid_date", "lower_f", "upper_f",
+                  "exchange_ts", "bid", "ask"):
+            r.setdefault(k, None)
+        r.setdefault("received_at", datetime.now(tz=timezone.utc))
+        prepared.append(r)
+    if not prepared:
+        return
+    sql = """
+    INSERT INTO polymarket_ws_book_event
+        (asset_id, market_slug, station, valid_date, lower_f, upper_f,
+         msg_type, exchange_ts, received_at, bid, ask, payload)
+    VALUES
+        (%(asset_id)s, %(market_slug)s, %(station)s, %(valid_date)s, %(lower_f)s, %(upper_f)s,
+         %(msg_type)s, %(exchange_ts)s, %(received_at)s, %(bid)s, %(ask)s, %(payload)s::jsonb)
+    """
+    try:
+        with connect() as conn, conn.cursor() as cur:
+            cur.executemany(sql, prepared)
+            conn.commit()
+    except Exception as exc:
+        log.warning("polymarket_ws_book_event write skipped: %s", exc)
+
+
+def polymarket_ws_assets() -> list[dict]:
+    """Current Polymarket YES-token universe for the comparable cross-venue stations, with
+    bucket metadata, from the latest polled snapshots (research-only; for WS subscribe)."""
+    sql = """
+    SELECT DISTINCT ON (yes_token_id)
+           yes_token_id AS asset_id, market_slug, station, valid_date, lower_f, upper_f
+      FROM external_market_snapshot
+     WHERE venue = 'POLYMARKET'
+       AND station IS NOT NULL
+       AND yes_token_id IS NOT NULL
+       AND valid_date >= (now() AT TIME ZONE 'UTC')::date - 1
+       AND ts >= now() - interval '24 hours'
+     ORDER BY yes_token_id, ts DESC
+    """
+    try:
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute(sql)
+            return list(cur.fetchall())
+    except Exception as exc:
+        log.warning("polymarket_ws_assets query failed: %s", exc)
+        return []
+
+
 def active_weather_tickers() -> list[str]:
     """Active Kalshi weather market tickers from kalshi_market (for WS subscribe). Read-only."""
     sql = """

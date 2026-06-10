@@ -258,3 +258,16 @@ production probabilities, sizing, execution, gates, or station activation.
 only (hypothesis generation, code-path validation). The audit VERDICT remains forward-only on
 genuine `first_seen_at`; pre-instrumentation history has no trustworthy first-seen and cannot
 produce a latency verdict.
+
+**A7 — Research-only Polymarket WebSocket collector (operator-authorized 2026-06-10; amends
+§8 polling caveat, symmetric to A5).** The cross-venue channel's PM-side observation was
+poll-censored (~5 min cadence), which nearly forecloses a 2-minute median-lag candidate.
+Per operator authorization to reduce the polling lag: (a) the poll timer tightens 5 → 2 min
+(fallback path + token discovery), and (b) a research-only Polymarket CLOB market-channel
+WebSocket collector (public, no auth, subscribe-only, never read by production) records
+top-of-book changes for the verified-comparable cities' YES tokens into
+`polymarket_ws_book_event`. The episode anchor is unchanged in meaning: t0 remains
+WeatherBot's genuine forward first sight of the PM book state (`received_at` of the WS
+event, the same first-seen definition at higher cadence). The scorer prefers WS-based PM
+observations and falls back to polled snapshots, reporting which path each station-date
+used. No change to the locked statistic, thresholds, or candidate gate.
