@@ -74,6 +74,21 @@ is far below the 100 event-day gate; this is a pipeline validation, not a findin
   **in progress, not a closure**. The latency axis is closed only when the committed window is
   reached with no candidate on any channel.
 
+## 4a. Cross-venue scorer WIRED and validated (2026-06-09 late)
+
+The channel-4 scorer is implemented in `research/market_reaction_latency.py` per the locked
+lead-lag statistic (codex call, f2e7031): fresh PM divergence episodes (|gap| >= 0.50 F,
+0.25 F re-arm band / sign flip, 15-min left-censor exclusion), directional Kalshi onset
+(0.10 F toward the PM side vs the t0−30min baseline), PM centers re-binned to the Kalshi
+ladder (support >= 80%), Kalshi series from the A5 WS stream (skew-checked exchange ts) with
+polling fallback. 8 new unit tests (16 total passing). First end-to-end run on the VPS:
+14 station-dates, 34 PM observations, 8 episodes — all left-censored as expected (collection
+on the expanded 7-station map only started 2026-06-09 ~23:55 UTC, so first observations have
+no 15-min prior). Episodes become scoreable from 2026-06-10 at the 5-min poll cadence.
+Early descriptive note (NOT evidence): median |gap0| = 1.11 F with 7/8 episodes
+Polymarket-colder-than-Kalshi — direction consistent with the documented Wunderground-raw
+vs NWS-CLI source basis, which the no-follow/directional design already discounts.
+
 ## 4b. High-cadence Kalshi WebSocket collector LIVE (amendment A5, 2026-06-09)
 
 Research-only `orderbook_delta` collector is deployed and running as a systemd service
