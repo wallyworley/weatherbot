@@ -162,3 +162,35 @@ gate reopens only on genuinely new forecast information.
 Research-only harnesses built for the audit (no production behavior):
 `research/snapshot_market_benchmark.py`, `research/floor_basis_diagnostic.py`,
 `research/gfs_nbm_pit_center.py`.
+
+---
+
+## VPS decommission (2026-08-04)
+
+WeatherBot was removed from the shared VPS. The host stays up for other projects
+(gamma-research, villages-golf, sec-filing-intelligence, anna-career-os, openserp), all of which
+were verified healthy afterward.
+
+**Removed:** 39 systemd units and the `weatherbot-job` slice; the two weather_bot-only Caddy
+site blocks (`40-160-233-235.sslip.io` -> :8501 and `v2.40-160-233-235.sslip.io` -> :8503, both
+already proxying to nothing); `/opt/weather_bot`, `/var/lib/weather_bot`,
+`/home/ubuntu/weather_bot`, `/etc/weather_bot`, `/var/log/weather_bot` (995 MB of logs);
+the unused `weather` Postgres role; and `/etc/sudoers.d/weatherbot-deploy`. Reclaimed 2.1 GB.
+`.github/workflows/deploy.yml` was deleted in the same change, because it rsynced to
+`/opt/weather_bot` on every push to `main` and would otherwise have recreated the directory.
+
+**Deliberately kept:** `/etc/caddy/v2-credentials`, which is imported by both the retired
+weather_bot v2 block and the live `career.40-160-233-235.sslip.io` block. Deleting it would have
+broken anna-career-os authentication.
+
+**Preserved before deletion.** The `research/reports/` directory was covered by a `*` gitignore,
+so 98 machine-generated reports had never been committed or pushed and existed only on the host.
+They are now in `docs/research/vps_generated_reports/`. Held outside git in
+`~/Documents/weather_bot-vps-archive/`: the 134 MB `market_information_forensics` CSV, the final
+`.env` files, the 2026-05-09 database dump, the old `/home/ubuntu/weather_bot` copy, and the
+Kalshi API private key. All transfers were checksum-verified against the source before anything
+was removed.
+
+**Open item for the operator:** the archived Kalshi API private key is a live credential for a
+retired system. Worth revoking on Kalshi's side; the local copy is only so nothing is lost in
+the meantime.
