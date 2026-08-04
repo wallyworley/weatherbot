@@ -22,9 +22,14 @@ forward-collected genuine `first_seen_at` from **2026-06-09 14:29 -> 2026-06-23 
 **The intended fuller evidence run could not be produced.** Collection continued to
 **2026-07-02 23:03 UTC** (~9 further days), but that window was never scored: the project was
 retired, the collectors were stopped, and the `weather_bot` database was subsequently dropped.
-The only surviving database dump is 2026-05-09, a month before `info_provenance` was created, so
-it contains none of the audit's tables. The Jun 9 → Jun 23 run is therefore the complete and
-final evidence base.
+**No surviving backup contains the audit's data.** Verified against all three that exist: the
+2026-05-09 full dump (predates `info_provenance` entirely), and the 2026-07-02 results dump plus
+schema dump held on Google Drive (`weatherbot-vps-backup-20260702`), neither of which includes
+`info_provenance`, `kalshi_ws_book_event`, or `polymarket_ws_book_event`. The Jul 2 backup
+preserved the trading and results tables (`paper_fill`, `paper_order`, `signal`, `verification`,
+`kalshi_settled_market`), not the latency provenance layer.
+
+The Jun 9 → Jun 23 run is therefore the complete and final evidence base.
 
 §2.1 below shows why the lost window does not change the verdict.
 

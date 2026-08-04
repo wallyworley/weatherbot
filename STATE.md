@@ -16,7 +16,9 @@ Polymarket) is **terminated unscored** at 14 of 100 required event-days, not sco
 
 Two honest caveats on this closure. The intended fuller evidence run could not be produced: the
 ~9 days of collection from 2026-06-23 to 2026-07-02 were never scored and the source data is
-destroyed (the only surviving dump, 2026-05-09, predates the instrumentation). Estimated effect
+destroyed (verified against all three surviving backups: the 2026-05-09 full dump predates the
+instrumentation, and the 2026-07-02 results and schema dumps on Google Drive preserved the
+trading tables but not `info_provenance` or the WS book tables). Estimated effect
 is nil: CLI would have cleared its sample gate while still failing on 0% positive-lag, and
 cross-venue would have reached only ~23 event-days. And polling censoring biases measured lag
 *positive*, so the true lags are at least as negative as measured, making the negative findings

@@ -643,7 +643,9 @@ tops out at 14% against a 60% bar). **Channel 4** never reached power and is now
 
 **The intended fuller evidence run could not be produced.** Collection ran on to 2026-07-02
 23:03 UTC, but the project was retired, collectors stopped, and the `weather_bot` database was
-dropped; the only surviving dump (2026-05-09) predates `info_provenance`. Estimated effect of
+dropped. No surviving backup holds the data: verified against the 2026-05-09 full dump (predates
+`info_provenance`) and the 2026-07-02 results + schema dumps on Google Drive (trading tables
+only, no provenance or WS book tables). Estimated effect of
 the ~9 lost days: CLI would have reached ~140 event-days, clearing its sample gate but still
 failing on 0% positive-lag direction; cross-venue would have reached only ~23. **The lost window
 does not change the verdict.**
