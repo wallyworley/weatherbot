@@ -1,6 +1,30 @@
 # WeatherBot — Current State
 
-**Updated:** 2026-06-09
+**Updated:** 2026-08-04
+
+**Program status: RETIRED.** The project was retired for not making money. Collectors were
+stopped 2026-07-02 23:03 UTC and the `weather_bot` database has been dropped.
+
+**2026-08-04 addendum: the last open axis is closed.** **EXP-2026-011** (market reaction
+latency) was scored against its locked §7 gate: **no candidate on any channel.** Channels 1
+(METAR, −10.56 min / 28% positive) and 2 (model-run, −16.25 min / 27%) are negative at full
+pre-registered power over 299 event-days and 20 stations. Channel 2 is the decisive one: it
+carried the "speed on model reads" thesis, and the market reprices a new model run a median of
+16 minutes *before* our ingest sees it. Channel 3 (CLI) is negative on direction with an
+arithmetically unreachable gate (0 positive lags in 86 events). Channel 4 (cross-venue
+Polymarket) is **terminated unscored** at 14 of 100 required event-days, not scored negative.
+
+Two honest caveats on this closure. The intended fuller evidence run could not be produced: the
+~9 days of collection from 2026-06-23 to 2026-07-02 were never scored and the source data is
+destroyed (the only surviving dump, 2026-05-09, predates the instrumentation). Estimated effect
+is nil: CLI would have cleared its sample gate while still failing on 0% positive-lag, and
+cross-venue would have reached only ~23 event-days. And polling censoring biases measured lag
+*positive*, so the true lags are at least as negative as measured, making the negative findings
+conservative. See `EXP_2026_011_RESULTS.md` and the preserved evidence run
+`EXP_2026_011_EVIDENCE_RUN_2026-06-23.md`.
+
+**Both axes are now closed: accuracy (EXP-C1/C1b/C2, EXP-2026-013) and latency (EXP-2026-011),
+plus venue structure (EXP-2026-014/015). No open research questions remain.**
 
 **2026-06-09 addendum:** two further pre-registered axes ran and closed negative the same
 day. **EXP-2026-013** (the four never-benchmarked shadow ensembles incl. WeatherNext 2 and
@@ -18,8 +42,9 @@ The only open axis remains **EXP-2026-011** (reaction latency; evidence run ≥ 
 **zero candidates**. Most cells lose on BOTH sides (spread+fee envelope); parlays are quoted
 too wide to harvest (buy-YES EV −0.80/contract); the favorite-longshot lean replicates
 venue-wide but is cost-eaten everywhere (third independent measurement). The venue-structure
-axis is closed. See `EXP_2026_015_RESULTS.md`. Remaining open question: EXP-2026-011 only.
-**Trading status:** **Paper only. No live promotion.**
+axis is closed. See `EXP_2026_015_RESULTS.md`. ~~Remaining open question: EXP-2026-011 only.~~
+(Closed 2026-08-04, see the addendum at the top of this file.)
+**Trading status:** **Paper only. No live promotion. Retired 2026-07-02; never traded live.**
 **Program status:** **DECISION (operator-approved 2026-06-07): pivot to observation-only
 analytics.** All edge tests negative (audit → B1–B3 → C1 → C1b); no market-relative forecast
 advantage found. Trading research is closed unless fresh future evidence reopens the gate.
@@ -56,9 +81,13 @@ does not contain the missing information. **Pre-committed decision (EXP-C1b prer
 recommend converting WeatherBot to observation-only analytics** (charter §7). Calendar
 backstop: 2026-09-04 / 500 fresh station-days. **Final call is the operator's.**
 
-## The single forward plan
+## The single forward plan (historical, superseded by retirement)
 
-➡️ **`docs/research/EXPERIMENT_PLAN_NEXT.md`** is the canonical plan and stopping rule.
+> **Spent.** Everything below is the plan as it stood on 2026-06-06 and is kept for the record.
+> The program is retired and no item here is live. Items 4 and 5 were never done, and the
+> "← NEXT" marker on item 4 is historical, not an open action.
+
+➡️ **`docs/research/EXPERIMENT_PLAN_NEXT.md`** was the canonical plan and stopping rule.
 
 **Agreed action order (auditor + analyst review, 2026-06-06):**
 
@@ -87,8 +116,9 @@ backstop: 2026-09-04 / 500 fresh station-days. **Final call is the operator's.**
    **full GFS (w=1) significantly worse**. **Keep 0.30; no weight change** (no harm; high
    weights worse). Harness: `research/gfs_blend_experiment.py`; results in
    `DEFECT_GFS_BLEND.md §9`.
-4. **← NEXT** — Calibrator — rebuild from all-forecasts-vs-CLI; restore ladder normalization.
-5. Reliability metric — replace the dormant invalid metric.
+4. ✗ **NOT DONE (program retired)** Calibrator: rebuild from all-forecasts-vs-CLI; restore
+   ladder normalization.
+5. ✗ **NOT DONE (program retired)** Reliability metric: replace the dormant invalid metric.
 
 **EXP-C1 — the decisive question: can any forecast center beat the market? → NO (both passes).**
 - ✅ **C1 first pass (parameter-free):** no center (NBM/GFS/ECMWF/HRRR/decorrelation blend)
@@ -122,7 +152,9 @@ gate reopens only on genuinely new forecast information.
 | `DEFECT_ANALYSIS_SUMMARY.md` | The 5 defects + agreed fix order |
 | `DEFECT_METAR_CLI_FLOOR.md` / `DEFECT_HRRR_WEIGHT_CURVE.md` / `DEFECT_GFS_BLEND.md` | Wrong-direction model mechanics |
 | `CALIBRATOR_REBUILD_REPORT.md` / `RELIABILITY_METRIC_REPORT.md` | Correctness/hygiene |
-| `EXPERIMENT_PLAN_NEXT.md` | **Canonical forward plan + kill rule** |
+| `EXPERIMENT_PLAN_NEXT.md` | Forward plan + kill rule (spent; program retired) |
+| `EXP_2026_011_RESULTS.md` | **Latency axis final scoring — the last axis, closed** |
+| `EXP_2026_011_EVIDENCE_RUN_2026-06-23.md` | Sole surviving machine-generated latency run |
 | `WEATHERBOT_PROMOTION_CRITERIA.md` / `WEATHERBOT_RESEARCH_CHARTER.md` / `WEATHERBOT_EXPERIMENT_REGISTRY.md` | Governance |
 
 Research-only harnesses built for the audit (no production behavior):

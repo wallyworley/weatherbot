@@ -616,11 +616,58 @@ negative in >=2 stations and >=2 sub-splits, no leakage.
 
 ## EXP-2026-011 — Market Reaction Latency Audit
 
-**Status:** Forward collection IN PROGRESS (since 2026-06-09); instrumentation live + report
-tool built/validated. NOT a verdict. Evidence run targeted on or after 2026-06-23.
-**Priority:** P1 (the one new axis after the accuracy question closed)
+**Status:** **CLOSED 2026-08-04. No candidate on any channel. Scored negative on channels 1-3
+(METAR and model-run at full pre-registered power); channel 4 (cross-venue) terminated unscored
+at 14% of the required sample.** Measurement only; no production change.
+**Priority:** closed (was P1, the one new axis after the accuracy question closed)
 
-### Status (2026-06-09)
+### Result / Decision (2026-08-04)
+
+Scored against the locked §7 gate (median lag >= +2 min AND positive-lag fraction >= 60% AND
+>= 2 stations AND >= 100 event-days). Evidence: the sole surviving machine-generated run,
+2026-06-09 14:29 -> 2026-06-23 21:02 UTC, preserved in-repo as
+`EXP_2026_011_EVIDENCE_RUN_2026-06-23.md`.
+
+| # | Channel | Event-days | Stations | Median lag | Pos-lag | Verdict |
+|---|---|---:|---:|---:|---:|---|
+| 1 | METAR | 299 | 20 | -10.56 min | 28% | no candidate, at full power |
+| 2 | Model-run | 299 | 20 | -16.25 min | 27% | no candidate, at full power |
+| 3 | CLI | 86 | 14 | -280.24 min | 0% | no candidate, gate unreachable |
+| 4 | Cross-venue | 14 | 5 | -18.22 min | 29% | not scoreable |
+
+**Channel 2 is the decisive result:** the untested channel carrying the PR&R "speed on model
+reads" thesis is negative at full power. The market reprices a new run a median of 16 minutes
+BEFORE our ingest sees it. No station passes. **Channel 3** is formally 14 event-days short but
+the gate is arithmetically unreachable (0 positive lags in 86 events; even a perfect remainder
+tops out at 14% against a 60% bar). **Channel 4** never reached power and is now unresolvable.
+
+**The intended fuller evidence run could not be produced.** Collection ran on to 2026-07-02
+23:03 UTC, but the project was retired, collectors stopped, and the `weather_bot` database was
+dropped; the only surviving dump (2026-05-09) predates `info_provenance`. Estimated effect of
+the ~9 lost days: CLI would have reached ~140 event-days, clearing its sample gate but still
+failing on 0% positive-lag direction; cross-venue would have reached only ~23. **The lost window
+does not change the verdict.**
+
+**Validity:** polling censoring biases measured lag POSITIVE (measured onset >= true onset), so
+true lags are at least as negative, making the negative findings conservative under the §8 caveat.
+A3 genuineness caps applied (16,785 / 352 / 198 stale rows excluded). DSM not instrumented, per
+A4, as pre-registered.
+
+**KNYC (+18.91 min, 97% positive) does NOT open a candidate:** single station against a >= 2
+station requirement with no pre-locked station rationale (§9 forbids the cherry-pick), and very
+likely an artifact of event sparsity (232 events vs 2,000-2,600 elsewhere; Central Park is a
+non-ASOS coop site with no HFMETAR feed).
+
+**Decision:** latency axis CLOSED. Channel 4 is recorded as terminated unscored, not scored
+negative. This is not the clean four-channel null the prereg envisioned. Supporting the closure
+rather than leaving channel 4 open: its descriptive evidence leaned null (126 of 146 directional
+episodes Polymarket-colder, consistent with the documented Wunderground-vs-NWS source basis
+rather than a lead; 11 of 25 non-censored episodes showed no follow), and a candidate would only
+have opened EXP-2026-012 at the strict market-relative Brier-and-RPS bar that every prior test
+failed. Reopening requires fresh forward collection and a new pre-registration; this one is
+spent. Full scoring: `EXP_2026_011_RESULTS.md`.
+
+### Status (2026-06-09, superseded by the result above)
 
 Instrumentation verified live on the VPS: `info_provenance` collecting genuine forward
 `first_seen_at` (metar/kalshi_book/polymarket_book confirmed; model-run/cli on cadence). Report
